@@ -1,0 +1,3 @@
+name,product,packSizeValue,packSizeUnit,packSizeQuantity,price,mrp,taxPercentage,availableQty,reusableContainer,rotationSize,batchTracked,litresPerUnit,shelfLifeHours
+Cow Milk 1L,Cow Milk,1,litre,1,60,65,5,500,true,2,false,1,72
+Toned Milk 1L,Toned Milk,1,litre,1,52,56,5,400,false,0,false,1,72

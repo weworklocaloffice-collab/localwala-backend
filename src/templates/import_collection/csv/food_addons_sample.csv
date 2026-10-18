@@ -1,0 +1,4 @@
+"name","price","restaurant","inStock","stockType","stockNumber","status"
+"Extra Cheese","29.99","6787d0db8210e66b2cb6a0a5","Yes","unlimited","-1","Active"
+"Cheese Slice","5","6787d0db8210e66b2cb6a0a5","Yes","limited","100","Active"
+"Cheese Dip","10.99","6787d0db8210e66b2cb6a0a5","No","daily","200","Deactive"

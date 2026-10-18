@@ -1,0 +1,118 @@
+SOFTWARE LICENSE AGREEMENT
+(Envato Market License)
+
+Product Name:
+FoodBite – Multi Restaurant Food Delivery App
+(NodeJS, MongoDB, Angular & Flutter)
+
+Copyright © 2026 Elitecanyon InfoTech (https://www.elitecanyon.com/)
+All rights reserved.
+
+This software product, “FoodBite – Multi Restaurant Food Delivery App
+with NodeJS, MongoDB, Angular & Flutter” (hereinafter referred to as
+“the Software”), including but not limited to source code, design,
+UI/UX, assets, configurations, documentation, build files, and
+associated materials, is licensed under the Envato Market License
+and may only be used in accordance with the terms of that license.
+
+------------------------------------------------------------
+LICENSE GRANT
+------------------------------------------------------------
+
+By purchasing this product from CodeCanyon (Envato Market),
+you are granted a non-exclusive, non-transferable license
+to use the Software under either the Regular License or
+Extended License, as defined by Envato Market.
+
+The applicable license type is determined solely by the
+purchase made through Envato Market.
+
+------------------------------------------------------------
+PERMITTED USE
+------------------------------------------------------------
+
+You MAY:
+- Use the Software for a single end product
+- Modify the Software to suit your project requirements
+- Deploy the Software on your own server or infrastructure
+- Use the Software according to the purchased Envato license type
+
+------------------------------------------------------------
+PROHIBITED USE
+------------------------------------------------------------
+
+You MAY NOT:
+- Redistribute the Software or source code in any form
+- Publish the Software or source code on GitHub, GitLab,
+  Bitbucket, or any public or private repository accessible
+  to others
+- Resell, sublicense, share, or give away the Software
+- Use the Software without a valid Envato purchase code
+- Remove, alter, or obscure copyright, license, or ownership notices
+- Circumvent, disable, or tamper with license verification,
+  watermarking, fingerprinting, or tracking mechanisms
+
+------------------------------------------------------------
+PUBLIC REPOSITORY WATERMARKING & TRACKING
+------------------------------------------------------------
+
+The Software contains embedded identifiers, code-level watermarks,
+and/or fingerprinting mechanisms designed to identify unauthorized
+distribution, including publication on public source code
+repositories such as GitHub, GitLab, or Bitbucket.
+
+These identifiers may be embedded across application layers,
+including but not limited to Flutter (Dart), Android, iOS,
+backend services, configuration files, and build metadata.
+
+If the Software or any portion thereof is found in a public
+repository, such identifiers may be used to:
+
+- Verify ownership of the Software
+- Identify the original purchaser or distribution source
+- Support DMCA takedown requests
+- Report violations to Envato Market
+
+Unauthorized publication or removal of such identifiers constitutes
+a material breach of this license agreement.
+
+------------------------------------------------------------
+OWNERSHIP
+------------------------------------------------------------
+
+The Software remains the exclusive intellectual property of
+Elitecanyon InfoTech (https://www.elitecanyon.com/).
+
+This license grants usage rights only and does not transfer
+ownership of the Software or any part thereof.
+
+------------------------------------------------------------
+TERMINATION
+------------------------------------------------------------
+
+This license will be automatically terminated if any of its
+terms are violated.
+
+Upon termination, you must immediately cease all use of the
+Software and delete all copies in your possession.
+
+------------------------------------------------------------
+DISCLAIMER
+------------------------------------------------------------
+
+The Software is provided "AS IS", without warranty of any kind,
+express or implied, including but not limited to warranties of
+merchantability, fitness for a particular purpose, and
+non-infringement.
+
+In no event shall the author be liable for any claim, damages,
+or other liability arising from the use or inability to use
+the Software.
+
+------------------------------------------------------------
+GOVERNING LICENSE
+------------------------------------------------------------
+
+This Software is governed by the Envato Market License.
+For the complete license terms, please visit:
+https://codecanyon.net/licenses/standard

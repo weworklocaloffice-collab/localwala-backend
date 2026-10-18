@@ -1,0 +1,4 @@
+name,status
+Booking was cancelled by restaurant,Active
+Restaurant was closed on arrival,Active
+Reservation not found at restaurant,Deactive

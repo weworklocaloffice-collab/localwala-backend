@@ -1,0 +1,3 @@
+firstName,lastName,email,image,countryCode,mobile,gender,city,restaurant,status
+Milena,Prescott,milena.prescott@aol.com,2254d2fa-c021-4771-ac97-9aa69181cb873660781861558131076-1753011875029.jpg,1,5623895689,male,66a63dca789cee4f8ad79142,66a71baca9b3e102abbe39e7,Active
+Alina,Beckett,alina.beckett@gmail.com,2254d2fa-c021-4771-ac97-9aa69181cb873660781861558131076-1753011875029.jpg,1,8956895689,female,66a63dca789cee4f8ad79142,6818a4b179d7f3947c8fef2b,Deactive

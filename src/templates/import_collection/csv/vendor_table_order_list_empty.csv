@@ -1,0 +1,1 @@
+orderNo,tableNo,foods,waiters,restaurant,paymentMode,customerType,customerName,customerCountryCode,customerMobileNumber,cartItemRaw,realTotal,itemTotal,itemDiscount,discountType,discountAmount,discountCharge,foodServiceCharge,serviceCharge,packageCharge,packageChargeTax,waiterTip,extraCharge,grandTotal,restaurantCommission

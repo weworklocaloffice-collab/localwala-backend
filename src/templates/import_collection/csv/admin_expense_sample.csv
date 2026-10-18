@@ -1,0 +1,14 @@
+expenseType,coupon,diningCoupon,diningBooking,order,user,amount
+coupon,66fb8c7a677d907585218788,-,-,68884e480770e7f3f95991ec,685fdddbf3a0d774352ae1b2,10
+delivery_charge,-,-,-,68884e480770e7f3f95991ec,68242056b8f822947a5110e0,20
+referral,-,-,-,-,685fdddbf3a0d774352ae1b2,30
+wallet_bonus,-,-,-,-,685fdddbf3a0d774352ae1b2,40
+loyalty_points,-,-,-,-,685fdddbf3a0d774352ae1b2,50
+dining_booking_coupon,-,66cf474fdf3d3624fb378717,687e41ab24f3f060677230f6,-,685fdddbf3a0d774352ae1b2,60
+customer_wallet_credit,-,-,-,-,685fdddbf3a0d774352ae1b2,70
+it_support_service,-,-,-,-,-,80
+ads,-,-,-,-,-,90
+employee_expenses,-,-,-,-,-,100
+outsource,-,-,-,-,-,110
+payment_gateway_charge,-,-,-,-,-,120
+other,-,-,-,-,-,130

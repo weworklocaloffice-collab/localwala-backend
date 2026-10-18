@@ -1,0 +1,5 @@
+name,city,latitude,longitude,allRestaurants,restaurant,allUsers,user,code,limitSameUser,start,expires,discountType,minDiscount,maxDiscount,availability,preBookingChargeRequired,preBookingChargeAmount,status
+Reserve Your Table & Get $15 Off Instantly!,66a63dca789cee4f8ad79142,38.8937255,-77.0969767,Yes,-,Yes,-,BOOKNDINE,10,2025-08-02,2025-08-30,amount,500,550,breakfast,Yes,25,hold
+Dining Out? Get a $20 Treat on Us!,66a63bd6789cee4f8ad790c4,40.6966727,-74.3091463,Yes,-,Yes,-,DINETREAT,5,2025-08-02,2025-08-30,percentage,20,25,lunch,Yes,25,live
+"Book a Seat, Save Big – $10 Off Your Bill",66a63dca789cee4f8ad79142,38.8937255,-77.0969767,Yes,-,Yes,-,SEATANDSAVE,1,2025-08-02,2025-08-30,amount,450,800,dinner,Yes,25,hide
+Group Dining? Save 25% on Bookings for 4+ People!,66a63bd6789cee4f8ad790c4,40.6966727,-74.3091463,No,"688b85e0b69e4300b2ac5564,688b85e0b69e4300b2ac5562",No,"685fdddbf3a0d774352ae1b2,685c25162ca9ec10e7af011b",EATWITHFRIENDS,5,2025-08-02,2025-08-30,percentage,10,15,dinner,No,0,requested

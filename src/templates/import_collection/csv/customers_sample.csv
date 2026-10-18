@@ -1,0 +1,4 @@
+"firstName","lastName","email","role","image","countryCode","mobile","gender","latitude","longitude","city","locale","status"
+"Emma","Johnson","emma.johnson@example.com","user","man-1726476838638.png","1","8547965458","female","0","0","66a63ac9789cee4f8ad7908d","en","Active"
+"Liam","Smith","liam.smith@example.com","user","man-1726476838638.png","1","7845127845","male","0","0","66a63ac9789cee4f8ad7908d","en","Active"
+"Lucas","Müller","lucas.mueller@example.de","guest","NA","1","8956238956","male","0","0","66a63ac9789cee4f8ad7908d","en","Deactive"

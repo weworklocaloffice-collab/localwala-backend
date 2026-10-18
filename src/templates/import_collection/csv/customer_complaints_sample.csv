@@ -1,0 +1,6 @@
+user,orders,reason,title,brief,issueWith,restaurant,driver,product,proof,status
+685fdddbf3a0d774352ae1b2,68884e480770e7f3f95991ec,670620ea1e5296c482e6ba3a,Order Delivered Late,The order arrived significantly later than the expected delivery time.,order,66a71baca9b3e102abbe39e7,-,-,-,Active
+684c1a14782418866de8b55b,68884e480770e7f3f95991e9,670620de1e5296c482e6ba33,Wrong Items Delivered,Received food items that were not part of the order.,restaurant,6787d0db8210e66b2cb6a0a5,-,-,-,Active
+685fdddbf3a0d774352ae1b2,6886fcc82db35840920b25df,670620de1e5296c482e6ba33,Missing Items in Order,One or more items from the order were not delivered.,product,66a71baca9b3e102abbe39e7,-,68512fc252b936fddfbe66f3,-,Deactive
+684c1a14782418866de8b55b,6886fcc82db35840920b25dd,670620de1e5296c482e6ba33,Food Quality Issues,"The delivered food was stale, spoiled, or not up to the expected quality.",deliveryman,6787d0db8210e66b2cb6a0a5,68242056b8f822947a5110e0,-,"18-1749099712844.png,18-1749099712844.png",Deactive
+685fdddbf3a0d774352ae1b2,68844bb8385494a913472702,670620de1e5296c482e6ba33,Cold Food Delivered,The food was not warm upon delivery and affected the dining experience.,customer,66a71baca9b3e102abbe39e7,-,-,"18-1749099712844.png,18-1749099712844.png",Deactive

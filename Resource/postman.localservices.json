@@ -1,0 +1,549 @@
+{
+  "info": {
+    "name": "LocalWala Local Services",
+    "description": "Local Services revenue + catalogue + booking. Base: {{baseUrl}}/v1/local-services. Admin cookie auth for /admin/*, bearer for /customer + /partner.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000"
+    }
+  ],
+  "item": [
+    {
+      "name": "Revenue",
+      "item": [
+        {
+          "name": "Create rule (draft)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/revenue/rules",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\":\"LS-HOME-STD\",\"name\":\"Home standard\",\"revenueModel\":\"COMBINED\",\"categoryKey\":\"home\",\"payer\":\"customer\",\"bookingFeeEnabled\":true,\"bookingFee\":60,\"commissionEnabled\":true,\"commissionType\":\"percentage\",\"commissionRatePercent\":5,\"calculationBasis\":\"LABOUR_ONLY\",\"qualifyingEvent\":\"COMPLETION_VERIFIED\",\"currency\":\"INR\",\"effectiveFrom\":\"2026-01-01\"}"
+            }
+          }
+        },
+        {
+          "name": "List rules",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/admin/revenue/rules?status=active"
+          }
+        },
+        {
+          "name": "Transition rule",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/revenue/rules/:id/active",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"approvalNote\":\"approved by finance\"}"
+            }
+          }
+        },
+        {
+          "name": "Preview (estimate)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/revenue/preview",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"categoryKey\":\"home\",\"labourAmount\":400,\"partsAmount\":250}"
+            }
+          }
+        },
+        {
+          "name": "Mapping chain",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/admin/revenue/mapping?categoryKey=home&serviceKey=ac-repair"
+          }
+        },
+        {
+          "name": "Entries",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/admin/revenue/entries"
+          }
+        },
+        {
+          "name": "Summary",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/admin/revenue/summary"
+          }
+        },
+        {
+          "name": "Generate settlement",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/revenue/settlements/generate",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"providerId\":\"<id>\",\"from\":\"2026-01-01\",\"to\":\"2026-02-01\"}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Catalog",
+      "item": [
+        {
+          "name": "Create category",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/catalog/categories",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"key\":\"home\",\"name\":\"Home Services\",\"status\":\"active\"}"
+            }
+          }
+        },
+        {
+          "name": "Create facet",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/catalog/facets",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"key\":\"vehicle_type\",\"label\":\"Vehicle Type\",\"dataType\":\"ENUM\",\"options\":[\"sedan\",\"suv\"]}"
+            }
+          }
+        },
+        {
+          "name": "Public categories",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/public/categories"
+          }
+        },
+        {
+          "name": "Public services",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/public/services"
+          }
+        },
+{
+  "name": "List templates",
+  "request": {
+    "method": "GET",
+    "url": "{{baseUrl}}/v1/local-services/admin/catalog/templates"
+  }
+},
+{
+  "name": "Patch template",
+  "request": {
+    "method": "PATCH",
+    "url": "{{baseUrl}}/v1/local-services/admin/catalog/templates/:id",
+    "body": {
+      "mode": "raw",
+      "raw": "{\"name\":\"std\",\"bookingMode\":\"SLOT\",\"pricingMode\":\"FIXED\"}"
+    }
+  }
+},
+        {
+          "name": "Create template",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/catalog/templates",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"key\":\"std\",\"name\":\"Standard\",\"bookingMode\":\"SLOT\",\"pricingMode\":\"FIXED\"}"
+            }
+          }
+        },
+        {
+          "name": "List templates",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/admin/catalog/templates"
+          }
+        },
+{
+  "name": "Create addon",
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/v1/local-services/admin/catalog/addons",
+    "body": {
+      "mode": "raw",
+      "raw": "{\"service\":\"<id>\",\"name\":\"Extra pipe\",\"price\":150}"
+    }
+  }
+},
+{
+  "name": "List addons",
+  "request": {
+    "method": "GET",
+    "url": "{{baseUrl}}/v1/local-services/admin/catalog/addons"
+  }
+},
+{
+  "name": "Patch addon",
+  "request": {
+    "method": "PATCH",
+    "url": "{{baseUrl}}/v1/local-services/admin/catalog/addons/:id",
+    "body": {
+      "mode": "raw",
+      "raw": "{\"name\":\"Extra pipe\",\"price\":200}"
+    }
+  }
+},
+        {
+          "name": "Submit offering",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/offerings/:id/submit"
+          }
+        },
+        {
+          "name": "Moderate offering",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/providers/offerings/:id/active"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Provider",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/providers",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"businessName\":\"Sharma Repairs\",\"providerType\":\"independent\"}"
+            }
+          }
+        },
+        {
+          "name": "My provider",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/partner/providers"
+          }
+        },
+        {
+          "name": "Create offering",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/offerings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"service\":\"<serviceId>\",\"price\":599}"
+            }
+          }
+        },
+        {
+          "name": "My bookings",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/partner/bookings"
+          }
+        },
+        {
+          "name": "Partner transition",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/bookings/:id/ACCEPTED"
+          }
+        },
+        {
+          "name": "Upload document",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/documents",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"kind\":\"license\",\"fileUrl\":\"https://...\"}"
+            }
+          }
+        },
+        {
+          "name": "Verify document",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/providers/documents/:id/verified"
+          }
+        },
+        {
+          "name": "Create staff",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/staff",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Ravi\",\"skills\":[\"ac\"]}"
+            }
+          }
+        },
+        {
+          "name": "Set availability",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/availability",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"day\":1,\"open\":\"09:00\",\"close\":\"20:00\"}"
+            }
+          }
+        },
+        {
+          "name": "Set coverage",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/coverage",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"localities\":[\"Whitefield\"]}"
+            }
+          }
+        },
+        {
+          "name": "Assign booking",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/bookings/:id/assign"
+          }
+        },
+        {
+          "name": "Revise quote",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/quotes/:id/revise",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"labourAmount\":450,\"partsAmount\":250,\"expiresAt\":\"2026-12-01T00:00:00Z\"}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Booking",
+      "item": [
+        {
+          "name": "Create booking",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"categoryKey\":\"home\",\"bookingMode\":\"SLOT\",\"scheduledAt\":\"2026-11-01T10:00:00Z\",\"labourAmount\":400,\"partsAmount\":100}"
+            }
+          }
+        },
+        {
+          "name": "Transition booking",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings/:id/CONFIRMED"
+          }
+        },
+        {
+          "name": "Submit quote",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings/:id/quote",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"labourAmount\":400,\"partsAmount\":250,\"expiresAt\":\"2026-12-01T00:00:00Z\"}"
+            }
+          }
+        },
+        {
+          "name": "My bookings",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings"
+          }
+        },
+        {
+          "name": "Booking detail",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings/:id"
+          }
+        },
+        {
+          "name": "Reschedule",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings/:id/reschedule",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"startAt\":\"2026-11-02T10:00:00Z\"}"
+            }
+          }
+        },
+        {
+          "name": "Dispute",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings/:id/dispute",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"reason\":\"incomplete work\"}"
+            }
+          }
+        },
+        {
+          "name": "Review",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings/:id/review",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"rating\":5}"
+            }
+          }
+        },
+        {
+          "name": "Invoice",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings/:id/invoice"
+          }
+        },
+        {
+          "name": "Reviews list",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/customer/reviews?provider=<id>"
+          }
+        },
+        {
+          "name": "Create complaint",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/customer/complaints",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"reason\":\"late arrival\"}"
+            }
+          }
+        },
+{
+  "name": "Admin bookings",
+  "request": {
+    "method": "GET",
+    "url": "{{baseUrl}}/v1/local-services/admin/bookings"
+  }
+},
+{
+  "name": "Assign booking",
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/v1/local-services/partner/bookings/:id/assign"
+  }
+},
+{
+  "name": "Void invoice",
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/v1/local-services/admin/bookings/:id/invoice/void"
+  }
+},
+{
+  "name": "Release hold",
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/v1/local-services/admin/bookings/:id/release"
+  }
+}
+      ]
+    },
+    {
+      "name": "Extended",
+      "item": [
+        {
+          "name": "Create recurring",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/recurring"
+          }
+        },
+        {
+          "name": "Create lead",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/leads"
+          }
+        },
+        {
+          "name": "Qualify lead",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/leads/:id/qualify"
+          }
+        },
+        {
+          "name": "Subscribe plan",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/subscriptions"
+          }
+        },
+        {
+          "name": "Create plan admin",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/plans"
+          }
+        },
+        {
+          "name": "Occurrences",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/occurrences"
+          }
+        },
+        {
+          "name": "Invalidate lead",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/leads/:id/invalidate"
+          }
+        },
+        {
+          "name": "List plans",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/admin/plans"
+          }
+        },
+        {
+          "name": "Create featured",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/featured",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"placement\":\"search\",\"from\":\"2026-11-01\",\"to\":\"2026-12-01\",\"price\":999}"
+            }
+          }
+        },
+{
+  "name": "Mark settlement",
+  "request": {
+    "method": "POST",
+    "url": "{{baseUrl}}/v1/local-services/admin/revenue/settlements/:id/settled"
+  }
+},
+{
+  "name": "Sponsor flag",
+  "request": {
+    "method": "PATCH",
+    "url": "{{baseUrl}}/v1/local-services/admin/catalog/services/:id/sponsor"
+  }
+}
+      ]
+    }
+  ]
+}

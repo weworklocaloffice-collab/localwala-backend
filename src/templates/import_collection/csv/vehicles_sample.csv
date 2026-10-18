@@ -1,0 +1,4 @@
+name,extraCharge,minimumCoverage,maximumCoverage,status
+Toyota Corolla,10,25,50,Active
+Honda Civic,20,50,100,Active
+Ford Focus,30,75,125,Deactive

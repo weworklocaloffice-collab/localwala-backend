@@ -1,0 +1,3 @@
+firstName,lastName,email,image,countryCode,mobile,gender,city,restaurant,status
+Thalia,Monroe,thalia.monroe@gmail.com,5edfa9f2-a797-4dd4-9a43-b31163d3f1a53880703789902497798-1753084343241.jpg,1,4512784512,male,66a63dca789cee4f8ad79142,6881ba89706b9f96b1734750,Active
+Caspian,McAllister,caspian.mcallister@yahoo.com,5edfa9f2-a797-4dd4-9a43-b31163d3f1a53880703789902497798-1753084343241.jpg,1,5623895645,female,66a63dca789cee4f8ad79142,68401a4752c7bf1c04861f4b,Deactive

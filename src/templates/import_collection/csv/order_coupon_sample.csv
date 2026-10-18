@@ -1,0 +1,7 @@
+name,city,latitude,longitude,couponType,allRestaurants,restaurant,allUsers,user,code,limitSameUser,start,expires,discountType,minDiscount,maxDiscount,minCartTotal,loyalityPoints,status
+Weekend Special – 25% Off All Orders!,66a63dca789cee4f8ad79142,40.6966727,-74.3091463,default,Yes,-,Yes,-,WEEKENDBITES,10,2025-08-02,2025-08-30,percentage,10,20,1200,0,hold
+Labor Day Deal – $25 Off Your Feast!,66a63bd6789cee4f8ad790c4,38.8937255,-77.0969767,restaurant,No,"688b85e0b69e4300b2ac5564,688b85e0b69e4300b2ac5562",No,"685fdddbf3a0d774352ae1b2,685c25162ca9ec10e7af011b",LABORDAY25,1,2025-08-02,2025-08-30,amount,10,20,1500,0,live
+Independence Day Special – Flat $17.76 Off!,66a63dca789cee4f8ad79142,40.6966727,-74.3091463,freedelivery,Yes,-,Yes,-,JULY4FOOD,5,2025-08-02,2025-08-30,percentage,10,0,980,0,hide
+Autumn Delights – Get 20% Off Today!,66a63bd6789cee4f8ad790c4,38.8937255,-77.0969767,firstorder,Yes,-,Yes,-,FALLFLAVORS,1,2025-08-02,2025-08-30,amount,10,50,530,0,requested
+Beat the Monday Blues – $8 Off on Lunch Orders,66a63dca789cee4f8ad79142,40.6966727,-74.3091463,loyality,Yes,-,Yes,-,MONDAYMEALS,10,2025-08-02,2025-08-30,percentage,10,0,1366,10,live
+Free Delivery on Orders Above $25,66a63bd6789cee4f8ad790c4,38.8937255,-77.0969767,bogo,Yes,-,Yes,-,FREESHIPUSA,1,2025-08-02,2025-08-30,amount,10,0,1700,0,live

@@ -1,0 +1,3 @@
+from,deliveryman,restaurant,cashCollected,walletAmount,method,reference
+deliveryman,68242056b8f822947a5110e6,-,150,50,cheque,received collected cash
+restaurant,-,6841267b7ecd8382cf0c4076,1599,780,back transfer,received cod payments

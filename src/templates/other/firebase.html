@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Firebase Verification</title>
+  <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-auth-compat.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sweetalert/2.1.2/sweetalert.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      height: 100vh;
+      margin: 10% 0px;
+      background-color: #f0f0f0;
+    }
+
+    .login-container {
+      width: 90%;
+      max-width: 400px;
+      padding: 20px;
+      background-color: white;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      border-radius: 10px;
+    }
+
+    .login-container h2 {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .login-container label {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 12px;
+      /* font-weight: bold; */
+    }
+
+    .login-container input[type="text"],
+    .login-container input[type="number"] {
+      width: calc(100% - 20px);
+      padding: 10px;
+      margin-bottom: 15px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+
+    .login-container input[type="submit"] {
+      width: 100%;
+      padding: 10px;
+      background-color: #28a745;
+      border: none;
+      color: white;
+      font-size: 16px;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    .login-container input[type="submit"]:hover {
+      background-color: #218838;
+    }
+
+    .login-container .signup-link {
+      display: block;
+      text-align: center;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="login-container">
+    <div id="recaptcha-container" align="center" style="margin: 20px 0px;width: 100%;"></div>
+    <label for="verificationcode">Please Complete Captcha Challenge</label>
+    <input type="number" id="verificationcode" name="verificationcode" required placeholder="Enter OTP">
+    <input type="submit" value="Verify" id="logout">
+  </div>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: '${apiKey}',
+      authDomain: '${authDomain}',
+      projectId: '${projectId}',
+      storageBucket: '${storageBucket}',
+      messagingSenderId: '${messagingSenderId}',
+      appId: '${appId}',
+      measurementId: '${measurementId}'
+    };
+    console.log(firebaseConfig);
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    auth.languageCode = '${appLocale}';
+
+    window.recaptchaVerifier = new firebase.auth.RecaptchaVerifier('recaptcha-container', {
+      'size': 'normal', // or 'invisible'
+      'callback': function (response) {
+        console.log("reCAPTCHA solved");
+      }
+    });
+    setTimeout(() => {
+      const appVerifier = window.recaptchaVerifier;
+      const phoneNumber = '${mobileNumber}';
+      auth.signInWithPhoneNumber(phoneNumber, appVerifier).then(function (confirmationResult) {
+        window.confirmationResult = confirmationResult;
+      }).catch(function (error) {
+        console.error("Error during signInWithPhoneNumber", error);
+        swal("Error", error.message, "error");
+      });
+    }, 1000);
+
+    document.getElementById("logout").addEventListener("click", function () {
+      console.log('logout');
+      const otp = document.getElementById("verificationcode").value;
+      console.log(otp);
+      if (otp != null && otp != '') {
+        console.log('Verify');
+        window.confirmationResult.confirm(otp).then(function (result) {
+          const user = result.user;
+          console.log(user);
+          user.getIdToken().then(function (idToken) {
+            console.log("ID Token:", idToken);
+            window.location.replace('${callBackURL}' + '?token=' + idToken);
+          }).catch(function (tokenError) {
+            console.error("Error getting ID token", tokenError);
+            swal("Error", 'Something went wrong', "error");
+          });
+        }).catch(function (error) {
+          console.error("Error verifying code", error);
+          swal("Error", 'Incorrect OTP or expired', "error");
+        });
+      } else {
+        console.log('No OTP');
+        swal("Error", 'OTP Required', "error");
+      }
+    });
+  </script>
+</body>
+
+</html>

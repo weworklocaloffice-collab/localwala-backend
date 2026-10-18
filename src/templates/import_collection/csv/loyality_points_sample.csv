@@ -1,0 +1,3 @@
+user,orderId,coupon,loyaltyPointValue,redeemFrom,redeemedToWallet
+685fdddbf3a0d774352ae1b2,68884e480770e7f3f95991ec,-,100,order,Yes
+684c1a14782418866de8b55b,68884e480770e7f3f95991ec,66fb8c7a677d907585218788,200,coupon,No

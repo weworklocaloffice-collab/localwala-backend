@@ -1,0 +1,14 @@
+﻿node_modules/
+logs/
+.env
+.env.*
+!.env.example
+.git-backend/
+.DS_Store
+*.log
+coverage/
+.nyc_output/
+
+src/fcm_keys/serviceAccountKey.json
+
+src/fcm_keys/*.json

@@ -1,0 +1,43 @@
+/**
+ * LocalWala – Local Commerce & Delivery Platform
+ * (NodeJS, MongoDB, Angular & Flutter)
+ *
+ * Copyright © 2026 WeWorkLocal Private Limited
+ * https://weworklocal.in/
+ *
+ * WeWorkLocal Private Limited
+ *
+ * This source code is confidential.
+ * Unauthorized copying, redistribution, resale, publication,
+ * modification, or use of this source code in any public or
+ * commercial repository is strictly prohibited.
+ *
+ * Ownership Fingerprint:
+ * LWL|WWL|2026|LOCALWALA|NODE
+ */
+
+const Joi = require('joi');
+const { objectId } = require('./custom.validation');
+
+const createOrUpdateDiningSettings = {
+  body: Joi.object().keys({
+    restaurantCanCancelRequest: Joi.boolean().allow(),
+    restaurantCanAddOffers: Joi.boolean().allow(),
+    preBookingChargeRequired: Joi.boolean().allow(),
+    guestBooking: Joi.boolean().allow(),
+    commissionPreBooking: Joi.number().allow('', null),
+    minBookingCharge: Joi.number().allow('', null),
+  }),
+};
+
+const idValidation = {
+  params: Joi.object().keys({
+    id: Joi.string().custom(objectId),
+  }),
+};
+
+module.exports = {
+  createOrUpdateDiningSettings,
+  idValidation,
+};
+

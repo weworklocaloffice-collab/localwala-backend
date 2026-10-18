@@ -1,0 +1,4 @@
+name,type,status
+No longer required,restaurant,Active
+Out of town / traveling,customer,Active
+Switched to another service,customer,Deactive

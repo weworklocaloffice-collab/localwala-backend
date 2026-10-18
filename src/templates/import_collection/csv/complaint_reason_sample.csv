@@ -1,0 +1,6 @@
+"name","type","status"
+"Received wrong items","order","Active"
+"Items missing from the order","restaurant","Active"
+"Food was cold","product","Deactive"
+"Food was stale or spoiled","deliveryman","Active"
+"Food was undercooked or raw","customer","Active"

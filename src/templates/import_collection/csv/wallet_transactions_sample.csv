@@ -1,0 +1,3 @@
+userId,walletId,type,amount,uuid,confirmed,notes,status
+685fdddbf3a0d774352ae1b2,685fdddbf3a0d774352ae1b6,deposite,100,d0474cad-c86c-4bab-a2ab-8c5a8983ff05,Yes,order payment,Active
+684c1a14782418866de8b55b,684c1a14782418866de8b55f,withdrawal,100,1c9aaf49-dd69-48d3-a734-4ae21f3c4525,No,wallet credit,Deactive

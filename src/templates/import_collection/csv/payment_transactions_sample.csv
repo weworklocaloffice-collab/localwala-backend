@@ -1,0 +1,490 @@
+user,payment,orders,tiffinSubscription,booking,restaurantRegisterRequest,subscribeId,amount,paymentFrom,paymentRef,payResponse,status
+6835b675cf0e12c9fb38b61d,66a9d3eb7adf805300d4c71c,6835b9f4cf0e12c9fb38b7d4,-,-,-,-,780,order,order for #6835b9f4cf0e12c9fb38b7d4,"{
+    ""id"": ""cs_test_a1W9BJhqFW8Po0NchU6jFuxEYVQGdIpruqDABfF2VT9FmgdxfNo2b2nfrt"",
+    ""object"": ""checkout.session"",
+    ""adaptive_pricing"": {
+      ""enabled"": false
+    },
+    ""after_expiration"": null,
+    ""allow_promotion_codes"": null,
+    ""amount_subtotal"": 84857,
+    ""amount_total"": 84857,
+    ""automatic_tax"": {
+      ""enabled"": false,
+      ""liability"": null,
+      ""provider"": null,
+      ""status"": null
+    },
+    ""billing_address_collection"": ""required"",
+    ""cancel_url"": ""http://192.168.1.66:3000/v1/public/payments/paid_failed/6835b9f7cf0e12c9fb38b7e2"",
+    ""client_reference_id"": null,
+    ""client_secret"": null,
+    ""collected_information"": {
+      ""shipping_details"": null
+    },
+    ""consent"": null,
+    ""consent_collection"": null,
+    ""created"": 1748351481,
+    ""currency"": ""inr"",
+    ""currency_conversion"": null,
+    ""custom_fields"": [],
+    ""custom_text"": {
+      ""after_submit"": null,
+      ""shipping_address"": null,
+      ""submit"": null,
+      ""terms_of_service_acceptance"": null
+    },
+    ""customer"": null,
+    ""customer_creation"": ""if_required"",
+    ""customer_details"": {
+      ""address"": {
+        ""city"": ""Palitana"",
+        ""country"": ""IN"",
+        ""line1"": ""Palitana"",
+        ""line2"": ""palitana"",
+        ""postal_code"": ""364270"",
+        ""state"": ""GJ""
+      },
+      ""email"": ""rahuljograna007@gmail.com"",
+      ""name"": ""Raahul"",
+      ""phone"": null,
+      ""tax_exempt"": ""none"",
+      ""tax_ids"": []
+    },
+    ""customer_email"": ""rahuljograna007@gmail.com"",
+    ""discounts"": [],
+    ""expires_at"": 1748437881,
+    ""invoice"": null,
+    ""invoice_creation"": {
+      ""enabled"": false,
+      ""invoice_data"": {
+        ""account_tax_ids"": null,
+        ""custom_fields"": null,
+        ""description"": null,
+        ""footer"": null,
+        ""issuer"": null,
+        ""metadata"": {},
+        ""rendering_options"": null
+      }
+    },
+    ""livemode"": false,
+    ""locale"": null,
+    ""metadata"": {
+      ""customer_address"": ""Rahul Jograna"",
+      ""customer_name"": ""Rahul Jograna""
+    },
+    ""mode"": ""payment"",
+    ""payment_intent"": ""pi_1RTNJqCMKAU2S3i2BlkCMF5h"",
+    ""payment_link"": null,
+    ""payment_method_collection"": ""if_required"",
+    ""payment_method_configuration_details"": {
+      ""id"": ""pmc_1QNArNCMKAU2S3i2d5MDQqxN"",
+      ""parent"": null
+    },
+    ""payment_method_options"": {
+      ""card"": {
+        ""request_three_d_secure"": ""automatic""
+      }
+    },
+    ""payment_method_types"": [
+      ""card""
+    ],
+    ""payment_status"": ""paid"",
+    ""permissions"": null,
+    ""phone_number_collection"": {
+      ""enabled"": false
+    },
+    ""recovered_from"": null,
+    ""saved_payment_method_options"": null,
+    ""setup_intent"": null,
+    ""shipping_address_collection"": null,
+    ""shipping_cost"": null,
+    ""shipping_details"": null,
+    ""shipping_options"": [],
+    ""status"": ""complete"",
+    ""submit_type"": null,
+    ""subscription"": null,
+    ""success_url"": ""http://192.168.1.66:3000/v1/public/payments/paid_success/6835b9f7cf0e12c9fb38b7e2"",
+    ""total_details"": {
+      ""amount_discount"": 0,
+      ""amount_shipping"": 0,
+      ""amount_tax"": 0
+    },
+    ""ui_mode"": ""hosted"",
+    ""url"": null,
+    ""wallet_options"": null
+  }",paid
+66ab75ee48f284c02e285af0,66a9d3eb7adf805300d4c71c,-,-,-,-,-,50,wallet,Wallet Payments,-,initiated
+66ab75ee48f284c02e285af0,66a9d7a37adf805300d4c7b6,-,687e36c419b3619b05ea37c2,-,-,-,1299,tiffinsubscription,subscription for #687e36c419b3619b05ea37c2,"{
+    ""status"": true,
+    ""message"": ""Verification successful"",
+    ""data"": {
+      ""id"": 5021794116,
+      ""domain"": ""test"",
+      ""status"": ""success"",
+      ""reference"": ""t15sxbp5a5"",
+      ""receipt_number"": null,
+      ""amount"": 261850,
+      ""message"": null,
+      ""gateway_response"": ""Successful"",
+      ""paid_at"": ""2025-06-02T10:44:25.000Z"",
+      ""created_at"": ""2025-06-02T10:44:14.000Z"",
+      ""channel"": ""card"",
+      ""currency"": ""NGN"",
+      ""ip_address"": ""103.250.162.207"",
+      ""metadata"": """",
+      ""log"": {
+        ""start_time"": 1748861058,
+        ""time_spent"": 7,
+        ""attempts"": 1,
+        ""errors"": 0,
+        ""success"": true,
+        ""mobile"": true,
+        ""input"": [],
+        ""history"": [
+          {
+            ""type"": ""action"",
+            ""message"": ""Set payment method to: card"",
+            ""time"": 2
+          },
+          {
+            ""type"": ""action"",
+            ""message"": ""Attempted to pay with card"",
+            ""time"": 4
+          },
+          {
+            ""type"": ""success"",
+            ""message"": ""Successfully paid with card"",
+            ""time"": 7
+          }
+        ]
+      },
+      ""fees"": 13928,
+      ""fees_split"": null,
+      ""authorization"": {
+        ""authorization_code"": ""AUTH_b2x2o5oh6k"",
+        ""bin"": ""408408"",
+        ""last4"": ""4081"",
+        ""exp_month"": ""12"",
+        ""exp_year"": ""2030"",
+        ""channel"": ""card"",
+        ""card_type"": ""visa "",
+        ""bank"": ""TEST BANK"",
+        ""country_code"": ""NG"",
+        ""brand"": ""visa"",
+        ""reusable"": true,
+        ""signature"": ""SIG_goscxhBxtNwhRs2FztbA"",
+        ""account_name"": null
+      },
+      ""customer"": {
+        ""id"": 80493925,
+        ""first_name"": ""Rahul"",
+        ""last_name"": ""Jograna"",
+        ""email"": ""rahuljograna007@gmail.com"",
+        ""customer_code"": ""CUS_vw5ztswxif5qwwc"",
+        ""phone"": """",
+        ""metadata"": null,
+        ""risk_action"": ""default"",
+        ""international_format_phone"": null
+      },
+      ""plan"": null,
+      ""split"": {},
+      ""order_id"": null,
+      ""paidAt"": ""2025-06-02T10:44:25.000Z"",
+      ""createdAt"": ""2025-06-02T10:44:14.000Z"",
+      ""requested_amount"": 261850,
+      ""pos_transaction_data"": null,
+      ""source"": null,
+      ""fees_breakdown"": null,
+      ""connect"": null,
+      ""transaction_date"": ""2025-06-02T10:44:14.000Z"",
+      ""plan_object"": {},
+      ""subaccount"": {}
+    }
+  }",cancelled
+6835b675cf0e12c9fb38b61d,66a9d7a37adf805300d4c7b6,-,-,68726aaf6ac9701bde0f9e2e,-,-,80,booking,booking for #68726aaf6ac9701bde0f9e2e,"{
+    ""status"": true,
+    ""message"": ""Verification successful"",
+    ""data"": {
+      ""id"": 5021869636,
+      ""domain"": ""test"",
+      ""status"": ""success"",
+      ""reference"": ""21w9m3qzqq"",
+      ""receipt_number"": null,
+      ""amount"": 50000,
+      ""message"": null,
+      ""gateway_response"": ""Successful"",
+      ""paid_at"": ""2025-06-02T11:10:14.000Z"",
+      ""created_at"": ""2025-06-02T11:10:04.000Z"",
+      ""channel"": ""card"",
+      ""currency"": ""NGN"",
+      ""ip_address"": ""103.250.162.207"",
+      ""metadata"": """",
+      ""log"": {
+        ""start_time"": 1748862610,
+        ""time_spent"": 5,
+        ""attempts"": 1,
+        ""errors"": 0,
+        ""success"": true,
+        ""mobile"": true,
+        ""input"": [],
+        ""history"": [
+          {
+            ""type"": ""action"",
+            ""message"": ""Set payment method to: card"",
+            ""time"": 2
+          },
+          {
+            ""type"": ""action"",
+            ""message"": ""Attempted to pay with card"",
+            ""time"": 4
+          },
+          {
+            ""type"": ""success"",
+            ""message"": ""Successfully paid with card"",
+            ""time"": 5
+          }
+        ]
+      },
+      ""fees"": 750,
+      ""fees_split"": null,
+      ""authorization"": {
+        ""authorization_code"": ""AUTH_a23woqmtcs"",
+        ""bin"": ""408408"",
+        ""last4"": ""4081"",
+        ""exp_month"": ""12"",
+        ""exp_year"": ""2030"",
+        ""channel"": ""card"",
+        ""card_type"": ""visa "",
+        ""bank"": ""TEST BANK"",
+        ""country_code"": ""NG"",
+        ""brand"": ""visa"",
+        ""reusable"": true,
+        ""signature"": ""SIG_goscxhBxtNwhRs2FztbA"",
+        ""account_name"": null
+      },
+      ""customer"": {
+        ""id"": 80493925,
+        ""first_name"": ""Rahul"",
+        ""last_name"": ""Jograna"",
+        ""email"": ""rahuljograna007@gmail.com"",
+        ""customer_code"": ""CUS_vw5ztswxif5qwwc"",
+        ""phone"": """",
+        ""metadata"": null,
+        ""risk_action"": ""default"",
+        ""international_format_phone"": null
+      },
+      ""plan"": null,
+      ""split"": {},
+      ""order_id"": null,
+      ""paidAt"": ""2025-06-02T11:10:14.000Z"",
+      ""createdAt"": ""2025-06-02T11:10:04.000Z"",
+      ""requested_amount"": 50000,
+      ""pos_transaction_data"": null,
+      ""source"": null,
+      ""fees_breakdown"": null,
+      ""connect"": null,
+      ""transaction_date"": ""2025-06-02T11:10:04.000Z"",
+      ""plan_object"": {},
+      ""subaccount"": {}
+    }
+  }",paid
+-,66a9d3eb7adf805300d4c71c,-,-,-,67bffaf6f05cac1916c29e03,-,80,restaurant_register,restaurant register request for #67bffaf6f05cac1916c29e03,"{
+    ""status"": true,
+    ""message"": ""Verification successful"",
+    ""data"": {
+      ""id"": 5027522071,
+      ""domain"": ""test"",
+      ""status"": ""success"",
+      ""reference"": ""shv8tesnit"",
+      ""receipt_number"": null,
+      ""amount"": 13334,
+      ""message"": null,
+      ""gateway_response"": ""Successful"",
+      ""paid_at"": ""2025-06-04T10:17:10.000Z"",
+      ""created_at"": ""2025-06-04T10:16:55.000Z"",
+      ""channel"": ""card"",
+      ""currency"": ""NGN"",
+      ""ip_address"": ""103.250.162.195"",
+      ""metadata"": """",
+      ""log"": {
+        ""start_time"": 1749032220,
+        ""time_spent"": 11,
+        ""attempts"": 1,
+        ""errors"": 0,
+        ""success"": true,
+        ""mobile"": true,
+        ""input"": [],
+        ""history"": [
+          {
+            ""type"": ""action"",
+            ""message"": ""Set payment method to: card"",
+            ""time"": 9
+          },
+          {
+            ""type"": ""action"",
+            ""message"": ""Attempted to pay with card"",
+            ""time"": 10
+          },
+          {
+            ""type"": ""success"",
+            ""message"": ""Successfully paid with card"",
+            ""time"": 11
+          }
+        ]
+      },
+      ""fees"": 201,
+      ""fees_split"": null,
+      ""authorization"": {
+        ""authorization_code"": ""AUTH_dxdutfy63a"",
+        ""bin"": ""408408"",
+        ""last4"": ""4081"",
+        ""exp_month"": ""12"",
+        ""exp_year"": ""2030"",
+        ""channel"": ""card"",
+        ""card_type"": ""visa "",
+        ""bank"": ""TEST BANK"",
+        ""country_code"": ""NG"",
+        ""brand"": ""visa"",
+        ""reusable"": true,
+        ""signature"": ""SIG_goscxhBxtNwhRs2FztbA"",
+        ""account_name"": null
+      },
+      ""customer"": {
+        ""id"": 280484379,
+        ""first_name"": null,
+        ""last_name"": null,
+        ""email"": ""noreply@noreply.com"",
+        ""customer_code"": ""CUS_fj46x8x7yefn2zo"",
+        ""phone"": null,
+        ""metadata"": null,
+        ""risk_action"": ""default"",
+        ""international_format_phone"": null
+      },
+      ""plan"": null,
+      ""split"": {},
+      ""order_id"": null,
+      ""paidAt"": ""2025-06-04T10:17:10.000Z"",
+      ""createdAt"": ""2025-06-04T10:16:55.000Z"",
+      ""requested_amount"": 13334,
+      ""pos_transaction_data"": null,
+      ""source"": null,
+      ""fees_breakdown"": null,
+      ""connect"": null,
+      ""transaction_date"": ""2025-06-04T10:16:55.000Z"",
+      ""plan_object"": {},
+      ""subaccount"": {}
+    }
+  }",paid
+66a71baca9b3e102abbe39e2,66a9d3eb7adf805300d4c71c,-,-,-,-,67907741036abac509515e79,90,renew_subscription,renew subscription package for 67907741036abac509515e79,"{
+    ""id"": ""cs_test_a1u432ILEvTjDR0qnAetWTHu3rQei5xwrB7T3aK94OfGk1UgVnT0cAoHBH"",
+    ""object"": ""checkout.session"",
+    ""adaptive_pricing"": {
+      ""enabled"": false
+    },
+    ""after_expiration"": null,
+    ""allow_promotion_codes"": null,
+    ""amount_subtotal"": 8000,
+    ""amount_total"": 8000,
+    ""automatic_tax"": {
+      ""enabled"": false,
+      ""liability"": null,
+      ""status"": null
+    },
+    ""billing_address_collection"": ""required"",
+    ""cancel_url"": ""http://192.168.1.226:3000/v1/public/payments/paid_failed/67bff23bf05cac1916c29cce"",
+    ""client_reference_id"": null,
+    ""client_secret"": null,
+    ""collected_information"": {
+      ""shipping_details"": null
+    },
+    ""consent"": null,
+    ""consent_collection"": null,
+    ""created"": 1740632639,
+    ""currency"": ""inr"",
+    ""currency_conversion"": null,
+    ""custom_fields"": [],
+    ""custom_text"": {
+      ""after_submit"": null,
+      ""shipping_address"": null,
+      ""submit"": null,
+      ""terms_of_service_acceptance"": null
+    },
+    ""customer"": null,
+    ""customer_creation"": ""if_required"",
+    ""customer_details"": {
+      ""address"": {
+        ""city"": ""Palitana"",
+        ""country"": ""IN"",
+        ""line1"": ""Unnamed Road"",
+        ""line2"": null,
+        ""postal_code"": ""364270"",
+        ""state"": ""GJ""
+      },
+      ""email"": ""silverdine@gmail.com"",
+      ""name"": ""Silverdine Restaurant"",
+      ""phone"": null,
+      ""tax_exempt"": ""none"",
+      ""tax_ids"": []
+    },
+    ""customer_email"": ""silverdine@gmail.com"",
+    ""discounts"": [],
+    ""expires_at"": 1740719039,
+    ""invoice"": null,
+    ""invoice_creation"": {
+      ""enabled"": false,
+      ""invoice_data"": {
+        ""account_tax_ids"": null,
+        ""custom_fields"": null,
+        ""description"": null,
+        ""footer"": null,
+        ""issuer"": null,
+        ""metadata"": {},
+        ""rendering_options"": null
+      }
+    },
+    ""livemode"": false,
+    ""locale"": null,
+    ""metadata"": {
+      ""customer_address"": ""Silverdine Restaurant"",
+      ""customer_name"": ""Silverdine Restaurant""
+    },
+    ""mode"": ""payment"",
+    ""payment_intent"": ""pi_1QwzHNCMKAU2S3i2KVAYYE5u"",
+    ""payment_link"": null,
+    ""payment_method_collection"": ""if_required"",
+    ""payment_method_configuration_details"": {
+      ""id"": ""pmc_1QNArNCMKAU2S3i2d5MDQqxN"",
+      ""parent"": null
+    },
+    ""payment_method_options"": {
+      ""card"": {
+        ""request_three_d_secure"": ""automatic""
+      }
+    },
+    ""payment_method_types"": [
+      ""card""
+    ],
+    ""payment_status"": ""paid"",
+    ""phone_number_collection"": {
+      ""enabled"": false
+    },
+    ""recovered_from"": null,
+    ""saved_payment_method_options"": null,
+    ""setup_intent"": null,
+    ""shipping_address_collection"": null,
+    ""shipping_cost"": null,
+    ""shipping_details"": null,
+    ""shipping_options"": [],
+    ""status"": ""complete"",
+    ""submit_type"": null,
+    ""subscription"": null,
+    ""success_url"": ""http://192.168.1.226:3000/v1/public/payments/paid_success/67bff23bf05cac1916c29cce"",
+    ""total_details"": {
+      ""amount_discount"": 0,
+      ""amount_shipping"": 0,
+      ""amount_tax"": 0
+    },
+    ""ui_mode"": ""hosted"",
+    ""url"": null
+  }",paid

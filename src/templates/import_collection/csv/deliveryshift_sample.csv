@@ -1,0 +1,5 @@
+name,startTime,endTime,extraEarningPercentage,status
+Morning,06:00,08:00,5,Active
+Afternoon,10:00,14:00,10,Active
+Evening,16:00,23:00,15,Active
+Mid,21:00,23:00,20,Deactive

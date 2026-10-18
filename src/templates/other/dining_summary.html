@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en" dir="{{direction}}">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{bookingSummaryKey}}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,500;1,500&family=Orienta&family=Roboto:ital,wght@0,100..900;1,100..900&display=swap"
+    rel="stylesheet">
+  <style>
+    body {
+      font-family: "Orienta", serif;
+    }
+
+    .summary-container {
+      background: #fff;
+      padding: 25px 36px;
+      margin: auto;
+    }
+
+    .summary-header {
+      font-family: "Orienta", serif;
+      font-weight: 700;
+      font-size: 20px;
+      margin-bottom: 20px;
+    }
+
+    .lbl {
+      font-family: "Orienta", serif;
+      font-weight: 500;
+      font-size: 14px;
+      margin: 2px 0px;
+    }
+
+    .lbl-value {
+      font-family: "Orienta", serif;
+      font-weight: 100;
+      font-size: 14px;
+      margin: 2px 0px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="summary-container">
+    <h4 class="summary-header">{{company}} {{bookingSummaryKey}}</h4>
+
+    <div class="row mt-4">
+      <div class="col-6">
+        <p class="lbl text-dark">{{bookingIdKey}}:</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl-value text-body-secondary">{{bookingId}}</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl text-dark">{{bookingDateTimeKey}}:</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl-value text-body-secondary">{{bookingDateTime}}</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl text-dark">{{guestCountKey}}:</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl-value text-body-secondary">{{guest}}</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl text-dark">{{customerNameKey}}:</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl-value text-body-secondary">{{customerName}}</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl text-dark">{{customerEmailKey}}:</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl-value text-body-secondary">{{userEmail}}</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl text-dark">{{customerPhoneKey}}:</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl-value text-body-secondary">{{userContact}}</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl text-dark">{{restaurantNameKey}}:</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl-value text-body-secondary">{{restaurantName}}</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl text-dark">{{restaurantAddressKey}}:</p>
+      </div>
+      <div class="col-6">
+        <p class="lbl-value text-body-secondary">{{restaurantAddress}}</p>
+      </div>
+    </div>
+
+
+    <div class="row mt-5">
+      <div class="col text-start">
+        <p class="lbl text-dark">{{restaurantName}}</p>
+        <p class="lbl-value text-body-secondary">{{restaurantLicenseName}}</p>
+        <p class="lbl-value text-body-secondary">{{licenseKey}} {{restaurantLicenseId}}</p>
+      </div>
+      <div class="col text-end">
+        <p class="lbl text-dark">{{company}}</p>
+        <p class="lbl-value text-body-secondary">{{businessLicenseName}}</p>
+        <p class="lbl-value text-body-secondary">{{licenseKey}} {{businessLicenseNumber}}</p>
+      </div>
+    </div>
+
+  </div>
+
+</body>
+
+</html>

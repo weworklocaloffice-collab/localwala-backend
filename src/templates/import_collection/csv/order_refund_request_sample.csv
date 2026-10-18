@@ -1,0 +1,28 @@
+user,orders,restaurant,payment,amount,refundTo,payResponse,refundReason,cancelReason,status
+685fdddbf3a0d774352ae1b2,68884e480770e7f3f95991ec,66a71baca9b3e102abbe39e7,66a9d7a37adf805300d4c7b6,0,none,-,66a5e1d73606af17a4a80316,-,initiated
+685c25162ca9ec10e7af011b,68884e480770e7f3f95991e9,6787d0db8210e66b2cb6a0a5,66a9d7a37adf805300d4c7b6,90,inherit,"{
+    ""id"": ""re_1Rk2mICMKAU2S3i2JU8SVtlW"",
+    ""object"": ""refund"",
+    ""amount"": 42000,
+    ""balance_transaction"": ""txn_1Rk2mJCMKAU2S3i2aow2CEDU"",
+    ""charge"": ""ch_1RTNJqCMKAU2S3i21yA1Qu06"",
+    ""created"": 1752324222,
+    ""currency"": ""inr"",
+    ""destination_details"": {
+      ""card"": {
+        ""reference_status"": ""pending"",
+        ""reference_type"": ""acquirer_reference_number"",
+        ""type"": ""refund""
+      },
+      ""type"": ""card""
+    },
+    ""metadata"": {},
+    ""payment_intent"": ""pi_1RTNJqCMKAU2S3i2BlkCMF5h"",
+    ""reason"": null,
+    ""receipt_number"": null,
+    ""source_transfer_reversal"": null,
+    ""status"": ""succeeded"",
+    ""transfer_reversal"": null
+  }",66a5e1cc3606af17a4a8030f,-,refunded
+684c1a14782418866de8b55b,6886fcc82db35840920b25df,6787d0db8210e66b2cb6a0a5,66a9d7a37adf805300d4c7b6,100,wallet,-,66a5e1c53606af17a4a80308,-,partially_refunded
+6835b675cf0e12c9fb38b61d,6886fcc82db35840920b25dd,66a71baca9b3e102abbe39e7,66a9d7a37adf805300d4c7b6,0,none,-,66a5e1be3606af17a4a80301,can not proceed your request,cancelled

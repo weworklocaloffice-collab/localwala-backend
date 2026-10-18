@@ -1,0 +1,51 @@
+user,booking,restaurant,payment,amount,refundTo,payResponse,refundReason,cancelReason,status
+6835b675cf0e12c9fb38b61d,687266326ac9701bde0f9c37,66a71baca9b3e102abbe39e7,66a9d7a37adf805300d4c7b6,0,none,-,66da9287896940bbc8a1836e,-,initiated
+6835b675cf0e12c9fb38b61d,68726aaf6ac9701bde0f9e2e,66a71baca9b3e102abbe39e7,66a9d7a37adf805300d4c7b6,150,inherit,"{
+    ""status"": true,
+    ""message"": ""Refund has been queued for processing"",
+    ""data"": {
+      ""integration"": 497557,
+      ""transaction"": {
+        ""id"": 5140463534,
+        ""domain"": ""test"",
+        ""reference"": ""psdg5sypcm"",
+        ""receipt_number"": null,
+        ""amount"": 50000,
+        ""paid_at"": ""2025-07-12T13:42:19.000Z"",
+        ""channel"": ""card"",
+        ""currency"": ""NGN"",
+        ""metadata"": """",
+        ""authorization"": {},
+        ""customer"": {
+          ""international_format_phone"": null
+        },
+        ""plan"": {},
+        ""subaccount"": {},
+        ""split"": {},
+        ""order_id"": null,
+        ""paidAt"": ""2025-07-12T13:42:19.000Z"",
+        ""pos_transaction_data"": null,
+        ""source"": null,
+        ""fees_breakdown"": null,
+        ""connect"": null
+      },
+      ""id"": 14984739,
+      ""domain"": ""test"",
+      ""currency"": ""NGN"",
+      ""amount"": 50000,
+      ""status"": ""processed"",
+      ""expected_at"": ""2025-07-22T13:53:51.721Z"",
+      ""channel"": ""manual"",
+      ""refunded_by"": ""company"",
+      ""customer_note"": ""Refund for transaction psdg5sypcm"",
+      ""merchant_note"": ""Refund for transaction psdg5sypcm by info@company.com"",
+      ""deducted_amount"": 50000,
+      ""fully_deducted"": true,
+      ""reason"": ""PROCESSED"",
+      ""customer"": null,
+      ""initiated_by"": ""company"",
+      ""session_id"": null
+    }
+  }",66da927e896940bbc8a18367,-,refunded
+6835b675cf0e12c9fb38b61d,687266326ac9701bde0f9c37,66a71baca9b3e102abbe39e7,66a9d7a37adf805300d4c7b6,30,wallet,-,66da9273896940bbc8a1835a,-,partially_refunded
+6835b675cf0e12c9fb38b61d,68726aaf6ac9701bde0f9e2e,66a71baca9b3e102abbe39e7,66a9d7a37adf805300d4c7b6,0,none,-,66da926e896940bbc8a18353,can not proceed your request,cancelled

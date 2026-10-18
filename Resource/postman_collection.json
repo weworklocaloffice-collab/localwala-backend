@@ -1,0 +1,355 @@
+{
+  "info": {
+    "name": "LocalWala Stores API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/",
+    "description": "Postman collection for the Local Stores vertical - partner applicant and admin routes"
+  },
+  "auth": "bearer",
+  "variable": [
+    { "key": "baseUrl", "value": "http://192.168.0.26:3000", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Partner Applicant Routes",
+      "item": [
+        {
+          "name": "Get My Application",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/application",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "application"]
+            }
+          }
+        },
+        {
+          "name": "Save Application (Draft)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/application",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "application"]
+            },
+            "body": {
+              "mode": "json",
+              "json": {
+                "status": "draft",
+                "businessInfo": { "legalName": "" },
+                "storeInfo": { "name": "" },
+                "deliveryConfig": {}
+              }
+            }
+          }
+        },
+        {
+          "name": "Submit Application",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/application/submit",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "application", "submit"]
+            }
+          }
+        },
+        {
+          "name": "My Scope",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/scope",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "scope"]
+            }
+          }
+        },
+        {
+          "name": "Switch Outlet",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/session/outlet",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "session", "outlet"]
+            }
+          }
+        },
+        {
+          "name": "List My Outlets",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/outlets",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "outlets"]
+            }
+          }
+        },
+        {
+          "name": "Outlet Detail",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/outlets/{{outletId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "outlets", "{{outletId}}"]
+            }
+          }
+        },
+        {
+          "name": "My Chain Detail",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/chain",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "chain"]
+            }
+          }
+        },
+        {
+          "name": "Capabilities",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/capabilities",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "capabilities"]
+            }
+          }
+        },
+        {
+          "name": "List Staff",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/staff",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "staff"]
+            }
+          }
+        },
+        {
+          "name": "Assign Staff Role",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/staff",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "staff"]
+            },
+            "body": {
+              "mode": "json",
+              "json": {
+                "role": "store_manager",
+                "assignee": "{userId}",
+                "assignableRolesFor": ["store_manager", "store_driver"]
+              }
+            }
+          }
+        },
+        {
+          "name": "Update Staff Assignment",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/staff/{{assignmentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "staff", "{{assignmentId}}"]
+            },
+            "body": {
+              "mode": "json",
+              "json": {
+                "role": "store_manager"
+              }
+            }
+          }
+        },
+        {
+          "name": "Deactivate Staff",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/staff/{{assignmentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "staff", "{{assignmentId}}"]
+            }
+          }
+        },
+        {
+          "name": "Outlet Team",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{token}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/stores/partner/team",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "stores", "partner", "team"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin Routes",
+      "item": [
+        {
+          "name": "List Applications",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/applications",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "applications"]
+            }
+          }
+        },
+        {
+          "name": "Get Application",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/applications/{{applicationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "applications", "{{applicationId}}"]
+            }
+          }
+        },
+        {
+          "name": "Start Review",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/applications/{{applicationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "applications", "{{applicationId}}"]
+            },
+            "body": {
+              "mode": "json",
+              "json": {
+                "status": "under_review"
+              }
+            }
+          }
+        },
+        {
+          "name": "Approve Application",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/applications/{{applicationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "applications", "{{applicationId}}"]
+            }
+          }
+        },
+        {
+          "name": "Reject Application",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/applications/{{applicationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "applications", "{{applicationId}}"]
+            },
+            "body": {
+              "mode": "json",
+              "json": {
+                "reason": "Missing documents / failed verification"
+              }
+            }
+          }
+        },
+        {
+          "name": "Request Changes",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/applications/{{applicationId}}/request-changes",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "applications", "{{applicationId}", "request-changes"]
+            },
+            "body": {
+              "mode": "json",
+              "json": {
+                "step": "basic_info",
+                "field": "legalName",
+                "message": "Legal name is required and must match business registration"
+              }
+            }
+          }
+        },
+        {
+          "name": "List Chains",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/chains",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "chains"]
+            }
+          }
+        },
+        {
+          "name": "Chain Detail",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/chains/{{chainId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "chains", "{{chainId}}"]
+            }
+          }
+        },
+        {
+          "name": "List Tax Configurations",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/tax-configurations",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "tax-configurations"]
+            }
+          }
+        },
+        {
+          "name": "Resolve Tax Rate",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "{{adminToken}}", "type": "string" }],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/stores/tax-configurations/resolve",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "stores", "tax-configurations", "resolve"]
+            },
+            "query": [{ "key": "effectiveFrom", "value": "2026-01-01T00:00:00Z", "type": "string" }]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MSG91 Verification</title>
+</head>
+
+<body>
+  <script type="text/javascript">
+    var configuration = {
+      widgetId: '${widgetId}',
+      tokenAuth: '${tokenAuth}',
+      identifier: '${phoneNumber}',
+      exposeMethods: "false",
+      success: (data) => {
+        console.log('success response', data);
+        console.log(data.message);
+        window.location.replace('${callBackURL}' + '?token=' + data.message);
+      },
+      failure: (error) => {
+        console.log('failure reason', error);
+      },
+
+    };
+  </script>
+  <script src="https://verify.msg91.com/otp-provider.js"></script>
+  <script>
+    window.onload = function () {
+      initSendOTP(configuration);
+    };
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,28 @@
+user,purchaseSubscription,subscriptionPackage,restaurant,payment,amount,refundTo,payResponse,refundReason,cancelReason,status
+6835b675cf0e12c9fb38b61d,68750c09bf35d2448c109593,68750b33bf35d2448c10952e,66a71baca9b3e102abbe39e7,66a9d3eb7adf805300d4c71c,0,none,-,66bd9558ea2b043af326b5a6,-,initiated
+66ab75ee48f284c02e285af0,687e36c419b3619b05ea37c2,687e0a92b951e52c3a3f3f7e,6787d0db8210e66b2cb6a0a5,66a9d7a37adf805300d4c7b6,1234,inherit,"{
+    ""id"": ""re_1RlMYYCMKAU2S3i2ojROZRpN"",
+    ""object"": ""refund"",
+    ""amount"": 200000,
+    ""balance_transaction"": ""txn_1RlMYZCMKAU2S3i2tmS4cMTy"",
+    ""charge"": ""ch_1RkmrTCMKAU2S3i2vVDC5N0B"",
+    ""created"": 1752638578,
+    ""currency"": ""inr"",
+    ""destination_details"": {
+      ""card"": {
+        ""reference_status"": ""pending"",
+        ""reference_type"": ""acquirer_reference_number"",
+        ""type"": ""refund""
+      },
+      ""type"": ""card""
+    },
+    ""metadata"": {},
+    ""payment_intent"": ""pi_1RkmrSCMKAU2S3i28LHTyaIa"",
+    ""reason"": null,
+    ""receipt_number"": null,
+    ""source_transfer_reversal"": null,
+    ""status"": ""succeeded"",
+    ""transfer_reversal"": null
+  }",66bd9580ea2b043af326b5b4,-,refunded
+6835b675cf0e12c9fb38b61d,68750c09bf35d2448c109593,68750b33bf35d2448c10952e,66a71baca9b3e102abbe39e7,66a9d3eb7adf805300d4c71c,560,wallet,-,66bd9558ea2b043af326b5a6,-,partially_refunded
+66ab75ee48f284c02e285af0,687e36c419b3619b05ea37c2,687e0a92b951e52c3a3f3f7e,6787d0db8210e66b2cb6a0a5,66a9d7a37adf805300d4c7b6,0,none,-,66bd9580ea2b043af326b5b4,can not proceed your request,cancelled

@@ -1,0 +1,7 @@
+userId,supportTeam,orders,booking,purchaseSubscription,complaints,reportIssue,restaurantComplaints,supportType,lastMessage,lastMessageType,resolvedBy,status
+685fdddbf3a0d774352ae1b2,"680a10b2423813db557f40fb,6802320584fc0cbd1aee8015",68884e480770e7f3f95991ec,-,-,-,-,-,orders,"Hi, I need help with my recent order. It hasn’t arrived yet.",text,-,open
+684c1a14782418866de8b55b,-,-,687e41ab24f3f060677230f6,-,-,-,-,dining,Hello! I’m sorry to hear that. Can you please share your order ID?,text,-,open
+685fdddbf3a0d774352ae1b2,"680a10b2423813db557f40fb,6802320584fc0cbd1aee8015",-,-,687e01b1bf155a4232aa67ac,-,-,-,tiffin_subscription,"Sure, it's ORD123456.",text,-,in_progress
+684c1a14782418866de8b55b,-,-,-,-,687e5f0c9acf8e17abcb6359,-,-,complaints,Thank you! Let me check the status for you. One moment please.,text,680a10b2423813db557f40fb,resolved
+685fdddbf3a0d774352ae1b2,"680a10b2423813db557f40fb,6802320584fc0cbd1aee8015",-,-,-,-,6881c4f0a2c80f84f11fbe8b,-,reports,It looks like your order is delayed due to bad weather. It should arrive within the next 24 hours.,text,680a10b2423813db557f40fb,resolved
+684c1a14782418866de8b55b,-,-,-,-,-,-,687e60129acf8e17abcb64a6,restaurant_complaints,"""Have a great day!",text,680a10b2423813db557f40fb,resolved

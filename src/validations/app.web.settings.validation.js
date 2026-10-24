@@ -30,6 +30,8 @@ const createOrUpdateAppWebSettings = {
     showPopularDiningRestaurant: Joi.boolean().allow(),
     showNewDiningRestaurant: Joi.boolean().allow(),
 
+    reelsGuestLimit: Joi.number().integer().min(0).max(100).allow(null),
+
     userAndroidForceUpdateVersion: Joi.string().required(),
     userAndroidUpdateUrl: Joi.string().required(),
     useriOSForceUpdateVersion: Joi.string().required(),

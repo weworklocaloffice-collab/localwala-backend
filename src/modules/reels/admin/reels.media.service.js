@@ -182,7 +182,7 @@ const onlyObjectId = (value) => {
   return cleaned;
 };
 
-const uploadProxy = async ({ file, reelId, vertical, target, caption, hashtags, cta, cityId, localityId, adminId }) => {
+const uploadProxy = async ({ file, reelId, vertical, target, caption, hashtags, cta, cityId, localityId, thumbnailUrl, adminId }) => {
   try {
     if (!file || !file.buffer) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'video/mp4 file is required');
@@ -219,6 +219,9 @@ const uploadProxy = async ({ file, reelId, vertical, target, caption, hashtags, 
         cta: cta || undefined,
         cityId: onlyObjectId(cityId) || undefined,
         localityId: onlyObjectId(localityId) || undefined,
+        // Carried so a cover chosen in the form before the file is picked still
+        // applies; `transcodeReel` leaves a CUSTOM thumbnail alone.
+        thumbnailUrl: thumbnailUrl || undefined,
       });
       finalReelId = String(reel._id);
     }
@@ -329,9 +332,14 @@ const transcodeReel = async (reelId) => {
     );
 
     reel.media.renditions = [{ quality: '720p', url: publicUrlFor(cfg, renditionKey) }];
-    reel.media.thumbnailUrl = publicUrlFor(cfg, thumbnailKey);
     reel.videoUrl = publicUrlFor(cfg, renditionKey);
-    reel.thumbnail = publicUrlFor(cfg, thumbnailKey);
+    // A cover chosen by an admin outranks the frame ffmpeg grabbed from the video.
+    // Writing it unconditionally here meant saving a custom thumbnail and then waiting
+    // out the transcode silently undid it — and this job runs minutes after the save.
+    if (reel.media.thumbnailSource !== 'CUSTOM') {
+      reel.media.thumbnailUrl = publicUrlFor(cfg, thumbnailKey);
+      reel.thumbnail = publicUrlFor(cfg, thumbnailKey);
+    }
     reel.status = 'READY';
     reel.processing = { stage: 'READY', progress: 100, error: undefined };
     await reel.save();

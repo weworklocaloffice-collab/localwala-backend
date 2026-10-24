@@ -134,9 +134,12 @@ function calculateRevenue(ruleLike, amounts = {}, opts = {}) {
   }
 
   const platformPaise = feePaise + commissionPaise;
-  // Provider keeps labour minus commission (parts pass through; discount reduces labour base already at booking layer).
-  const providerPaise = Math.max(0, labourPaise - commissionPaise);
-  const customerPaise = labourPaise + partsPaise + feePaise - Math.min(discountPaise, labourPaise + partsPaise);
+  // The provider is paid the discounted service value (labour + parts) minus
+  // commission. Parts are pass-through money, not platform revenue.
+  const serviceValuePaise = labourPaise + partsPaise;
+  const effectiveDiscountPaise = Math.min(discountPaise, serviceValuePaise);
+  const providerPaise = Math.max(0, serviceValuePaise - effectiveDiscountPaise - commissionPaise);
+  const customerPaise = serviceValuePaise + feePaise - effectiveDiscountPaise;
 
   const snapshot =
     ruleLike && typeof ruleLike.toSnapshot === 'function'

@@ -52,6 +52,9 @@ const realEstateNotificationSchema = mongoose.Schema(
         'LOAN_SANCTIONED',
         'LOAN_DISBURSED',
         'DOCUMENT_VERIFIED',
+        'DOCUMENT_REQUESTED',
+        'DOCUMENT_SUBMITTED',
+        'DOCUMENT_REVIEWED',
       ],
     },
 

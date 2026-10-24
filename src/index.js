@@ -327,13 +327,70 @@ io = socketIo(server, {
       });
 
       // --- Live Location Logic ---
+      // The driver app joins its own user-id room for its in-app map. Order tracking
+      // uses a per-order room instead: the customer proves ownership once, then receives
+      // only the deliveries assigned to that order.
       socket.on('joinLiveLocation', ({ driverId }) => {
+        if (!socket.data.authenticated || !driverId) return;
         socket.join(driverId);
       });
 
-      socket.on('sendLocation', ({ driverId, latitude, longitude }) => {
-        const newLocation = { driverId, latitude, longitude };
-        io.to(driverId).emit('receiveLocation', newLocation);
+      socket.on('joinOrderTracking', async ({ orderId }) => {
+        if (!socket.data.authenticated || !orderId) return;
+        if (!mongoose.Types.ObjectId.isValid(orderId)) return;
+        try {
+          const { StoreOrder } = require('./models');
+          const owns = await StoreOrder.exists({
+            _id: orderId,
+            customer: socket.data.user.id,
+          });
+          if (owns) socket.join(`store-order:${String(orderId).toLowerCase()}`);
+        } catch (e) {
+          logger.warn(`Socket ${socket.id} order tracking join failed: ${e.message}`);
+        }
+      });
+
+      socket.on('leaveOrderTracking', ({ orderId }) => {
+        if (orderId) socket.leave(`store-order:${String(orderId).toLowerCase()}`);
+      });
+
+      socket.on('sendLocation', async ({ driverId, latitude, longitude }) => {
+        if (!socket.data.authenticated) return;
+        // A socket may only report its own position. Without this, any authenticated
+        // client could spoof another driver's location by sending their id.
+        if (String(driverId) !== String(socket.data.user.id)) return;
+
+        const lat = Number(latitude);
+        const lng = Number(longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+        const newLocation = { driverId, latitude: lat, longitude: lng };
+        io.to(String(driverId)).emit('receiveLocation', newLocation);
+
+        // Fan out to the orders this driver is currently carrying. The customer joins
+        // `store-order:<orderId>` and never has to know the driver's user id.
+        try {
+          const { StoreDriver, StoreDelivery } = require('./models');
+          const driver = await StoreDriver.findOne({ user: socket.data.user.id }).select('_id').lean();
+          if (!driver) return;
+          const deliveries = await StoreDelivery.find({
+            driver: driver._id,
+            status: { $in: ['assigned', 'accepted', 'picked_up', 'out_for_delivery'] },
+          })
+            .select('order')
+            .lean();
+          for (const delivery of deliveries) {
+            if (!delivery.order) continue;
+            io.to(`store-order:${delivery.order}`).emit('orderLocation', {
+              orderId: String(delivery.order),
+              latitude: lat,
+              longitude: lng,
+              at: new Date().toISOString(),
+            });
+          }
+        } catch (e) {
+          logger.warn(`Socket ${socket.id} order location fan-out failed: ${e.message}`);
+        }
       });
 
       socket.on('disconnect', () => {

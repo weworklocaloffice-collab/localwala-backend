@@ -44,6 +44,9 @@ const router = express.Router();
 // catalog
 // ---------------------------------------------------------------------------
 router.get('/catalog/products', storeAuth('stores_catalog_read'), validate(V.productListValidation), catalogController.listProducts);
+router.get('/catalog/categories', storeAuth('stores_catalog_read'), catalogController.listCategories);
+router.get('/catalog/subcategories', storeAuth('stores_catalog_read'), validate(V.taxonomyQueryValidation), catalogController.listSubcategories);
+router.get('/catalog/brands', storeAuth('stores_catalog_read'), catalogController.listBrands);
 router.get('/catalog/product-form', storeAuth('stores_catalog_read'), validate(V.productFormQueryValidation), catalogController.getProductForm);
 router.post('/catalog/products', storeAuth('stores_catalog_write'), validate(V.productCreateValidation), catalogController.createProduct);
 router.get('/catalog/products/:product', storeAuth('stores_catalog_read'), catalogController.getProduct);
@@ -205,6 +208,10 @@ router.patch('/exchanges/:exchange/:status', storeAuth('stores_return_manage'), 
 router.post('/promotions/validate', storeAuth('stores_promotion_read'), validate(V.promotionValidateValidation), promotionController.validatePromotion);
 router.post('/promotions', storeAuth('stores_promotion_write'), validate(V.promotionCreateValidation), promotionController.createPromotion);
 router.get('/promotions', storeAuth('stores_promotion_read'), promotionController.listPromotions);
+router.post('/promotions/:promotion/pause', storeAuth('stores_promotion_write'), validate(V.promotionIdValidation), promotionController.pausePromotion);
+router.post('/promotions/:promotion/resume', storeAuth('stores_promotion_write'), validate(V.promotionIdValidation), promotionController.resumePromotion);
+router.post('/coupons', storeAuth('stores_promotion_write'), validate(V.couponCreateValidation), promotionController.createCoupon);
+router.get('/coupons', storeAuth('stores_promotion_read'), promotionController.listCoupons);
 
 // ---------------------------------------------------------------------------
 // reviews

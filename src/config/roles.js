@@ -50,6 +50,8 @@ const allRoles = {
     'stores_orders_write',
     'stores_returns_write',
     'stores_reviews_write',
+    'stores_favourites_read',
+    'stores_favourites_write',
     'redeeemCoupon',
     'getPaymentList',
     'initiatePayment',
@@ -268,6 +270,9 @@ const allRoles = {
     'stores_tax_write',
     'stores_vertical_manage',
     'stores_chain_read',
+    // Settlement cadence/T+days is a chain policy an admin sets; everything else
+    // about a chain is still committed by application approval.
+    'stores_chain_write',
     'stores_outlet_read',
     'stores_outlet_write',
     'stores_staff_read',

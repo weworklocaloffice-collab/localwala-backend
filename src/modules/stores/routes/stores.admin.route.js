@@ -126,6 +126,22 @@ router.get(
   controller.adminChainDetail
 );
 
+// Settlement cadence/T+days. PATCH because it edits two existing policy fields;
+// GET exists so the admin dialog never guesses the defaults the cron will apply.
+router.get(
+  '/chains/:chain/settlement-config',
+  webAuth('stores_chain_read'),
+  validate(V.chainIdValidation),
+  controller.adminGetChainSettlementConfig
+);
+
+router.patch(
+  '/chains/:chain/settlement-config',
+  webAuth('stores_chain_write'),
+  validate(V.chainSettlementConfigValidation),
+  controller.adminUpdateChainSettlementConfig
+);
+
 router.get(
   '/tax-configurations',
   webAuth('stores_tax_read'),

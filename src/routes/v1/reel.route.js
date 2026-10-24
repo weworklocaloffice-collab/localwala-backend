@@ -18,8 +18,9 @@
 
 const express = require('express');
 const appAuth = require('../../middlewares/appAuth');
+const appAuthOptional = require('../../middlewares/appAuthOptional');
 const validate = require('../../middlewares/validate');
-const { reelsInteractLimiter, reelsCommentLimiter } = require('../../middlewares/rateLimiter');
+const { reelsInteractLimiter, reelsCommentLimiter, reelsReportLimiter } = require('../../middlewares/rateLimiter');
 const reelController = require('../../controllers/reel.controller');
 const reelsValidation = require('../../modules/reels/validators/reels.validation');
 
@@ -29,10 +30,14 @@ const router = express.Router();
 // which reads its argument as a REQUIRED RIGHT, not a role name —
 // roleRights.get('user').includes('uploadReel') is never true, so every
 // customer reels request answered 403 (same class of mistake documented for
-// stores_browse in config/roles.js). Phase 1 uses authenticated-only
-// appAuth(); named rights (reels_feed, reels_interact, …) are reserved in
-// roles.js and enforced incrementally. Paths are unchanged for app compat.
-router.get('/feed', appAuth(), validate(reelsValidation.feedValidation), reelController.fetchReels);
+// stores_browse in config/roles.js).
+//
+// Reading is now optional-auth: browsing the feed and its comments is a guest
+// activity, capped by the admin-configured `reelsGuestLimit`, so a signed-out
+// visitor can watch a few reels and is asked to sign in rather than shown an
+// error. Writing (like/save/share/view/comment/report) still requires a token,
+// because every one of those rows is keyed on the viewer.
+router.get('/feed', appAuthOptional(), validate(reelsValidation.feedValidation), reelController.fetchReels);
 
 router.post(
   '/:reelId/like',
@@ -76,7 +81,7 @@ router.post(
 
 router.get(
   '/:reelId/comments',
-  appAuth(),
+  appAuthOptional(),
   validate(reelsValidation.reelIdParam),
   reelController.getComments
 );
@@ -84,6 +89,7 @@ router.get(
 router.post(
   '/:reelId/report',
   appAuth(),
+  reelsReportLimiter,
   validate(reelsValidation.reportValidation),
   reelController.reportReel
 );

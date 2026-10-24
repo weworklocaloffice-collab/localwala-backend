@@ -87,4 +87,33 @@ const statusParam = {
   params: Joi.object().keys({ id: objectId.required(), status: Joi.string().required() }),
 };
 
-module.exports = { ruleBody, idParam, previewBody, statusParam };
+const settlementBody = {
+  body: Joi.object()
+    .keys({
+      providerId: objectId.required(),
+      from: Joi.date().required(),
+      to: Joi.date().greater(Joi.ref('from')).required(),
+    })
+    .unknown(false),
+};
+
+const settlementPayBody = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object()
+    .keys({
+      method: Joi.string().valid('wallet', 'bank').default('wallet'),
+      reference: Joi.string().max(200).allow('', null),
+      note: Joi.string().max(1000).allow('', null),
+      account: Joi.object()
+        .keys({
+          accountName: Joi.string().max(200),
+          accountNumber: Joi.string().max(64),
+          ifsc: Joi.string().max(32),
+          upiId: Joi.string().max(128),
+        })
+        .unknown(false),
+    })
+    .unknown(false),
+};
+
+module.exports = { ruleBody, idParam, previewBody, statusParam, settlementBody, settlementPayBody };

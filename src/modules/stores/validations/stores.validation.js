@@ -366,6 +366,65 @@ const chainIdValidation = {
   body: Joi.object().keys({}).unknown(true).default({}),
 };
 
+const favouriteListValidation = {
+  params: Joi.object().keys({}).unknown(true),
+  query: Joi.object().keys({
+    page: listQuery.page,
+    limit: listQuery.limit,
+  }),
+};
+
+/**
+ * Customer chain browse. The path chain is the tenant; `outlet` is only an availability
+ * hint and is re-checked against that chain by the service.
+ */
+const chainListValidation = {
+  params: Joi.object().keys({}).unknown(true),
+  query: Joi.object().keys({
+    lat: Joi.number().min(-90).max(90).required(),
+    lng: Joi.number().min(-180).max(180).required(),
+    radiusKm: Joi.number().min(1).max(100).default(10),
+    limit: Joi.number().integer().min(1).max(50).default(20),
+  }),
+};
+
+const chainProfileValidation = {
+  params: Joi.object().keys({ chain: objectId.required() }).unknown(true),
+  query: Joi.object().keys({
+    outlet: objectId,
+  }),
+};
+
+const chainProductsValidation = {
+  params: Joi.object().keys({ chain: objectId.required() }).unknown(true),
+  query: Joi.object().keys({
+    outlet: objectId,
+    category: objectId,
+    subcategory: objectId,
+    brand: objectId,
+    search: Joi.string().trim(),
+    facetKeys: Joi.array().items(Joi.string()),
+    inStockOnly: Joi.boolean(),
+    organicOnly: Joi.boolean(),
+    page: Joi.number().integer().min(1).default(1),
+    limit: Joi.number().integer().min(1).max(100).default(20),
+    sort: Joi.string().valid('name', 'newest', 'price_asc', 'price_desc').default('name'),
+  }),
+};
+
+const chainReviewsValidation = {
+  params: Joi.object().keys({ chain: objectId.required() }).unknown(true),
+  query: Joi.object().keys({
+    page: Joi.number().integer().min(1).default(1),
+    limit: Joi.number().integer().min(1).max(100).default(20),
+  }),
+};
+
+const chainOffersValidation = {
+  params: Joi.object().keys({ chain: objectId.required() }).unknown(true),
+  query: Joi.object().keys({}).unknown(true),
+};
+
 const outletIdValidation = {
   params: Joi.object().keys({ outlet: objectId.required() }).unknown(true),
   body: Joi.object().keys({}).unknown(true).default({}),
@@ -554,6 +613,22 @@ const chainsAdminListValidation = {
 };
 
 /**
+ * Per-chain settlement policy. The cron reads exactly these two fields, so this is
+ * the only writer an admin needs; `tPlusDays` is the age a period must reach before
+ * it can be paid out.
+ */
+const chainSettlementConfigValidation = {
+  params: Joi.object().keys({ chain: objectId.required() }).unknown(true),
+  body: Joi.object()
+    .keys({
+      cadence: Joi.string().valid('daily', 'weekly', 'monthly'),
+      tPlusDays: Joi.number().integer().min(0).max(60),
+    })
+    .min(1)
+    .required(),
+};
+
+/**
  * Admin outlet registry filters. `status` is the outlet lifecycle string
  * (draft/active/suspended/…), never a boolean — the Angular screen must not
  * send the true/false dropdown it used to.
@@ -690,6 +765,26 @@ const warrantyCreateValidation = {
     images: Joi.array().items(Joi.string()).max(10).optional(),
     documents: Joi.array().items(Joi.string()).max(10).optional(),
   }).required(),
+};
+
+const customerWarrantyCreateValidation = {
+  body: Joi.object({
+    order: objectId.required(),
+    product: objectId.required(),
+    variant: objectId.required(),
+    warrantyType: Joi.string().valid('manufacturer', 'store', 'manufacturer_service_centre').required(),
+    warrantyMonths: Joi.number().integer().min(1).max(120).required(),
+    purchaseDate: Joi.date(),
+    warrantyExpiryDate: Joi.date().required(),
+    issueDescription: Joi.string().trim().max(2000).required(),
+    issueCategory: Joi.string().valid('manufacturing_defect', 'parts_failure', 'electrical_issue', 'physical_damage', 'other'),
+    images: Joi.array().items(Joi.string()).max(10).optional(),
+    documents: Joi.array().items(Joi.string()).max(10).optional(),
+  }).required(),
+};
+
+const customerWarrantyIdValidation = {
+  params: Joi.object({ warranty: objectId.required() }).required(),
 };
 
 const warrantyTransitionValidation = {
@@ -924,6 +1019,12 @@ module.exports = {
   requestChangesValidation,
   rejectValidation,
   chainIdValidation,
+  favouriteListValidation,
+  chainListValidation,
+  chainProfileValidation,
+  chainProductsValidation,
+  chainReviewsValidation,
+  chainOffersValidation,
   outletIdValidation,
   sessionOutletSwitchValidation,
   outletListValidation,
@@ -939,6 +1040,7 @@ module.exports = {
   taxConfigurationValidation,
   taxConfigurationQueryValidation,
   chainsAdminListValidation,
+  chainSettlementConfigValidation,
   outletAdminListValidation,
   staffAdminListValidation,
   policyAdminListValidation,
@@ -959,8 +1061,10 @@ module.exports = {
   remittanceSubmitValidation,
   remittanceReconcileValidation,
   remittanceListValidation,
-  warrantyCreateValidation,
-  warrantyTransitionValidation,
+    warrantyCreateValidation,
+    customerWarrantyCreateValidation,
+    customerWarrantyIdValidation,
+    warrantyTransitionValidation,
   warrantyListValidation,
   customerSubscriptionCreateValidation,
   customerSubscriptionTransitionValidation,
@@ -987,6 +1091,7 @@ module.exports = {
     facetKeys: Joi.array().items(Joi.string()),
     inStockOnly: Joi.boolean(),
     organicOnly: Joi.boolean(),
+    status: Joi.string().valid('active', 'inactive', 'archived', 'all'),
     page: Joi.number().integer().min(1).default(1),
     limit: Joi.number().integer().min(1).max(100).default(20),
     sort: Joi.string().valid('name', 'newest', 'price_asc', 'price_desc').default('name'),
@@ -1045,6 +1150,9 @@ module.exports = {
   productFormQueryValidation: Joi.object({
     category: objectId,
     subcategory: objectId,
+  }),
+  taxonomyQueryValidation: Joi.object({
+    category: objectId,
   }),
 
   // -- inventory -----------------------------------------------------
@@ -1178,26 +1286,50 @@ module.exports = {
   }),
 
   // -- promotions ----------------------------------------------------
-  promotionCreateValidation: Joi.object({
-    name: Joi.string().trim().required().max(200),
-    description: Joi.string().trim().max(1000),
-    type: Joi.string().valid('percent_off', 'fixed_off', 'min_order_offer', 'free_delivery', 'product_discount').required(),
-    value: Joi.number().min(0).required(),
-    maxDiscount: Joi.number().min(0),
-    minOrderAmount: Joi.number().min(0).default(0),
-    applicableProducts: Joi.array().items(objectId).default([]),
-    applicableCategories: Joi.array().items(objectId).default([]),
-    applicableVariants: Joi.array().items(objectId).default([]),
-    code: Joi.string().trim().uppercase().max(20),
-    usageLimit: Joi.number().integer().min(0).default(0),
-    perCustomerLimit: Joi.number().integer().min(1).default(1),
-    startsAt: Joi.date().required(),
-    endsAt: Joi.date().greater(Joi.ref('startsAt')).required(),
-  }),
-  promotionValidateValidation: Joi.object({
-    code: Joi.string().trim().uppercase().required(),
-    cartAmount: Joi.number().min(0).required(),
-  }),
+  promotionCreateValidation: {
+    body: Joi.object({
+      name: Joi.string().trim().required().max(200),
+      description: Joi.string().trim().max(1000),
+      type: Joi.string().valid('percent_off', 'fixed_off', 'min_order_offer', 'free_delivery', 'product_discount').required(),
+      value: Joi.number().min(0).required(),
+      maxDiscount: Joi.number().min(0).when('type', { is: 'percent_off', then: Joi.required() }),
+      minOrderAmount: Joi.number().min(0).default(0),
+      applicableProducts: Joi.array().items(objectId).default([]),
+      applicableCategories: Joi.array().items(objectId).default([]),
+      applicableVariants: Joi.array().items(objectId).default([]),
+      code: Joi.string().trim().uppercase().max(20),
+      usageLimit: Joi.number().integer().min(0).default(0),
+      perCustomerLimit: Joi.number().integer().min(1).default(1),
+      stackable: Joi.boolean().default(true),
+      priority: Joi.number().integer().default(0),
+      startsAt: Joi.date().required(),
+      endsAt: Joi.date().greater(Joi.ref('startsAt')).required(),
+    }).required(),
+  },
+  promotionValidateValidation: {
+    body: Joi.object({
+      code: Joi.string().trim().uppercase().required(),
+      cartAmount: Joi.number().min(0).required(),
+    }).required(),
+  },
+  promotionIdValidation: {
+    params: Joi.object({ promotion: objectId.required() }).required(),
+  },
+  couponCreateValidation: {
+    body: Joi.object({
+      code: Joi.string().trim().uppercase().required().max(20),
+      title: Joi.string().trim().required().max(200),
+      description: Joi.string().trim().max(1000),
+      type: Joi.string().valid('percent_off', 'fixed_off', 'free_delivery').default('percent_off'),
+      value: Joi.number().min(0).default(0),
+      maxDiscount: Joi.number().min(0),
+      minOrderAmount: Joi.number().min(0).default(0),
+      usageLimit: Joi.number().integer().min(0).default(0),
+      perCustomerLimit: Joi.number().integer().min(0).default(1),
+      startsAt: Joi.date().required(),
+      endsAt: Joi.date().greater(Joi.ref('startsAt')).required(),
+    }).required(),
+  },
 
   // -- reviews -------------------------------------------------------
   reviewCreateValidation: Joi.object({

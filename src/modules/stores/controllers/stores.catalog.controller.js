@@ -22,13 +22,13 @@ const pick = require('../../../utils/pick');
 const catalogService = require('../services/stores.catalog.service');
 
 const listProducts = catchAsync(async (req, res) => {
-  const filter = pick(req.query, ['category', 'subcategory', 'brand', 'search', 'facetKeys', 'inStockOnly', 'organicOnly', 'page', 'limit', 'sort']);
+  const filter = pick(req.query, ['category', 'subcategory', 'brand', 'search', 'facetKeys', 'inStockOnly', 'organicOnly', 'status', 'page', 'limit', 'sort']);
   const result = await catalogService.listProducts({ ...filter, outlet: req.outletId, chain: req.chainId });
   res.status(httpStatus.OK).send(result);
 });
 
 const getProduct = catchAsync(async (req, res) => {
-  const product = await catalogService.getProduct(req.params.product);
+  const product = await catalogService.getProduct(req.params.product, { chain: req.chainId });
   res.status(httpStatus.OK).send({ product });
 });
 
@@ -38,17 +38,17 @@ const createProduct = catchAsync(async (req, res) => {
 });
 
 const updateProduct = catchAsync(async (req, res) => {
-  const product = await catalogService.updateProduct(req.params.product, req.body);
+  const product = await catalogService.updateProduct(req.params.product, req.body, { chain: req.chainId });
   res.status(httpStatus.OK).send({ product });
 });
 
 const deleteProduct = catchAsync(async (req, res) => {
-  const product = await catalogService.deleteProduct(req.params.product);
+  const product = await catalogService.deleteProduct(req.params.product, { chain: req.chainId });
   res.status(httpStatus.OK).send({ product });
 });
 
 const generateVariants = catchAsync(async (req, res) => {
-  const product = await catalogService.getProduct(req.params.product);
+  const product = await catalogService.getProduct(req.params.product, { chain: req.chainId });
   const result = await catalogService.generateVariants({ product, ...req.body });
   res.status(httpStatus.OK).send(result);
 });
@@ -56,6 +56,21 @@ const generateVariants = catchAsync(async (req, res) => {
 const getProductForm = catchAsync(async (req, res) => {
   const form = await catalogService.getProductForm(req.query);
   res.status(httpStatus.OK).send(form);
+});
+
+const listCategories = catchAsync(async (req, res) => {
+  const categories = await catalogService.listCategories();
+  res.status(httpStatus.OK).send({ categories });
+});
+
+const listSubcategories = catchAsync(async (req, res) => {
+  const subcategories = await catalogService.listSubcategories({ category: req.query.category });
+  res.status(httpStatus.OK).send({ subcategories });
+});
+
+const listBrands = catchAsync(async (req, res) => {
+  const brands = await catalogService.listBrands();
+  res.status(httpStatus.OK).send({ brands });
 });
 
 /**
@@ -82,5 +97,8 @@ module.exports = {
   deleteProduct,
   generateVariants,
   getProductForm,
+  listCategories,
+  listSubcategories,
+  listBrands,
   approveProduct,
 };

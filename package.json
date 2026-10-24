@@ -9,6 +9,8 @@
     "verify:realestate": "node scripts/run.verify.realestate.js",
     "verify:jhatka": "node scripts/run.verify.jhatka.js",
     "verify:jhatka:static": "node scripts/run.verify.jhatka.js --no-db",
+    "test:localservices": "node scripts/run.verify.localservices.js",
+    "verify:localservices": "node scripts/run.verify.localservices.js",
     "verify:support:bot": "node scripts/verify.support.bot.units.js",
     "verify:support:e2e": "node scripts/verify.support.enterprise.integration.js",
     "seed:support": "node scripts/seed.support.enterprise.js",

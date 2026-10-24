@@ -63,10 +63,11 @@ const updateOutletRating = async (outletId) => {
   await StoreOutlet.findByIdAndUpdate(outletId, { $set: { rating: avgRating, ratingCount: count } });
 };
 
-const listReviews = async ({ outlet, product, customer, status, page = 1, limit = 20 }) => {
-  const StoreReview = mongoose.model('StoreReview');
-  const filter = {};
-  if (outlet) filter.outlet = outlet;
+  const listReviews = async ({ chain, outlet, product, customer, status, page = 1, limit = 20 }) => {
+    const StoreReview = mongoose.model('StoreReview');
+    const filter = {};
+    if (chain) filter.chain = chain;
+    if (outlet) filter.outlet = outlet;
   if (product) filter.product = product;
   if (customer) filter.customer = customer;
   if (status) filter.status = status;

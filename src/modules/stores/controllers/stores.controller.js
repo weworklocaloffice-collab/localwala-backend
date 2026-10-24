@@ -415,6 +415,55 @@ const adminChainDetail = catchAsync(async (req, res) => {
 });
 
 /**
+ * Settlement policy is the ONE chain setting an admin writes directly.
+ *
+ * Cadence and T+days decide when the cron creates a payout period for every outlet of
+ * the chain, so leaving them DB-only made the feature unreachable. Defaults match the
+ * cron: daily, T+2.
+ */
+const settlementConfigOf = (chain) => {
+  const settings = (chain && chain.settings) || {};
+  const config = settings.settlementConfig || {};
+  const cadence = ['daily', 'weekly', 'monthly'].includes(config.cadence)
+    ? config.cadence
+    : 'daily';
+  const tPlusDays = Number.isInteger(config.tPlusDays) && config.tPlusDays >= 0
+    ? config.tPlusDays
+    : 2;
+  return { cadence, tPlusDays };
+};
+
+const adminGetChainSettlementConfig = catchAsync(async (req, res) => {
+  const chain = await StoreChain.findById(req.params.chain).select('name settings.settlementConfig').lean();
+  if (!chain) throw new ApiError(httpStatus.NOT_FOUND, 'Chain not found');
+
+  res.send({
+    chain: chain._id,
+    name: chain.name,
+    settlementConfig: settlementConfigOf(chain),
+  });
+});
+
+const adminUpdateChainSettlementConfig = catchAsync(async (req, res) => {
+  const chain = await StoreChain.findById(req.params.chain).select('name settings');
+  if (!chain) throw new ApiError(httpStatus.NOT_FOUND, 'Chain not found');
+
+  const current = settlementConfigOf(chain.toObject());
+  chain.settings = chain.settings || {};
+  chain.settings.settlementConfig = {
+    cadence: req.body.cadence !== undefined ? req.body.cadence : current.cadence,
+    tPlusDays: req.body.tPlusDays !== undefined ? req.body.tPlusDays : current.tPlusDays,
+  };
+  await chain.save();
+
+  res.send({
+    chain: chain._id,
+    name: chain.name,
+    settlementConfig: settlementConfigOf(chain.toObject()),
+  });
+});
+
+/**
  * Escape user input before it becomes a RegExp. An unescaped `(` or `[` in
  * the search box would otherwise throw inside `new RegExp` and 500 the list.
  */
@@ -632,6 +681,8 @@ module.exports = {
   rejectApplication,
   adminListChains,
   adminChainDetail,
+  adminGetChainSettlementConfig,
+  adminUpdateChainSettlementConfig,
   adminListOutlets,
   adminListStaff,
   adminListPolicies,

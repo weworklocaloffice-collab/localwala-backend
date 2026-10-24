@@ -25,7 +25,7 @@ const { toJSON, paginate } = require('../../../models/plugins');
  */
 const localServiceResourceSchema = mongoose.Schema(
   {
-    provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'Business', required: true },
+    provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceProvider', required: true },
     kind: { type: String, required: true, enum: ['room', 'vehicle', 'equipment', 'staff_slot', 'other'], default: 'other' },
     name: { type: String, required: true, trim: true },
     code: { type: String, required: false, uppercase: true, trim: true },

@@ -77,6 +77,24 @@ const INTEREST_REASON = [
 
 const FOLLOWUP_MODE = ['CALL', 'WHATSAPP', 'SMS', 'EMAIL', 'IN_PERSON'];
 
+const LOAN_STATUS = [
+  'NOT_REQUIRED',
+  'REQUIRED',
+  'CUSTOMER_WILL_APPLY',
+  'LOAN_LEAD_CREATED',
+  'OFFERS_PENDING',
+  'OFFERS_RECEIVED',
+  'CUSTOMER_SELECTING',
+  'BANK_SELECTED',
+  'APPLICATION_STARTED',
+  'DOCUMENTS_PENDING',
+  'UNDER_BANK_REVIEW',
+  'SANCTIONED',
+  'DISBURSED',
+  'REJECTED',
+  'WITHDRAWN',
+];
+
 /**
  * `[lng, lat]`, exactly two finite numbers in range, and not null island.
  *
@@ -158,6 +176,18 @@ const leadIdParam = Joi.object({
 });
 
 const propertyIdParam = Joi.object({
+  id: id.required(),
+});
+
+const loanIdParam = Joi.object({
+  id: id.required(),
+});
+
+const holdIdParam = Joi.object({
+  id: id.required(),
+});
+
+const saleIdParam = Joi.object({
   id: id.required(),
 });
 
@@ -251,6 +281,17 @@ const dashboardQuery = Joi.object({
   limit: Joi.number().integer().min(1).max(100).default(20),
 }).unknown(true);
 
+const loanListQuery = Joi.object({
+  status: Joi.string().valid(...LOAN_STATUS),
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(100).default(20),
+}).unknown(true);
+
+const saleListQuery = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(100).default(20),
+}).unknown(true);
+
 /**
  * ## The export shape — this was silently broken
  *
@@ -270,6 +311,7 @@ const dashboardQuery = Joi.object({
  */
 module.exports = {
   VISIT_STATUS,
+  LOAN_STATUS,
   INTEREST_LEVEL,
   INTEREST_REASON,
   FOLLOWUP_MODE,
@@ -293,6 +335,11 @@ module.exports = {
     followUpIdParam,
     leadIdParam,
     propertyIdParam,
+    loanIdParam,
+    holdIdParam,
+    saleIdParam,
+    loanListQuery,
+    saleListQuery,
   },
 
   // Wired shapes, for `validate()`.
@@ -305,6 +352,11 @@ module.exports = {
   followUpParams: { params: followUpIdParam },
   leadParams: { params: leadIdParam },
   propertyParams: { params: propertyIdParam },
+  loans: { query: loanListQuery },
+  loanParams: { params: loanIdParam },
+  holdParams: { params: holdIdParam },
+  sales: { query: saleListQuery },
+  saleParams: { params: saleIdParam },
   accept: { body: acceptBody },
   checkIn: { body: checkInBody },
   complete: { body: completeBody },

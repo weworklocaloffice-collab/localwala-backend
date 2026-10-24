@@ -640,6 +640,16 @@ const visitRequestListQuery = {
   }),
 };
 
+const markPackagePaymentPaid = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object()
+    .keys({
+      reason: Joi.string().trim().min(1).max(2000).required(),
+      paymentRef: Joi.string().trim().max(200).allow('', null).optional(),
+    })
+    .unknown(false),
+};
+
 module.exports = {
   setPropertyStatus,
   forfeitHold,
@@ -680,6 +690,7 @@ module.exports = {
   invoiceListQuery,
   invoiceCancel,
   gstr1Query,
+  markPackagePaymentPaid,
   visitRequestIdParam,
   assignVisitRequest,
   visitRequestListQuery,

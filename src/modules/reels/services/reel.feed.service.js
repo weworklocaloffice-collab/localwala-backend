@@ -22,6 +22,7 @@ const Food = require('../../../models/food.model');
 const Cuisine = require('../../../models/cuisine.model');
 const { socialProofService } = require('../../social');
 const likerRepository = require('../repositories/reel.liker.repository');
+const { visibilityFilter } = require('./reel.visibility');
 
 const isObjectId = (value) => /^[0-9a-f]{24}$/i.test(String(value || ''));
 
@@ -145,22 +146,37 @@ const loadTargetSummaries = async (reels, viewerLocation) => {
 
 // Feed owns pagination shape; social proof is attached in bulk AFTER the page
 // resolves — never one query per reel (docs §9).
-const getFeed = async ({ page = 1, limit = 10, sortBy = 'createdAt:desc' } = {}, viewerId, viewerLocation) => {
+//
+// `guestLimit` is the admin-configured allowance for signed-out visitors. It has
+// to be applied to the paging window rather than to the first page alone: the
+// client paginates on the returned `totalPages`, so reporting the real total
+// would have it request page 2 forever while the server kept returning nothing.
+const getFeed = async (
+  { page = 1, limit = 10, sortBy = 'createdAt:desc' } = {},
+  viewerId,
+  viewerLocation,
+  guestLimit = null
+) => {
   const options = { page: Number(page) || 1, limit: Math.min(Number(limit) || 10, 50), sortBy };
-  // Visibility: PUBLISHED, due SCHEDULED (covers scheduler lag), and legacy
-  // docs that predate `status`. PAUSED is excluded via isLocked (§8).
-  const now = new Date();
-  const result = await Reel.paginate(
-    {
-      isLocked: { $ne: true },
-      $or: [
-        { status: 'PUBLISHED' },
-        { status: 'SCHEDULED', publishAt: { $lte: now } },
-        { status: { $exists: false } },
-      ],
-    },
-    options
-  );
+  const cap = !viewerId && Number.isInteger(guestLimit) && guestLimit >= 0 ? guestLimit : null;
+  const skip = (options.page - 1) * options.limit;
+
+  // Past the allowance: an empty page plus a flag the app turns into a sign-in
+  // card. Not an error - the guest did nothing wrong.
+  if (cap !== null && skip >= cap) {
+    return {
+      results: [],
+      page: options.page,
+      limit: options.limit,
+      totalPages: 0,
+      total: cap,
+      loginRequired: true,
+    };
+  }
+
+  // Visibility: PUBLISHED, due SCHEDULED (covers scheduler lag), and legacy docs that
+  // predate `status`. PAUSED is excluded via isLocked (§8).
+  const result = await Reel.paginate(visibilityFilter(new Date()), options);
 
   const reelIds = result.results.map((r) => String(r._id || r.id));
   const [proofByReel, summaryByRefId] = await Promise.all([
@@ -186,6 +202,20 @@ const getFeed = async ({ page = 1, limit = 10, sortBy = 'createdAt:desc' } = {},
       targetSummary: refId ? summaryByRefId.get(refId) || null : null,
     };
   });
+
+  if (cap !== null) {
+    const allowedOnThisPage = Math.max(cap - skip, 0);
+    if (result.results.length > allowedOnThisPage) {
+      result.results = result.results.slice(0, allowedOnThisPage);
+    }
+    const realTotal = result.total;
+    result.total = Math.min(realTotal, cap);
+    result.totalPages = Math.ceil(result.total / options.limit);
+    // Only ask for a sign-in when the allowance is what ended the feed. A
+    // catalogue smaller than the cap simply runs out, as it does for anyone else.
+    result.loginRequired = realTotal > cap && skip + result.results.length >= cap;
+  }
+
   return result;
 };
 

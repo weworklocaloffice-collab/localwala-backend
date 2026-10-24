@@ -363,7 +363,8 @@ router.delete('/categories/:id', webAuth('realestate.admin_manage_listings'), va
 // Listing packages + payments (plan §10.2 rows 9, 10). The catalogue is
 // seeded, and orders flow through the vendor purchase + payment stack —
 // but the admin owns the catalogue: create, edit-in-place (code + price
-// immutable, BR-15) and highlight one package. Payments stay read-only.
+// immutable, BR-15) and highlight one package. Payments are read-only
+// except an explicit, reason-bearing manual mark-paid recovery.
 router.get('/listing-packages', webAuth('realestate.admin_manage_listings', AUDIT_VIEW), adminController.listListingPackages);
 router.post(
   '/listing-packages',
@@ -384,6 +385,12 @@ router.post(
   adminController.recommendListingPackage
 );
 router.get('/package-payments', webAuth('realestate.admin_manage_listings', AUDIT_VIEW), adminController.listPackagePayments);
+router.post(
+  '/package-payments/:id/mark-paid',
+  webAuth('realestate.admin_manage_listings'),
+  validate(V.markPackagePaymentPaid),
+  adminController.markPackagePaymentPaid
+);
 
 // Executive management (plan §10.2 rows 14, 15). The admin sees the
 // pool, can flip `available` to put an exec on the bench, and can

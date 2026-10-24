@@ -23,6 +23,7 @@ const organicService = require('./services/stores.organic.service');
 const inventoryService = require('./services/stores.inventory.service');
 const orderService = require('./services/stores.order.service');
 const remittanceService = require('./services/stores.remittance.service');
+const promotionService = require('./services/stores.promotion.service');
 
 const startCronJobs = () => {
   cron.schedule('0 2 * * *', async () => {
@@ -44,6 +45,16 @@ const startCronJobs = () => {
       await organicService.expireCertifications();
     } catch (error) {
       console.error('Organic certification expiry failed:', error.message);
+    }
+  });
+
+  // Promotions move on their own start/end clock. The customer reads already filter by
+  // the window, but the stored status must agree or the partner/admin lists lie.
+  cron.schedule('*/10 * * * *', async () => {
+    try {
+      await promotionService.syncPromotionLifecycle();
+    } catch (error) {
+      console.error('Promotion lifecycle sweep failed:', error.message);
     }
   });
 
@@ -85,21 +96,64 @@ const startCronJobs = () => {
   });
 
   cron.schedule('0 5 * * *', async () => {
+    // The sweep runs daily, but each chain's own cadence decides which window is
+    // settled. `settlementPeriodFor` ages the window by `tPlusDays` and aligns weekly
+    // and monthly boundaries, so a repeated call returns the same (from, to) and
+    // `generateSettlement` dedupes it instead of writing a second payout.
     try {
-      const StoreSubscription = require('mongoose').model('StoreSubscription');
-      const activeSubs = await StoreSubscription.find({ status: 'active' });
+      const mongoose = require('mongoose');
+      const StoreSubscription = mongoose.model('StoreSubscription');
+      const StoreOutlet = mongoose.model('StoreOutlet');
+      const StoreChain = mongoose.model('StoreChain');
+
+      const activeSubs = await StoreSubscription.find({ status: 'active' })
+        .select('chain business')
+        .lean();
+
+      const chainIds = [...new Set(activeSubs.map((sub) => sub.chain).filter(Boolean).map(String))];
+      const chains = await StoreChain.find({ _id: { $in: chainIds } })
+        .select('settings.settlementConfig')
+        .lean();
+      const settlementConfigByChain = new Map(
+        chains.map((chain) => [String(chain._id), chain.settings?.settlementConfig || {}])
+      );
+
       for (const sub of activeSubs) {
-        await settlementService.generateSettlement({
-          vertical: 'stores',
-          counterpartyType: 'store_owner',
-          counterparty: sub.business,
-          store: sub.chain?.outlets?.[0],
-          chain: sub.chain,
-          settlementType: 'order_revenue',
-          period: 'daily',
-          from: new Date(Date.now() - 24 * 60 * 60 * 1000),
-          to: new Date(),
-        });
+        if (!sub.chain) continue;
+
+        const config = settlementConfigByChain.get(String(sub.chain)) || {};
+        const cadence = ['daily', 'weekly', 'monthly'].includes(config.cadence) ? config.cadence : 'daily';
+        const tPlusDays = Number.isFinite(Number(config.tPlusDays)) ? Math.max(0, Number(config.tPlusDays)) : 2;
+        const { from, to } = settlementService.settlementPeriodFor(cadence, tPlusDays);
+
+        // A settlement belongs to ONE outlet (BR-18/BR-42: the outlet is the merchant
+        // of record and holds the bank account). `chain.outlets` is not a populated
+        // field on the subscription, so resolve the chain's outlets explicitly.
+        const outlets = await StoreOutlet.find({ chain: sub.chain, status: 'active' })
+          .select('_id')
+          .lean();
+
+        for (const outlet of outlets) {
+          try {
+            await settlementService.generateSettlement({
+              vertical: 'stores',
+              counterpartyType: 'store_owner',
+              counterparty: sub.business,
+              store: outlet._id,
+              chain: sub.chain,
+              settlementType: 'order_revenue',
+              period: cadence,
+              from,
+              to,
+            });
+          } catch (error) {
+            // One bad outlet must not stop the rest of the chain or the sweep.
+            console.error(
+              `Settlement generation failed for outlet ${outlet._id}:`,
+              error.message,
+            );
+          }
+        }
       }
     } catch (error) {
       console.error('Settlement generation failed:', error.message);

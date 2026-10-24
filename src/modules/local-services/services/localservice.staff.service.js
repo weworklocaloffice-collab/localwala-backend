@@ -41,6 +41,63 @@ function isStaffAvailable(staff, atDate) {
   return shifts.some((s) => hhmm >= s.start && hhmm < s.end);
 }
 
+function isOnLeaveRange(staff, startAt, endAt) {
+  const start = new Date(startAt).getTime();
+  const end = new Date(endAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return true;
+  return (staff.leave || []).some((l) => {
+    const from = new Date(l.from).getTime();
+    const to = new Date(l.to).getTime();
+    return from < end && to > start;
+  });
+}
+
+function isQualified(staff, { serviceId, serviceKey } = {}) {
+  if (!serviceId && !serviceKey) return true;
+  if (!staff) return false;
+  if (serviceId && (staff.services || []).some((id) => String(id) === String(serviceId))) return true;
+  const key = String(serviceKey || '').toLowerCase();
+  if (key && (staff.skills || []).some((skill) => String(skill).toLowerCase() === key)) return true;
+  return false;
+}
+
+/** A shift covers a window inside one local calendar day. Overnight shifts wrap. */
+function shiftCovers(shift, day, startMinutes, endMinutes) {
+  const open = timeToMinutes(shift.start);
+  const close = timeToMinutes(shift.end);
+  if (Number(shift.day) === day) {
+    if (close > open) return startMinutes >= open && endMinutes <= close;
+    return startMinutes >= open && endMinutes <= 1440;
+  }
+  if (Number(shift.day) === (day + 6) % 7 && close <= open) {
+    return startMinutes >= 0 && endMinutes <= close;
+  }
+  return false;
+}
+
+function isStaffAvailableForRange(staff, startAt, endAt) {
+  if (!staff || staff.status !== 'active') return false;
+  const start = new Date(startAt);
+  const end = new Date(endAt);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return false;
+  if (isOnLeaveRange(staff, start, end)) return false;
+  let cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  while (cursor < end) {
+    const dayStart = cursor.getTime();
+    const next = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1);
+    const dayEnd = next.getTime();
+    const windowStart = Math.max(start.getTime(), dayStart);
+    const windowEnd = Math.min(end.getTime(), dayEnd);
+    const startMinutes = Math.floor((windowStart - dayStart) / 60000);
+    const endMinutes = Math.ceil((windowEnd - dayStart) / 60000);
+    if (endMinutes > startMinutes && !(staff.shifts || []).some((s) => shiftCovers(s, cursor.getDay(), startMinutes, endMinutes))) {
+      return false;
+    }
+    cursor = next;
+  }
+  return true;
+}
+
 function isCovered(coverage, { locality, pincode } = {}) {
   if (!coverage) return false;
   if (locality && (coverage.localities || []).map((x) => x.toLowerCase()).includes(String(locality).toLowerCase())) return true;
@@ -48,4 +105,4 @@ function isCovered(coverage, { locality, pincode } = {}) {
   return false;
 }
 
-module.exports = { timeToMinutes, isOnLeave, isStaffAvailable, isCovered };
+module.exports = { timeToMinutes, isOnLeave, isOnLeaveRange, isStaffAvailable, isStaffAvailableForRange, isQualified, shiftCovers, isCovered };

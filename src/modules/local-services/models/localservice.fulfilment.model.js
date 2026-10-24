@@ -26,13 +26,18 @@ const assignmentSchema = mongoose.Schema(
     provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceProvider', required: true },
     staff: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceStaff', required: false },
     resource: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceResource', required: false },
+    startAt: { type: Date, required: false },
+    endAt: { type: Date, required: false },
     status: { type: String, required: true, enum: ['assigned', 'released'], default: 'assigned' },
+    releasedAt: { type: Date, required: false },
   },
   { timestamps: true, toJSON: { getters: true } }
 );
 assignmentSchema.plugin(toJSON);
 assignmentSchema.plugin(paginate);
-assignmentSchema.index({ booking: 1 });
+assignmentSchema.index({ booking: 1 }, { unique: true });
+assignmentSchema.index({ staff: 1, status: 1, startAt: 1, endAt: 1 });
+assignmentSchema.index({ resource: 1, status: 1, startAt: 1, endAt: 1 });
 const LocalServiceAssignment = mongoose.model('LocalServiceAssignment', assignmentSchema);
 
 const lineSchema = new mongoose.Schema(

@@ -246,6 +246,59 @@ const run = () => {
     } else bad('the attached helper is missing bound helpers');
   }
 
+  console.log('\n[9] upload size and category MIME rules');
+  {
+    const rules = require('../src/modules/realestate/utils/realestate.document.rules');
+    const expectRuleError = (label, args, code) => {
+      try {
+        rules.assertDocumentUpload(args);
+        bad(label);
+      } catch (e) {
+        if (e.code === code) ok(`${label} -> ${code}`);
+        else bad(`${label} -> ${e.code || e.message}`);
+      }
+    };
+
+    const valid = rules.assertDocumentUpload({
+      category: 'OWNERSHIP',
+      mimeType: 'Application/PDF; charset=binary',
+      sizeBytes: 1024,
+      maxSizeBytes: 1048576,
+    });
+    if (valid === 'application/pdf') ok('MIME type is normalised before storage');
+    else bad('normalised MIME type is ' + valid);
+
+    expectRuleError(
+      'a file over the active limit is rejected',
+      { category: 'OWNERSHIP', mimeType: 'application/pdf', sizeBytes: 1048577, maxSizeBytes: 1048576 },
+      'DOCUMENT_TOO_LARGE'
+    );
+    expectRuleError(
+      'an image is rejected for ENCUMBRANCE',
+      { category: 'ENCUMBRANCE', mimeType: 'image/jpeg', sizeBytes: 1024, maxSizeBytes: 1048576 },
+      'DOCUMENT_MIME_TYPE_NOT_ALLOWED'
+    );
+    expectRuleError(
+      'a missing size is rejected',
+      { category: 'OWNERSHIP', mimeType: 'application/pdf', maxSizeBytes: 1048576 },
+      'DOCUMENT_SIZE_REQUIRED'
+    );
+    expectRuleError(
+      'a missing MIME type is rejected',
+      { category: 'OWNERSHIP', sizeBytes: 1024, maxSizeBytes: 1048576 },
+      'DOCUMENT_MIME_TYPE_REQUIRED'
+    );
+
+    const atLimit = rules.assertDocumentUpload({
+      category: 'OWNERSHIP',
+      mimeType: 'application/pdf',
+      sizeBytes: 1048576,
+      maxSizeBytes: 1048576,
+    });
+    if (atLimit === 'application/pdf') ok('a file exactly at the limit is accepted');
+    else bad('boundary-sized file was rejected');
+  }
+
   console.log(
     '\n' + (failed === 0 ? 'ALL DOCUMENT ACCESS CHECKS PASSED' : failed + ' CHECK(S) FAILED')
   );

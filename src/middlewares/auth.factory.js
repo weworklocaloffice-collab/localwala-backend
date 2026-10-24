@@ -60,7 +60,37 @@ const createAuthMiddleware = (strategyName) => {
   };
 };
 
+/**
+ * Authenticate if a token is present, but never reject.
+ *
+ * For routes that guests may read and signed-in users get extra from - the reels
+ * feed and its comment list. A missing header, an expired token or a token for a
+ * deleted account all mean "carry on as a guest", not "401": otherwise a stale
+ * session would lock a visitor out of content that is public, which is exactly
+ * the failure mode the authenticated-only feed produced.
+ *
+ * `req.user` stays undefined for guests, so downstream code must treat it as
+ * optional.
+ */
+const createOptionalAuthMiddleware = (strategyName) => {
+  return () => {
+    return async (req, res, next) => {
+      return new Promise((resolve) => {
+        passport.authenticate(strategyName, { session: false }, (err, user) => {
+          if (!err && user) {
+            req.user = user;
+          }
+          resolve();
+        })(req, res, next);
+      })
+        .then(() => next())
+        .catch(() => next());
+    };
+  };
+};
+
 module.exports = {
   createAuthMiddleware,
+  createOptionalAuthMiddleware,
 };
 

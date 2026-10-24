@@ -28,7 +28,7 @@ const settlementSchema = mongoose.Schema(
     vertical: {
       type: String,
       required: true,
-      enum: ['stores', 'dairy'],
+      enum: ['stores', 'dairy', 'local_services'],
     },
     counterpartyType: {
       type: String,

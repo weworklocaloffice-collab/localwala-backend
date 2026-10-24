@@ -50,6 +50,25 @@ try {
 }
 ok('illegal throws 409', threw);
 
+// 2b. Actor-scoped transitions: a customer cannot complete a booking alone.
+ok('customer cannot complete', !booking.canActorTransition('customer', 'IN_PROGRESS', 'COMPLETED'));
+ok('customer cannot confirm', !booking.canActorTransition('customer', 'ACCEPTED', 'CONFIRMED'));
+ok('customer can request', booking.canActorTransition('customer', 'DRAFT', 'REQUESTED'));
+ok('customer can dispute', booking.canActorTransition('customer', 'IN_PROGRESS', 'DISPUTED'));
+ok('provider can complete', booking.canActorTransition('provider', 'IN_PROGRESS', 'COMPLETED'));
+let actorThrew = false;
+try {
+  booking.assertActorTransition('customer', 'IN_PROGRESS', 'COMPLETED');
+} catch (e) {
+  actorThrew = e.statusCode === 403;
+}
+ok('actor violation throws 403', actorThrew);
+
+// 2c. Booking references do not repeat across calls/process restarts.
+const code1 = booking.buildBookingCode();
+const code2 = booking.buildBookingCode();
+ok('booking codes unique', code1 !== code2, `${code1} == ${code2}`);
+
 // 3. Overlap: same slot twice blocked, adjacent free
 const held = [{ status: 'held', startAt: new Date('2026-11-01T10:00:00Z'), endAt: new Date('2026-11-01T11:00:00Z') }];
 let blocked = false;
@@ -62,7 +81,7 @@ ok('overlapping slot blocked', blocked);
 let free = true;
 try {
   availability.assertSlotFree(held, new Date('2026-11-01T11:00:00Z'), new Date('2026-11-01T12:00:00Z'), 0);
-} catch (e) {
+} catch {
   free = false;
 }
 ok('adjacent slot free', free);
@@ -75,10 +94,63 @@ try {
     new Date('2026-11-01T11:30:00Z'),
     0
   );
-} catch (e) {
+} catch {
   releasedFree = false;
 }
 ok('released hold frees slot', releasedFree);
+
+// 3b. Expired holds and capacity
+let expiredFree = true;
+try {
+  availability.assertSlotFree(
+    [
+      {
+        status: 'held',
+        startAt: new Date('2026-11-01T10:00:00Z'),
+        endAt: new Date('2026-11-01T11:00:00Z'),
+        expiresAt: new Date('2026-11-01T09:00:00Z'),
+      },
+    ],
+    new Date('2026-11-01T10:30:00Z'),
+    new Date('2026-11-01T11:30:00Z'),
+    0,
+    { now: new Date('2026-11-01T10:00:00Z') }
+  );
+} catch {
+  expiredFree = false;
+}
+ok('expired hold frees slot', expiredFree);
+
+const activeHeld = [{ status: 'held', startAt: new Date('2026-11-01T10:00:00Z'), endAt: new Date('2026-11-01T11:00:00Z'), expiresAt: new Date('2026-11-01T23:00:00Z') }];
+let capacityTwoFree = true;
+try {
+  availability.assertSlotFree(activeHeld, new Date('2026-11-01T10:30:00Z'), new Date('2026-11-01T11:30:00Z'), 0, {
+    capacity: 2,
+    now: new Date('2026-11-01T09:00:00Z'),
+  });
+} catch {
+  capacityTwoFree = false;
+}
+ok('capacity 2 allows one existing hold', capacityTwoFree);
+let capacityFullBlocked = false;
+try {
+  availability.assertSlotFree([...activeHeld, ...activeHeld], new Date('2026-11-01T10:30:00Z'), new Date('2026-11-01T11:30:00Z'), 0, {
+    capacity: 2,
+    now: new Date('2026-11-01T09:00:00Z'),
+  });
+} catch (e) {
+  capacityFullBlocked = e.statusCode === 409;
+}
+ok('capacity 2 blocks third overlap', capacityFullBlocked);
+
+// 3c. Working hours (local-time rules)
+const insideStart = new Date(2026, 10, 2, 10, 0);
+const rule = { day: insideStart.getDay(), open: '09:00', close: '18:00' };
+ok('inside working hours allowed', availability.isWithinWorkingHours(rule, insideStart, new Date(2026, 10, 2, 11, 0)));
+ok('outside working hours blocked', !availability.isWithinWorkingHours(rule, new Date(2026, 10, 2, 18, 30), new Date(2026, 10, 2, 19, 30)));
+ok('wrong weekday blocked', !availability.isWithinWorkingHours({ ...rule, day: (rule.day + 1) % 7 }, insideStart, new Date(2026, 10, 2, 11, 0)));
+const overnight = { day: insideStart.getDay(), open: '22:00', close: '02:00' };
+ok('overnight rule allows next-day end', availability.isWithinWorkingHours(overnight, new Date(2026, 10, 2, 23, 0), new Date(2026, 10, 3, 1, 0)));
 
 // 4. Completion hook calls revenue once (stubbed models, no DB)
 (async () => {

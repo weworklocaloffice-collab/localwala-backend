@@ -266,69 +266,7 @@ router.get('/subscription-list', jhatkaScope(), async (req, res, next) => {
   }
 });
 
-/**
- * GET /jhatka/partner/compliance
- *
- * This outlet's compliance surface. Returns the FSSAI record plus derived status.
- *
- * Uses jhatkaAuth so we have an outlet; requires compliance current for mutating
- * routes but this is read-only so we just return the status.
- */
-router.get('/compliance', jhatkaAuth(), async (req, res, next) => {
-  try {
-    if (!req.outletId) {
-      throw new ApiError(httpStatus.FORBIDDEN, 'This route requires an outlet session');
-    }
 
-    const compliance = await JhatkaCompliance.findOne({ outlet: req.outletId }).lean();
-    if (!compliance) {
-      return res.json({
-        outletId: req.outletId,
-        fssai: null,
-        status: 'missing',
-        statusLabel: 'No FSSAI record on file',
-        expiresAt: null,
-        daysUntilExpiry: null,
-      });
-    }
-
-     
-    const { deriveComplianceStatus } = require('../utils/compliance.arithmetic');
-    const now = new Date();
-    const status = deriveComplianceStatus(compliance.fssai, now, 30);
-
-    let statusLabel = status;
-    if (status === 'expiring') {
-      const days = Math.ceil((new Date(compliance.fssai.expiresAt) - now) / 86400000);
-      statusLabel = `Expires in ${days} day${days === 1 ? '' : 's'}`;
-    } else if (status === 'valid') {
-      statusLabel = 'Valid';
-    } else if (status === 'pending') {
-      statusLabel = 'Submitted, awaiting approval';
-    } else if (status === 'expired') {
-      statusLabel = 'Expired';
-    } else if (status === 'revoked') {
-      statusLabel = 'Revoked';
-    }
-
-    res.json({
-      outletId: req.outletId,
-      fssai: compliance.fssai ? {
-        licenceNumber: compliance.fssai.licenceNumber,
-        expiresAt: compliance.fssai.expiresAt,
-        documentUrl: compliance.fssai.documentUrl,
-      } : null,
-      status,
-      statusLabel,
-      expiresAt: compliance.fssai?.expiresAt || null,
-      daysUntilExpiry: compliance.fssai?.expiresAt
-        ? Math.ceil((new Date(compliance.fssai.expiresAt) - now) / 86400000)
-        : null,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * GET /jhatka/partner/analytics

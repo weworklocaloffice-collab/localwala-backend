@@ -34,6 +34,8 @@ const paymentService = require('../services/stores.payment.service');
 const customerSubscriptionService = require('../services/stores.customer.subscription.service');
 const returnService = require('../services/stores.return.service');
 const reviewService = require('../services/stores.review.service');
+const favouriteService = require('../services/stores.favourite.service');
+const warrantyService = require('../services/stores.warranty.service');
 
 const router = express.Router();
 
@@ -174,6 +176,11 @@ const getCustomerOrder = async (req, res) => {
   res.status(httpStatus.OK).send({ order });
 };
 
+const getCustomerOrderTracking = async (req, res) => {
+  const result = await orderService.getOrderTracking(req.params.order, req.user._id);
+  res.status(httpStatus.OK).send(result);
+};
+
 const createReview = async (req, res) => {
   const review = await reviewService.createReview({
     ...req.body,
@@ -196,6 +203,64 @@ const createExchange = async (req, res) => {
     customer: req.user._id,
   });
   res.status(httpStatus.CREATED).send({ request });
+};
+
+const createWarranty = async (req, res) => {
+  const request = await warrantyService.createWarrantyRequest({
+    ...req.body,
+    customer: req.user._id,
+  });
+  res.status(httpStatus.CREATED).send({ request });
+};
+
+const listWarranties = async (req, res) => {
+  const result = await warrantyService.listWarrantyRequests({
+    customer: req.user._id,
+    status: req.query.status,
+    page: Number(req.query.page) || 1,
+    limit: Number(req.query.limit) || 20,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const getWarranty = async (req, res) => {
+  const request = await warrantyService.getWarrantyRequest(req.params.warranty, {
+    customer: req.user._id,
+  });
+  res.status(httpStatus.OK).send({ request });
+};
+
+const listFavourites = async (req, res) => {
+  const result = await favouriteService.listFavourites({
+    customer: req.user._id,
+    page: Number(req.query.page) || 1,
+    limit: Number(req.query.limit) || 20,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const getFavourite = async (req, res) => {
+  const result = await favouriteService.isFavourite({
+    customer: req.user._id,
+    chain: req.params.chain,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const addFavourite = async (req, res) => {
+  const result = await favouriteService.addFavourite({
+    customer: req.user._id,
+    chain: req.params.chain,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const removeFavourite = async (req, res) => {
+  const result = await favouriteService.removeFavourite({
+    customer: req.user._id,
+    chain: req.params.chain,
+  });
+  res.status(httpStatus.OK).send(result);
 };
 
 /**
@@ -227,7 +292,32 @@ router.get('/products/:product', getProductDetail);
 
 router.get('/cart', validate(V.cartOutletValidation), appAuth('stores_cart_read'), getCart);
 router.get('/customer/orders', appAuth('stores_orders_read'), getCustomerOrders);
+router.get('/customer/orders/:order/track', appAuth('stores_orders_read'), validate(V.customerOrderIdValidation), getCustomerOrderTracking);
 router.get('/customer/orders/:order', appAuth('stores_orders_read'), getCustomerOrder);
+router.get(
+  '/customer/favourites',
+  validate(V.favouriteListValidation),
+  appAuth('stores_favourites_read'),
+  listFavourites
+);
+router.get(
+  '/chains/:chain/favourite',
+  validate(V.chainIdValidation),
+  appAuth('stores_favourites_read'),
+  getFavourite
+);
+router.post(
+  '/chains/:chain/favourite',
+  validate(V.chainIdValidation),
+  appAuth('stores_favourites_write'),
+  addFavourite
+);
+router.delete(
+  '/chains/:chain/favourite',
+  validate(V.chainIdValidation),
+  appAuth('stores_favourites_write'),
+  removeFavourite
+);
 
 /**
  * ## The `:store` storefront family NO LONGER LIVES HERE
@@ -270,6 +360,27 @@ router.post('/orders/:order/pay', appAuth('stores_orders_write'), validate(V.ord
 router.post('/customer/orders/:order/review', appAuth('stores_reviews_write'), validate(V.customerOrderIdValidation), createReview);
 router.post('/customer/returns', appAuth('stores_returns_write'), createReturn);
 router.post('/customer/exchanges', appAuth('stores_returns_write'), createExchange);
+
+// Customer warranty routes. Creation derives outlet, chain and product
+// snapshots from the order; the customer only chooses the purchased item.
+router.post(
+  '/customer/warranties',
+  appAuth('stores_warranty_write'),
+  validate(V.customerWarrantyCreateValidation),
+  createWarranty
+);
+router.get(
+  '/customer/warranties',
+  appAuth('stores_warranty_read'),
+  validate(V.warrantyListValidation),
+  listWarranties
+);
+router.get(
+  '/customer/warranties/:warranty',
+  appAuth('stores_warranty_read'),
+  validate(V.customerWarrantyIdValidation),
+  getWarranty
+);
 
 // Customer subscription routes (requires appAuth)
 const customerSubscriptionController = require('../controllers/stores.customer.subscription.controller');

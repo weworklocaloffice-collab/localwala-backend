@@ -62,8 +62,16 @@ const orderIdParam = Joi.object({
   id: OBJECT_ID.required(),
 });
 
+const packageCodeParam = Joi.object({
+  code: PACKAGE_CODE.required(),
+});
+
 const purchaseBody = Joi.object({
   package: PACKAGE_CODE,
+}).unknown(false);
+
+const payBody = Joi.object({
+  payment: OBJECT_ID,
 }).unknown(false);
 
 const orderStatusParam = Joi.object({
@@ -206,8 +214,8 @@ const uploadDocumentBody = Joi.object({
   title: Joi.string().trim().min(2).max(200).required(),
   fileUrl: Joi.string().uri({ scheme: ['http', 'https'] }).required(),
   fileName: Joi.string().trim().max(255),
-  mimeType: Joi.string().trim().max(100),
-  sizeBytes: Joi.number().integer().min(0).max(50 * 1024 * 1024), // 50 MB cap; F-17 is per-category
+  mimeType: Joi.string().trim().lowercase().max(100).required(),
+  sizeBytes: Joi.number().integer().min(1).max(50 * 1024 * 1024).required(),
   checksum: Joi.string().trim().max(128),
   visibility: DOCUMENT_VISIBILITY,
   notes: Joi.string().trim().max(500),
@@ -319,7 +327,9 @@ module.exports = {
   PACKAGE_CODE,
 
   raw: {
+    packageCodeParam,
     purchaseBody,
+    payBody,
     orderIdParam,
     orderStatusParam,
     cancelBody,
@@ -345,10 +355,11 @@ module.exports = {
   },
 
   packages: { query: listQuery },
-  purchase: { body: purchaseBody },
+  purchase: { params: packageCodeParam },
   orderParams: { params: orderIdParam },
   orderStatusParams: { params: orderStatusParam },
   cancel: { params: orderIdParam, body: cancelBody },
+  pay: { params: orderIdParam, body: payBody },
   orders: { query: listQuery },
 
   createProperty: { body: createPropertyBody },

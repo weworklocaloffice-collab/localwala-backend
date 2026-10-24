@@ -21,6 +21,8 @@ const catchAsync = require('../../../utils/catchAsync');
 const ApiError = require('../../../utils/ApiError');
 const visitService = require('../services/realestate.visit.service');
 const leadService = require('../services/realestate.lead.service');
+const loanService = require('../services/realestate.loan.service');
+const saleService = require('../services/realestate.sale.service');
 const RealEstateExecutive = require('../models/realestate.executive.model');
 
 /**
@@ -54,6 +56,12 @@ const RealEstateExecutive = require('../models/realestate.executive.model');
  */
 const notFound = (what) => {
   throw new ApiError(httpStatus.NOT_FOUND, `${what} not found`);
+};
+
+const myLeadIds = async (executiveId) => {
+  const RealEstateLead = require('../models/realestate.lead.model');
+  const leads = await RealEstateLead.find({ executive: executiveId }).select('_id').lean();
+  return leads.map((l) => l._id);
 };
 
 // ------------------------------------------------------------------------ visits
@@ -402,16 +410,64 @@ const listCommissions = catchAsync(async (req, res) => {
  * Holds carry no executive field; scope goes through my lead ids.
  */
 const listHolds = catchAsync(async (req, res) => {
-  const RealEstateLead = require('../models/realestate.lead.model');
   const RealEstatePropertyHold = require('../models/realestate.property.hold.model');
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
   const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
-  const myLeads = await RealEstateLead.find({ executive: req.actorId }).select('_id').lean();
   const result = await RealEstatePropertyHold.paginate(
-    { lead: { $in: myLeads.map((l) => l._id) } },
-    { page, limit, sort: { createdAt: -1 } }
+    { lead: { $in: await myLeadIds(req.actorId) } },
+    {
+      page,
+      limit,
+      sort: { createdAt: -1 },
+      populate: [
+        { path: 'customer', select: 'firstName lastName mobile' },
+        { path: 'property', select: 'title propertyCode' },
+      ],
+    }
   );
   res.status(httpStatus.OK).send(result);
+});
+
+const getHold = catchAsync(async (req, res) => {
+  const RealEstatePropertyHold = require('../models/realestate.property.hold.model');
+  const hold = await RealEstatePropertyHold.findOne({
+    _id: req.params.id,
+    lead: { $in: await myLeadIds(req.actorId) },
+  })
+    .populate('customer', 'firstName lastName mobile')
+    .populate('property', 'title propertyCode');
+  if (!hold) notFound('Hold');
+  res.status(httpStatus.OK).send({ data: hold.toObject({ getters: true }) });
+});
+
+const listLoans = catchAsync(async (req, res) => {
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+  const result = await loanService.listForExecutive(req.actorId, {
+    page,
+    limit,
+    status: req.query.status,
+  });
+  res.status(httpStatus.OK).send(result);
+});
+
+const getLoan = catchAsync(async (req, res) => {
+  const loan = await loanService.findForExecutive(req.params.id, req.actorId);
+  if (!loan) notFound('Loan request');
+  res.status(httpStatus.OK).send({ data: loan });
+});
+
+const listSales = catchAsync(async (req, res) => {
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+  const result = await saleService.listForExecutive(req.actorId, { page, limit });
+  res.status(httpStatus.OK).send(result);
+});
+
+const getSale = catchAsync(async (req, res) => {
+  const sale = await saleService.findByIdForExecutive(req.params.id, req.actorId);
+  if (!sale) notFound('Sale');
+  res.status(httpStatus.OK).send({ data: sale });
 });
 
 /**
@@ -484,7 +540,12 @@ const markNotificationRead = catchAsync(async (req, res) => {
 
 module.exports.listCommissions = listCommissions;
 module.exports.listHolds = listHolds;
+module.exports.getHold = getHold;
 module.exports.listFollowUps = listFollowUps;
 module.exports.listSettlements = listSettlements;
+module.exports.listLoans = listLoans;
+module.exports.getLoan = getLoan;
+module.exports.listSales = listSales;
+module.exports.getSale = getSale;
 module.exports.listNotifications = listNotifications;
 module.exports.markNotificationRead = markNotificationRead;

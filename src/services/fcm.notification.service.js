@@ -4275,6 +4275,9 @@ const realEstateLoanOfferReceived = (a) => sendRealEstatePush('LOAN_OFFER_RECEIV
 const realEstateLoanSanctioned = (a) => sendRealEstatePush('LOAN_SANCTIONED', a);
 const realEstateLoanDisbursed = (a) => sendRealEstatePush('LOAN_DISBURSED', a);
 const realEstateDocumentVerified = (a) => sendRealEstatePush('DOCUMENT_VERIFIED', a);
+const realEstateDocumentRequested = (a) => sendRealEstatePush('DOCUMENT_REQUESTED', a);
+const realEstateDocumentSubmitted = (a) => sendRealEstatePush('DOCUMENT_SUBMITTED', a);
+const realEstateDocumentReviewed = (a) => sendRealEstatePush('DOCUMENT_REVIEWED', a);
 
 /**
  * Prune dead device tokens after a multicast: NotRegistered (uninstalled /
@@ -4526,5 +4529,8 @@ module.exports = {
   realEstateLoanSanctioned,
   realEstateLoanDisbursed,
   realEstateDocumentVerified,
+  realEstateDocumentRequested,
+  realEstateDocumentSubmitted,
+  realEstateDocumentReviewed,
 };
 

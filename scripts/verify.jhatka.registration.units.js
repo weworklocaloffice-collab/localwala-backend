@@ -349,12 +349,14 @@ console.log('\n-- the kernel is NOT modified by this vertical --');
      !mongoose.models.JhatkaSettlement || true,
      'JhatkaSettlement lives in the module, not kernel/settlement');
 
-  // The kernel settlement enum is ['stores','dairy'] and is deliberately NOT widened
-  // until Phase 13. This asserts that decision is still in force.
+  // The kernel settlement enum is intentionally widened by sibling verticals
+  // (local_services added 'local_services') but Jhatka does NOT add 'jhatka'.
+  // This asserts that Jhatka's own decision (D-2) is still in force: Jhatka
+  // does not widen the kernel enum until Phase 13.
   const kernelSettlement = mongoose.models.Settlement;
   const verticalEnum = kernelSettlement.schema.path('vertical').options.enum;
-  ok("the kernel Settlement.vertical enum is still ['stores','dairy']",
-     JSON.stringify(verticalEnum) === JSON.stringify(['stores', 'dairy']),
+  ok("the kernel Settlement.vertical enum does NOT include 'jhatka'",
+     !verticalEnum.includes('jhatka'),
      JSON.stringify(verticalEnum));
   ok('jhatka settlements use the module model, not the kernel one',
      mongoose.models.JhatkaSettlement.modelName === 'JhatkaSettlement');

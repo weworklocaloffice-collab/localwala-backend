@@ -26,13 +26,23 @@ const createBookingBody = {
     .keys({
       categoryKey: Joi.string().trim().lowercase().max(64).allow(null, ''),
       subcategoryKey: Joi.string().trim().lowercase().max(64).allow(null, ''),
-      serviceKey: Joi.string().trim().lowercase().max(64).allow(null, ''),
+      serviceKey: Joi.string().trim().lowercase().max(64).required(),
+      provider: objectId.allow(null),
+      variant: objectId.allow(null),
+      addons: Joi.array().items(
+        Joi.object().keys({
+          id: objectId.required(),
+          quantity: Joi.number().min(1).max(1000).default(1),
+        })
+      ),
+      hours: Joi.number().min(0).max(1000),
+      quantity: Joi.number().min(1).max(100000),
       bookingMode: Joi.string().valid('INSTANT', 'SLOT', 'REQUEST', 'DATE_RANGE', 'RECURRING').required(),
       scheduledAt: Joi.date(),
       startAt: Joi.date(),
       endAt: Joi.date().greater(Joi.ref('startAt')),
       address: objectId.allow(null),
-      labourAmount: Joi.number().min(0).max(10000000).required(),
+      labourAmount: Joi.number().min(0).max(10000000).default(0),
       partsAmount: Joi.number().min(0).max(10000000).default(0),
       resource: objectId.allow(null),
       paymentMode: Joi.string().valid('gateway', 'wallet', 'cod', 'direct'),
@@ -68,6 +78,16 @@ const bookingIdParam = {
 
 const transitionParam = {
   params: Joi.object().keys({ id: objectId.required(), status: Joi.string().required() }),
+};
+
+const paymentBody = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object()
+    .keys({
+      payment: objectId.optional(),
+      paymentRef: Joi.string().trim().max(120).allow('', null),
+    })
+    .unknown(false),
 };
 
 const quoteBody = {
@@ -135,4 +155,4 @@ const refundDecisionBody = {
     .unknown(false),
 };
 
-module.exports = { createBookingBody, bookingIdParam, transitionParam, quoteBody, rescheduleBody, disputeBody, reviewBody, assignBody, complaintBody, refundDecisionBody };
+module.exports = { createBookingBody, bookingIdParam, transitionParam, paymentBody, quoteBody, rescheduleBody, disputeBody, reviewBody, assignBody, complaintBody, refundDecisionBody };

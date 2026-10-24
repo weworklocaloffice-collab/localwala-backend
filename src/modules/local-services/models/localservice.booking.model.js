@@ -31,7 +31,19 @@ const localServiceBookingSchema = mongoose.Schema(
   {
     bookingCode: { type: String, required: true, uppercase: true, trim: true },
     customer: { type: mongoose.SchemaTypes.ObjectId, ref: 'User', required: true },
-    provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'Business', required: false },
+    provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceProvider', required: false },
+    offering: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceOffering', required: false },
+    variant: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceVariant', required: false },
+    // Catalogue row + capacity unit the booking was made against. Both are
+    // snapshots: the reservation, the availability rule lookup and the
+    // assignment window all need them after the fact.
+    service: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceService', required: false },
+    resource: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceResource', required: false },
+    pricingMode: {
+      type: String,
+      required: false,
+      enum: ['FIXED', 'VARIANT', 'HOURLY', 'UNIT_BASED', 'DATE_BASED', 'QUOTE', 'INSPECTION_QUOTE'],
+    },
     categoryKey: { type: String, required: false, lowercase: true, trim: true },
     subcategoryKey: { type: String, required: false, lowercase: true, trim: true },
     serviceKey: { type: String, required: false, lowercase: true, trim: true },
@@ -41,12 +53,22 @@ const localServiceBookingSchema = mongoose.Schema(
     scheduledAt: { type: Date, required: false },
     startAt: { type: Date, required: false },
     endAt: { type: Date, required: false },
+    // How many times this booking has been moved. Bounded by policy.
+    rescheduleCount: { type: Number, required: false, default: 0, min: 0 },
     address: { type: mongoose.SchemaTypes.ObjectId, ref: 'UserAddress', required: false },
     addressSnapshot: { type: mongoose.Schema.Types.Mixed, required: false },
     // Price snapshot (backend-calculated, never trusted from client)
     labourAmount: moneyField(0),
     partsAmount: moneyField(0),
     discountAmount: moneyField(0),
+    taxAmount: moneyField(0),
+    inspectionFee: moneyField(0),
+    depositAmount: moneyField(0),
+    balanceAmount: moneyField(0),
+    amountPaid: moneyField(0),
+    // Money already returned to the customer. Caps every future refund so a
+    // second request cannot spend the same collected rupee twice.
+    refundedAmount: moneyField(0),
     serviceValue: moneyField(0),
     // Line-item snapshot: service/variant/addon/fee/discount/tax rows frozen at pricing.
     items: { type: [bookingItemSchema], required: false, default: [] },
@@ -54,11 +76,24 @@ const localServiceBookingSchema = mongoose.Schema(
     revenueEntry: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceRevenueEntry', required: false },
     revenueAppliedAt: { type: Date, required: false },
     payment: { type: mongoose.SchemaTypes.ObjectId, ref: 'PaymentInitiation', required: false },
+    // Every successful initiation for this booking (deposit + balance). The
+    // array makes gateway callback replay idempotent per payment.
+    payments: { type: [mongoose.SchemaTypes.ObjectId], ref: 'PaymentInitiation', required: false, default: [] },
+    // Wallet debits have no gateway entity, so the shared Transactions row is
+    // the reference. Stored as the transaction's uuid (a string): a uuid is
+    // the stable public id of a transaction, and a mixed-type array would
+    // fail Mongoose casting on save.
+    walletPayments: { type: [String], required: false, default: [] },
     // gateway = online via shared stack; wallet = shared wallet debit; cod = cash
     // at completion; direct = technician collected (cash/UPI) and declares it —
     // commission becomes a platform receivable netted at settlement (§14-C).
     paymentMode: { type: String, required: true, enum: ['gateway', 'wallet', 'cod', 'direct'], default: 'gateway' },
-    paymentStatus: { type: String, required: true, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
+    paymentStatus: {
+      type: String,
+      required: true,
+      enum: ['pending', 'partially_paid', 'paid', 'partially_refunded', 'failed', 'refunded'],
+      default: 'pending',
+    },
     cancelReason: { type: String, required: false, trim: true },
     completedAt: { type: Date, required: false },
   },

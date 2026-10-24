@@ -325,12 +325,38 @@ const headerBannerSchema = mongoose.Schema(
       type: Array,
       default: [],
     },
+// Pinned toolbar height of the app bar above the banner.
     collapsedHeight: {
       type: Number,
       required: false,
       default: COLLAPSED_HEIGHT_DEFAULT,
       min: COLLAPSED_HEIGHT_MIN,
       max: COLLAPSED_HEIGHT_MAX,
+    },
+    // Paint the same media in the app bar as well as the banner slot.
+    //
+    // The app bar previously only ever took a colour or a gradient, which is why the panel
+    // hint said so. Off by default: the two surfaces normally read as one continuous
+    // header sweep (the gradient is windowed across the seam), and putting artwork in the
+    // app bar replaces that with a crop of the same asset at a very different aspect.
+    // For Lottie it also means a second composition decoding alongside the banner's, which
+    // is a deliberate cost of asking for the same animation in both places.
+    showMediaInAppBar: {
+      type: Boolean,
+      default: false,
+    },
+    // Parallax. `parallaxIntensity` is a fraction of the header's own height that the
+    // artwork is allowed to lag behind the surface by, so it scales with the banner rather
+    // than being a pixel distance that would behave differently at every screen size.
+    parallaxEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    parallaxIntensity: {
+      type: Number,
+      default: 0.18,
+      min: 0,
+      max: 0.5,
     },
     showLocation: {
       type: Boolean,

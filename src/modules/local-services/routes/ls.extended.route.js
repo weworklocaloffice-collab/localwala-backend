@@ -40,7 +40,9 @@ router.route('/subscriptions').post(appAuth('localservices_partner_read'), growt
 
 // Admin: plans + featured + lead oversight
 router.route('/admin/plans').post(webAuth('localservices_catalog_write'), validate(V.planBody), growth.createPlan).get(webAuth('localservices_catalog_read'), growth.listPlans);
+router.route('/admin/plans/:id').patch(webAuth('localservices_catalog_write'), validate(V.planStatusBody), growth.updatePlanStatus);
 router.route('/admin/featured').post(webAuth('localservices_catalog_write'), validate(V.featuredBody), growth.createFeatured).get(webAuth('localservices_catalog_read'), growth.listFeatured);
+router.route('/admin/featured/:id').patch(webAuth('localservices_catalog_write'), validate(V.featuredStatusBody), growth.updateFeaturedStatus);
 router.route('/admin/leads').get(webAuth('localservices_revenue_read'), lead.listAllLeads);
 
 module.exports = router;

@@ -20,6 +20,8 @@ const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
 const crypto = require('crypto');
+const notifyService = require('./stores.notify.service');
+const socketEmitter = require('../../../utils/socket.emitter');
 
 const DELIVERY_TRANSITIONS = {
   assigned: ['accepted', 'cancelled'],
@@ -50,7 +52,7 @@ const assignDriver = async ({ order, outlet, chain, driver, deliveryFee = 0, est
   const otp = generateOtp();
   const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-  return StoreDelivery.create({
+  const delivery = await StoreDelivery.create({
     order,
     outlet,
     chain,
@@ -62,6 +64,33 @@ const assignDriver = async ({ order, outlet, chain, driver, deliveryFee = 0, est
     estimatedMinutes,
     codAmount: 0,
   });
+
+  socketEmitter.emitToRoom(`store-order:${String(order).toLowerCase()}`, 'deliveryStatus', {
+    orderId: String(order),
+    deliveryId: String(delivery._id),
+    from: null,
+    deliveryStatus: delivery.status,
+    at: new Date().toISOString(),
+  });
+
+  await notifyDelivery(delivery, 'driver_assigned');
+  return delivery;
+};
+
+const notifyDelivery = async (delivery, event, context = {}) => {
+  try {
+    const StoreOrder = mongoose.model('StoreOrder');
+    const StoreDriver = mongoose.model('StoreDriver');
+    const order = await StoreOrder.findById(delivery.order).lean();
+    if (!order) return;
+    const driver = await StoreDriver.findById(delivery.driver).populate('user', 'name').lean();
+    await notifyService.notifyOrderLifecycle(order, event, {
+      ...context,
+      driverName: driver?.user?.name || driver?.driverCode,
+    });
+  } catch {
+    // A notification failure must not roll back an assignment that already happened.
+  }
 };
 
 const transitionDelivery = async (deliveryId, to, { actor, notes } = {}) => {
@@ -71,6 +100,7 @@ const transitionDelivery = async (deliveryId, to, { actor, notes } = {}) => {
 
   assertTransition(delivery.status, to);
 
+  const from = delivery.status;
   delivery.status = to;
   const now = new Date();
 
@@ -80,6 +110,29 @@ const transitionDelivery = async (deliveryId, to, { actor, notes } = {}) => {
   if (to === 'failed') { delivery.failedAt = now; delivery.failureReason = notes; }
 
   await delivery.save();
+
+  socketEmitter.emitToRoom(`store-order:${String(delivery.order).toLowerCase()}`, 'deliveryStatus', {
+    orderId: String(delivery.order),
+    deliveryId: String(delivery._id),
+    from,
+    deliveryStatus: to,
+    at: now.toISOString(),
+  });
+
+  const events = {
+    accepted: 'driver_on_the_way',
+    out_for_delivery: 'out_for_delivery',
+    delivered: 'order_delivered',
+    failed: 'delivery_failed',
+    cancelled: 'delivery_failed',
+  };
+  const event = events[to];
+  if (event) {
+    await notifyDelivery(delivery, event, {
+      reason: notes || (to === 'cancelled' ? 'Delivery was cancelled.' : ''),
+    });
+  }
+
   return delivery;
 };
 

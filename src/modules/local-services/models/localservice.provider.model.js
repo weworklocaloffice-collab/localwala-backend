@@ -41,6 +41,7 @@ const localServiceProviderSchema = mongoose.Schema(
     owner: { type: mongoose.SchemaTypes.ObjectId, ref: 'User', required: true },
     business: { type: mongoose.SchemaTypes.ObjectId, ref: 'Business', required: false },
     businessName: { type: String, required: true, trim: true },
+    businessAddress: { type: String, required: false, trim: true },
     contactName: { type: String, required: false, trim: true },
     contactPhone: { type: String, required: false, trim: true },
     providerType: {

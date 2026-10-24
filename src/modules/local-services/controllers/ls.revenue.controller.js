@@ -23,6 +23,7 @@ const ApiError = require('../../../utils/ApiError');
 const LocalServiceRevenueRule = require('../models/localservice.revenue.rule.model');
 const LocalServiceRevenueEntry = require('../models/localservice.revenue.entry.model');
 const revenueService = require('../services/localservice.revenue.service');
+const { recordAudit } = require('../services/localservice.audit.service');
 
 const ALLOWED_TRANSITIONS = {
   draft: ['pending_approval', 'archived'],
@@ -106,6 +107,13 @@ const transitionRule = catchAsync(async (req, res) => {
   } catch (e) {
     console.error('LocalServices rule audit failed:', e.message);
   }
+  await recordAudit(req, {
+    event: `revenue_rule.${status}`,
+    targetType: 'revenue_rule',
+    targetId: rule._id,
+    details: `Revenue rule ${rule.code} moved ${from} -> ${status}`,
+    metadata: { from, to: status, note: req.body.approvalNote || req.body.reason },
+  });
   res.status(httpStatus.OK).send({ rule });
 });
 
@@ -202,7 +210,6 @@ const revenueSummary = catchAsync(async (req, res) => {
   const { fromPaise } = require('../../../utils/money');
   let fees = 0, commission = 0, platform = 0, payable = 0, customer = 0, reversals = 0;
   for (const e of entries) {
-    const sign = e.entryType === 'reversal' ? -1 : 1;
     // lean paise -> rupees; reversal rows already negative, so take abs then sign
     const fee = Math.abs(fromPaise(e.bookingFee));
     const comm = Math.abs(fromPaise(e.commissionAmount));
@@ -218,7 +225,6 @@ const revenueSummary = catchAsync(async (req, res) => {
       customer += cust;
     }
   }
-  void sign;
   res.status(httpStatus.OK).send({
     grossBookingValue: Number(customer.toFixed(2)),
     bookingFees: Number(fees.toFixed(2)),
@@ -232,15 +238,89 @@ const revenueSummary = catchAsync(async (req, res) => {
 });
 
 const settlementService = require('../services/localservice.settlement.service');
+const Settlement = require('../../../kernel/settlement/models/settlement.model');
+
+const listSettlements = catchAsync(async (req, res) => {
+  const filter = { vertical: 'local_services', ...pick(req.query, ['status', 'settlementType', 'counterparty']) };
+  if (req.query.from || req.query.to) {
+    filter.createdAt = {};
+    if (req.query.from) filter.createdAt.$gte = new Date(req.query.from);
+    if (req.query.to) filter.createdAt.$lte = new Date(req.query.to);
+  }
+  const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  if (!options.sortBy) options.sortBy = 'createdAt:desc';
+  const result = await Settlement.paginate(filter, {
+    ...options,
+    populate: { path: 'counterparty', select: 'name' },
+  });
+  res.status(httpStatus.OK).send(result);
+});
 
 const generateSettlement = catchAsync(async (req, res) => {
-  const { settlement, summary, note } = await settlementService.generateSettlement(req.body);
-  res.status(httpStatus.CREATED).send({ settlement, summary, note: note || undefined });
+  const { settlement, summary, held, note } = await settlementService.generateSettlement(req.body);
+  await recordAudit(req, {
+    event: 'settlement.generated',
+    targetType: 'settlement',
+    targetId: settlement ? settlement._id : undefined,
+    details: settlement
+      ? `Settlement ${settlement.settlementNo} generated`
+      : `Settlement summary generated (${note || 'no settlement'})`,
+    metadata: {
+      providerId: req.body.providerId,
+      from: req.body.from,
+      to: req.body.to,
+      summary,
+      held: held || null,
+    },
+  });
+  res.status(httpStatus.CREATED).send({ settlement, summary, held: held || null, note: note || undefined });
 });
 
 const markSettlement = catchAsync(async (req, res) => {
   const doc = await settlementService.markSettlement(req.params.id, req.params.status, req.body);
+  await recordAudit(req, {
+    event: `settlement.${req.params.status}`,
+    targetType: 'settlement',
+    targetId: doc._id,
+    details: `Settlement ${doc.settlementNo} moved to ${req.params.status}`,
+    metadata: { to: req.params.status, note: req.body.note },
+  });
   res.status(httpStatus.OK).send({ settlement: doc });
 });
 
-module.exports = { createRule, listRules, getRule, cloneRule, transitionRule, previewRevenue, getMapping, listEntries, exportEntries, revenueSummary, generateSettlement, markSettlement, assertTransition };
+/**
+ * Pay a settlement out.
+ *
+ * `markSettlement('settled')` only moves a status; it never moves money.
+ * This route performs the payout: a wallet credit for the provider's owner,
+ * or a recorded bank reference for the finance team to execute.
+ */
+const paySettlement = catchAsync(async (req, res) => {
+  const { settlement, payout } = await settlementService.paySettlement(req.params.id, req.body);
+  await recordAudit(req, {
+    event: 'settlement.paid',
+    targetType: 'settlement',
+    targetId: settlement._id,
+    details: `Settlement ${settlement.settlementNo} paid via ${payout.method}`,
+    metadata: { method: payout.method, amount: payout.amount, reference: payout.reference },
+  });
+  res.status(httpStatus.OK).send({ settlement, payout });
+});
+
+module.exports = {
+  createRule,
+  listRules,
+  getRule,
+  cloneRule,
+  transitionRule,
+  previewRevenue,
+  getMapping,
+  listEntries,
+  exportEntries,
+  revenueSummary,
+  generateSettlement,
+  markSettlement,
+  paySettlement,
+  listSettlements,
+  assertTransition,
+};

@@ -22,7 +22,10 @@ const ApiError = require('../../../utils/ApiError');
 const inventoryService = require('./stores.inventory.service');
 const basketService = require('./stores.basket.service');
 const promotionService = require('./stores.promotion.service');
+const couponService = require('./stores.coupon.service');
 const invoiceService = require('./stores.invoice.service');
+const notifyService = require('./stores.notify.service');
+const socketEmitter = require('../../../utils/socket.emitter');
 // BR-28 / BR-33. Required by `cancelOrder`, which is the only place a whole order is
 // refunded. Left out previously, which is why cancelling a paid order wrote no refund.
 const refundService = require('./stores.refund.service');
@@ -48,6 +51,16 @@ const ORDER_TRANSITIONS = {
   payment_failed: ['payment_pending', 'cancelled'],
 };
 
+const ORDER_NOTIFICATION_EVENTS = {
+  accepted: 'order_accepted',
+  rejected: 'order_rejected',
+  ready: 'order_ready',
+  out_for_delivery: 'out_for_delivery',
+  delivered: 'order_delivered',
+  cancelled: 'order_cancelled',
+  payment_failed: 'payment_failed',
+};
+
 const assertTransition = (from, to) => {
   const allowed = ORDER_TRANSITIONS[from];
   if (!allowed || !allowed.includes(to)) {
@@ -61,7 +74,7 @@ const generateOrderNo = async () => {
   return (last?.orderNo || 100000) + 1;
 };
 
-const createOrder = async ({ customer, outlet, chain, items, address, addressSnapshot, paymentMode, promo, coupon, promoCode, couponCode, instructions }) => {
+const createOrder = async ({ customer, outlet, chain, items, address, addressSnapshot, paymentMode, promo, promoCode, couponCode, instructions }) => {
   const StoreOrder = mongoose.model('StoreOrder');
 
   const orderNo = await generateOrderNo();
@@ -75,6 +88,7 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
     chain,
     items,
     promoCode: promoCode || (promo && promo.code),
+    couponCode,
     customerId: customer,
     paymentMode,
   });
@@ -117,7 +131,7 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
     paymentMode,
     paymentStatus: 'pending',
     promo: basket.promo,
-    coupon,
+    coupon: basket.coupon,
     instructions,
     lifecycle: 'created',
     totalItems: basket.lines.length,
@@ -131,6 +145,13 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
       await promotionService.applyPromotion(basket.promoDoc._id);
     } catch (applyError) {
       console.error(`Promo ${basket.promoDoc.code} validated but usage could not be recorded:`, applyError.message);
+    }
+  }
+  if (basket.couponDoc) {
+    try {
+      await couponService.applyCoupon(basket.couponDoc._id);
+    } catch (applyError) {
+      console.error(`Coupon ${basket.couponDoc.code} validated but usage could not be recorded:`, applyError.message);
     }
   }
 
@@ -157,6 +178,12 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
       console.error(`Order ${order._id} failed to reserve and then failed to cancel:`, cancelError.message);
     }
     throw reserveError;
+  }
+
+  if (paymentMode === 'cod') {
+    await notifyService.notifyOrderLifecycle(order, 'new_order', {
+      outletName: basket.outlet?.name,
+    });
   }
 
   return order;
@@ -241,6 +268,27 @@ const transitionOrder = async (orderId, to, { actor, notes } = {}) => {
   }
 
   await order.save();
+
+  // The tracking screen joins `store-order:<id>` over an authenticated socket.
+  // Push notifications reach a closed app; this reaches a customer already
+  // watching the order, so the timeline moves without a manual refresh.
+  socketEmitter.emitToRoom(`store-order:${String(order._id).toLowerCase()}`, 'orderStatus', {
+    orderId: String(order._id),
+    orderNo: order.orderNo,
+    from,
+    lifecycle: to,
+    at: now.toISOString(),
+  });
+
+  if (to === 'paid' && order.paymentMode !== 'cod') {
+    await notifyService.notifyOrderLifecycle(order, 'new_order');
+  }
+
+  const notificationEvent = ORDER_NOTIFICATION_EVENTS[to];
+  if (notificationEvent) {
+    await notifyService.notifyOrderLifecycle(order, notificationEvent, { reason: notes });
+  }
+
   return order;
 };
 
@@ -254,6 +302,70 @@ const getOrder = async (orderId) => {
     .lean();
   if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
   return order;
+};
+
+const getOrderTracking = async (orderId, customer) => {
+  const order = await getOrder(orderId);
+  if (String(order.customer?._id) !== String(customer)) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+  }
+
+  const StoreDelivery = mongoose.model('StoreDelivery');
+  const delivery = await StoreDelivery.findOne({ order: order._id })
+    .populate({
+      path: 'driver',
+      select: 'user vehicle driverCode rating',
+      populate: [
+        { path: 'user', select: 'name mobile' },
+        { path: 'vehicle', select: 'vehicleType registrationNumber model' },
+      ],
+    })
+    .lean();
+
+  const timeline = [
+    order.placedAt ? { status: 'placed', at: order.placedAt } : null,
+    order.acceptedAt ? { status: 'accepted', at: order.acceptedAt } : null,
+    order.readyAt ? { status: 'ready', at: order.readyAt } : null,
+    order.pickedUpAt ? { status: 'picked_up', at: order.pickedUpAt } : null,
+    order.deliveredAt ? { status: 'delivered', at: order.deliveredAt } : null,
+    order.completedAt ? { status: 'completed', at: order.completedAt } : null,
+  ].filter(Boolean);
+
+  return {
+    order,
+    tracking: {
+      deliveryStatus: delivery?.status || null,
+      driver: delivery?.driver
+        ? {
+            name: delivery.driver.user?.name || null,
+            mobile: delivery.driver.user?.mobile || null,
+            driverCode: delivery.driver.driverCode || null,
+            rating: delivery.driver.rating || null,
+            vehicle: delivery.driver.vehicle
+              ? {
+                  type: delivery.driver.vehicle.vehicleType || null,
+                  registrationNumber: delivery.driver.vehicle.registrationNumber || null,
+                  model: delivery.driver.vehicle.model || null,
+                }
+              : null,
+          }
+        : null,
+      assignedAt: delivery?.assignedAt || null,
+      acceptedAt: delivery?.acceptedAt || null,
+      pickedUpAt: delivery?.pickedUpAt || null,
+      deliveredAt: delivery?.deliveredAt || null,
+      failedAt: delivery?.failedAt || null,
+      failureReason: delivery?.failureReason || null,
+      estimatedMinutes: delivery?.estimatedMinutes ?? null,
+      actualMinutes: delivery?.actualMinutes ?? null,
+      distanceKm: delivery?.distanceKm ?? null,
+      otpRequired: Boolean(delivery?.otpHash),
+      codAmount: delivery?.codCollected ?? 0,
+      codStatus: delivery?.codStatus || null,
+      promisedDeliveryAt: order.promisedDeliveryAt || null,
+      timeline,
+    },
+  };
 };
 
 const listOrders = async ({ outlet, customer, lifecycle, page = 1, limit = 20 }) => {
@@ -451,10 +563,11 @@ const cancelOrder = async (orderId, { reason, cancelledBy, cancelledByUserId }) 
 };
 
 module.exports = {
-  createOrder,
-  transitionOrder,
-  getOrder,
-  listOrders,
+    createOrder,
+    transitionOrder,
+    getOrder,
+    getOrderTracking,
+    listOrders,
   cancelOrder,
   assertTransition,
   ORDER_TRANSITIONS,

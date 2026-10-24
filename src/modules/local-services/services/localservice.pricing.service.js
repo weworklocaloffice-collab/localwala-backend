@@ -46,7 +46,7 @@ function priceBooking(input = {}) {
   } = input;
 
   const items = [];
-  let basePaise = 0;
+  let basePaise;
   if (pricingMode === 'FIXED') {
     basePaise = P(basePrice);
     items.push({ kind: 'service', label: 'Service', quantity: 1, unitPrice: fromPaise(basePaise), lineTotal: fromPaise(basePaise) });

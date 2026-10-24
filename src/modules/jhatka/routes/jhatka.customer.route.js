@@ -228,12 +228,43 @@ router.get('/home', appAuth('jhatka_customer_order_list'), async (req, res, next
 });
 
 /**
+ * POST /v1/jhatka/customer/home
+ *
+ * Same as GET /home but via POST. Required by the customer app.
+ */
+router.post('/home', appAuth('jhatka_customer_order_list'), async (req, res, next) => {
+  try {
+    const result = await browseService.home({ query: req.query, models: { JhatkaOutlet, JhatkaProduct } });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
  * GET /v1/jhatka/customer/availability
  *
  * -16: ADDRESS-SCOPED. Same `?lat&lng` as `/home` â€” resolving from a stored address
  * the customer may have moved away from answers for the wrong house.
  */
 router.get('/availability', appAuth('jhatka_customer_order_list'), async (req, res, next) => {
+  try {
+    const result = await browseService.availability({
+      query: req.query,
+      models: { JhatkaOutlet, JhatkaProduct, JhatkaVariant },
+    });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * POST /v1/jhatka/customer/availability
+ *
+ * Same as GET /availability but via POST. Required by the customer app.
+ */
+router.post('/availability', appAuth('jhatka_customer_order_list'), async (req, res, next) => {
   try {
     const result = await browseService.availability({
       query: req.query,

@@ -68,6 +68,7 @@ const serviceBody = {
       maxPrice: Joi.number().min(0),
       inspectionFee: Joi.number().min(0),
       inspectionFeeTreatment: Joi.string().valid('additional', 'credited'),
+      depositPercent: Joi.number().min(0).max(100),
       allowedPaymentModes: Joi.array().items(Joi.string().valid('full_prepay', 'deposit', 'pay_after', 'cod', 'wallet', 'quote_schedule')),
       status: Joi.string().valid('draft', 'active', 'inactive'),
     })
@@ -143,6 +144,7 @@ const updateBody = {
       maxPrice: Joi.number().min(0),
       inspectionFee: Joi.number().min(0),
       inspectionFeeTreatment: Joi.string().valid('additional', 'credited'),
+      depositPercent: Joi.number().min(0).max(100),
       allowedPaymentModes: Joi.array().items(Joi.string().valid('full_prepay', 'deposit', 'pay_after', 'cod', 'wallet', 'quote_schedule')),
       includedWork: Joi.string().max(2000).allow('', null),
       allowedBookingModes: Joi.array().items(Joi.string().valid('INSTANT', 'SLOT', 'REQUEST', 'DATE_RANGE', 'RECURRING')),

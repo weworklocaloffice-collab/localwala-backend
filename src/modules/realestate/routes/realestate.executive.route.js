@@ -179,6 +179,11 @@ router.get(
 // Writes stay on the transition routes above; nothing here mutates.
 router.get('/commissions', executiveAuth, controller.listCommissions);
 router.get('/holds', executiveAuth, controller.listHolds);
+router.get('/holds/:id', executiveAuth, validate(V.holdParams), controller.getHold);
+router.get('/loans', executiveAuth, validate(V.loans), controller.listLoans);
+router.get('/loans/:id', executiveAuth, validate(V.loanParams), controller.getLoan);
+router.get('/sales', executiveAuth, validate(V.sales), controller.listSales);
+router.get('/sales/:id', executiveAuth, validate(V.saleParams), controller.getSale);
 router.get('/followups', executiveAuth, controller.listFollowUps);
 router.get('/settlements', executiveAuth, controller.listSettlements);
 router.get('/notifications', executiveAuth, controller.listNotifications);

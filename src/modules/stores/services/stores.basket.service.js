@@ -37,6 +37,7 @@ const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
 const taxService = require('./stores.tax.service');
 const promotionService = require('./stores.promotion.service');
+const couponService = require('./stores.coupon.service');
 
 const { toPaise, toRupees } = taxService;
 
@@ -82,7 +83,7 @@ const assertCodCheckoutAllowed = ({ paymentMode, deliveryConfig = {}, verticalCo
   return true;
 };
 
-const resolveBasket = async ({ outlet, chain, items, promoCode, customerId, atDate = new Date(), paymentMode = 'gateway' }) => {
+const resolveBasket = async ({ outlet, chain, items, promoCode, couponCode, customerId, atDate = new Date(), paymentMode = 'gateway' }) => {
   const StoreOutlet = mongoose.model('StoreOutlet');
   const ChainProduct = mongoose.model('ChainProduct');
   const ChainProductVariant = mongoose.model('ChainProductVariant');
@@ -127,7 +128,7 @@ const resolveBasket = async ({ outlet, chain, items, promoCode, customerId, atDa
 
   const itemsSubtotalPaise = lines.reduce((sum, l) => sum + l.lineTotalPaise, 0);
 
-  // Order-level promo, validated here (not trusted from the client) and
+  // Order-level promo and coupon, validated here (not trusted from the client) and
   // allocated pro-rata so per-line tax is computed on the discounted base.
   let promo = null;
   let promoDiscountPaise = 0;
@@ -139,9 +140,48 @@ const resolveBasket = async ({ outlet, chain, items, promoCode, customerId, atDa
     promoDiscountPaise = toPaise(Math.min(discountRupees, toRupees(itemsSubtotalPaise)));
     promo = promoDoc;
   }
-  const promoShares = taxService.allocateProRata(promoDiscountPaise, lines.map((l) => l.lineTotalPaise));
 
-  const deliveryFeePaise = promo && promo.type === 'free_delivery'
+  // A coupon is a second, deliberately separate discount source. The plan allows it to
+  // stack only when the promotion says so; an un-stackable promotion wins and the coupon
+  // is refused rather than silently dropped.
+  let coupon = null;
+  let couponDiscountPaise = 0;
+  if (couponCode) {
+    if (promo && promo.stackable === false) {
+      throw new ApiError(httpStatus.CONFLICT, 'PROMOTION_NOT_STACKABLE: this offer cannot be combined with a coupon');
+    }
+    let couponDoc;
+    try {
+      couponDoc = await couponService.validateCoupon({
+        chain, outlet, code: couponCode, cartAmount: toRupees(itemsSubtotalPaise), customerId,
+      });
+    } catch (couponError) {
+      // Backwards compatibility: codes created through the older promotion form live on
+      // StorePromotion, not StoreCoupon. A lone code that is not a coupon is retried once
+      // against the promotion ledger so existing printed codes keep working. When a
+      // promoCode was also supplied the caller is explicitly trying to stack, and an
+      // unknown coupon stays an error.
+      if (promo || !couponError || couponError.statusCode !== httpStatus.NOT_FOUND) throw couponError;
+      const promoDoc = await promotionService.validatePromotion({
+        chain, outlet, code: couponCode, cartAmount: toRupees(itemsSubtotalPaise), customerId,
+      });
+      const discountRupees = promotionService.calculateDiscount(promoDoc, toRupees(itemsSubtotalPaise));
+      promoDiscountPaise = toPaise(Math.min(discountRupees, toRupees(itemsSubtotalPaise)));
+      promo = promoDoc;
+    }
+
+    if (couponDoc) {
+      const remainingRupees = toRupees(itemsSubtotalPaise - promoDiscountPaise);
+      const discountRupees = couponService.calculateDiscount(couponDoc, remainingRupees);
+      couponDiscountPaise = toPaise(Math.min(discountRupees, remainingRupees));
+      coupon = couponDoc;
+    }
+  }
+
+  const discountTotalPaise = promoDiscountPaise + couponDiscountPaise;
+  const discountShares = taxService.allocateProRata(discountTotalPaise, lines.map((l) => l.lineTotalPaise));
+
+  const deliveryFeePaise = (promo && promo.type === 'free_delivery') || (coupon && coupon.type === 'free_delivery')
     ? 0
     : itemsSubtotalPaise >= toPaise(outletDoc.deliveryConfig?.freeDeliveryAbove ?? Infinity)
       ? 0
@@ -164,7 +204,7 @@ const resolveBasket = async ({ outlet, chain, items, promoCode, customerId, atDa
       outletProduct: line.outletProduct,
       unitPricePaise: line.unitPricePaise,
       quantity: line.quantity,
-      discountPaise: promoShares[i],
+      discountPaise: discountShares[i],
       outletStateCode,
       customerStateCode: null, // local delivery — intra-state (§6.19)
       atDate,
@@ -184,7 +224,7 @@ const resolveBasket = async ({ outlet, chain, items, promoCode, customerId, atDa
       attributes: freezeAttributes(line.variant),
       sku: line.variant.sku,
       unitPrice: toRupees(line.unitPricePaise),
-      discountAmount: toRupees(promoShares[i]),
+      discountAmount: toRupees(discountShares[i]),
       taxAmount: toRupees(tax.taxPaise),
       taxPercentage: tax.gstRate,
       hsn: tax.hsn,
@@ -199,7 +239,7 @@ const resolveBasket = async ({ outlet, chain, items, promoCode, customerId, atDa
     });
   }
 
-  const grandTotalPaise = itemsSubtotalPaise - promoDiscountPaise + taxTotalPaise + deliveryFeePaise + deliveryTaxPaise;
+  const grandTotalPaise = itemsSubtotalPaise - discountTotalPaise + taxTotalPaise + deliveryFeePaise + deliveryTaxPaise;
   const minimumOrderPaise = toPaise(outletDoc.deliveryConfig?.minimumOrder || 0);
   if (grandTotalPaise < minimumOrderPaise) {
     throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, `MINIMUM_ORDER_NOT_MET: minimum is ${toRupees(minimumOrderPaise)}`);
@@ -230,7 +270,7 @@ const resolveBasket = async ({ outlet, chain, items, promoCode, customerId, atDa
       packagingFee: 0,
       serviceFee: 0,
       deliveryTip: 0,
-      discountTotal: toRupees(promoDiscountPaise),
+      discountTotal: toRupees(discountTotalPaise),
       grandTotal: toRupees(grandTotalPaise),
       totalQuantity: lines.reduce((sum, l) => sum + l.quantity, 0),
     },
@@ -249,6 +289,10 @@ const resolveBasket = async ({ outlet, chain, items, promoCode, customerId, atDa
       ? { promotion: promo._id, title: promo.name, code: promo.code, discountAmount: toRupees(promoDiscountPaise), freeDelivery: promo.type === 'free_delivery' }
       : null,
     promoDoc: promo,
+    coupon: coupon
+      ? { coupon: coupon._id, title: coupon.title, code: coupon.code, discountAmount: toRupees(couponDiscountPaise) }
+      : null,
+    couponDoc: coupon,
     outlet: outletDoc,
   };
 };

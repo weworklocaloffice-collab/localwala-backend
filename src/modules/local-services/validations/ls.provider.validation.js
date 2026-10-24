@@ -25,11 +25,27 @@ const providerBody = {
   body: Joi.object()
     .keys({
       businessName: Joi.string().max(200).required(),
+      businessAddress: Joi.string().max(500).allow('', null),
       contactName: Joi.string().max(200).allow('', null),
       contactPhone: Joi.string().max(20).allow('', null),
       providerType: Joi.string().valid('independent', 'business', 'salon', 'hotel', 'rental', 'trainer', 'multi_location'),
       serviceKeys: Joi.array().items(Joi.string().max(64)),
     })
+    .unknown(false),
+};
+
+const updateProviderBody = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object()
+    .keys({
+      businessName: Joi.string().max(200),
+      businessAddress: Joi.string().max(500).allow('', null),
+      contactName: Joi.string().max(200).allow('', null),
+      contactPhone: Joi.string().max(20).allow('', null),
+      providerType: Joi.string().valid('independent', 'business', 'salon', 'hotel', 'rental', 'trainer', 'multi_location'),
+      serviceKeys: Joi.array().items(Joi.string().max(64)),
+    })
+    .min(1)
     .unknown(false),
 };
 
@@ -41,6 +57,17 @@ const offeringBody = {
       price: Joi.number().min(0).max(10000000).required(),
       durationMinutes: Joi.number().min(0),
     })
+    .unknown(false),
+};
+
+const updateOfferingBody = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object()
+    .keys({
+      price: Joi.number().min(0).max(10000000),
+      durationMinutes: Joi.number().min(0),
+    })
+    .min(1)
     .unknown(false),
 };
 
@@ -61,4 +88,4 @@ const documentBody = {
     .unknown(false),
 };
 
-module.exports = { providerBody, offeringBody, idParam, statusParam, documentBody };
+module.exports = { providerBody, updateProviderBody, offeringBody, updateOfferingBody, idParam, statusParam, documentBody };

@@ -5,7 +5,7 @@
  * see, list your requests with their applications + offers nested,
  * open one for the compare screen. The backend pieces this gates:
  *
- *   - 3 routes on `/v1/realestate/customer` behind `appAuth()`
+ *   - 4 routes on `/v1/realestate/customer` behind `appAuth()`
  *   - Joi body with employment + income required, and **no** `customer`
  *     / `status` / `bank` field (tenant from the token; a customer
  *     cannot route the lead or self-sanction — BR-10)
@@ -15,6 +15,8 @@
  *     LOAN_TRANSITIONS, then fans out to every ACTIVE bank as one
  *     application each (unique index tolerated on retry)
  *   - first offer moves application + request to OFFERS_PENDING
+ *   - accepting one offer closes the others and advances the winner to
+ *     DOCUMENTS_PENDING, then the bank moves it to UNDER_BANK_REVIEW
  *   - property on a request must be PUBLIC_STATUS (same check as the
  *     enquiry route)
  *
@@ -30,6 +32,8 @@ const CONTROLLER = path.resolve(__dirname, '..', 'src', 'modules', 'realestate',
 const LOAN_SERVICE = path.resolve(__dirname, '..', 'src', 'modules', 'realestate', 'services', 'realestate.loan.service.js');
 const REQUEST_MODEL = path.resolve(__dirname, '..', 'src', 'modules', 'realestate', 'models', 'realestate.loan.request.model.js');
 const STATE_MACHINE = path.resolve(__dirname, '..', 'src', 'modules', 'realestate', 'utils', 'realestate.state.machine.js');
+const BANK_VALIDATION = path.resolve(__dirname, '..', 'src', 'modules', 'realestate', 'validations', 'realestate.bank.validation.js');
+const BANK_CONTROLLER = path.resolve(__dirname, '..', 'src', 'modules', 'realestate', 'controllers', 'realestate.bank.controller.js');
 
 const V = require(VALIDATION);
 const router = require(ROUTE);
@@ -40,13 +44,15 @@ const loanText = fs.readFileSync(LOAN_SERVICE, 'utf8');
 const validationText = fs.readFileSync(VALIDATION, 'utf8');
 const routeText = fs.readFileSync(ROUTE, 'utf8');
 const requestModelText = fs.readFileSync(REQUEST_MODEL, 'utf8');
+const bankValidationText = fs.readFileSync(BANK_VALIDATION, 'utf8');
+const bankControllerText = fs.readFileSync(BANK_CONTROLLER, 'utf8');
 
 const checks = [];
 const assert = (label, ok, detail = '') => {
   checks.push({ label, ok, detail });
 };
 
-// ---- 1. The 3 customer loan routes are wired behind appAuth(). ----
+// ---- 1. The 4 customer loan routes are wired behind appAuth(). ----
 const wired = router.stack
   .filter((l) => l.route)
   .map((l) => ({
@@ -56,24 +62,25 @@ const wired = router.stack
 const expected = [
   { method: 'POST', path: '/loans' },
   { method: 'GET', path: '/loans' },
+  { method: 'POST', path: '/loans/:id/offers/:offerId/accept' },
   { method: 'GET', path: '/loans/:id' },
 ];
 const missing = expected.filter(
   (e) => !wired.some((w) => w.method === e.method && w.path === e.path)
 );
 assert(
-  '[1a] POST/GET /loans and GET /loans/:id wired on the customer router',
+  '[1a] POST/GET /loans, accept-offer and GET /loans/:id wired on the customer router',
   missing.length === 0,
   missing.length
     ? `missing: ${missing.map((m) => m.method + ' ' + m.path).join(', ')}`
-    : 'all 3 wired'
+    : 'all 4 wired'
 );
 
-const loanRouteLines = routeText.split('\n').filter((l) => /router\.(post|get)\('\/loans/.test(l));
+const loanRouteBlocks = routeText.split('router.').filter((block) => block.includes("'/loans"));
 assert(
   '[1b] every loan route declares appAuth()',
-  loanRouteLines.length === 3 && loanRouteLines.every((l) => l.includes('appAuth()')),
-  `${loanRouteLines.length} loan route line(s)`
+  loanRouteBlocks.length === 4 && loanRouteBlocks.every((block) => block.includes('appAuth()')),
+  `${loanRouteBlocks.length} loan route block(s)`
 );
 
 // ---- 2. Validation: schema shape. ----
@@ -215,7 +222,48 @@ assert(
 );
 assert(
   '[7c] the offer status side-effect is best-effort (a failed flip cannot lose an offer)',
-  /try \{\s*const app = await RealEstateLoanApplication\.findById\(loanApplication\);[\s\S]+?catch \(e\) \{\s*\/\* status side-effect is best-effort \*\/\s*\}/.test(loanText)
+  /createOffer[\s\S]+?try \{[\s\S]+?status side-effect is best-effort/.test(loanText)
+);
+assert(
+  '[7d] createOffer scopes the application to the calling bank and blocks post-selection offers',
+  /findOne\(\{ _id: loanApplication, bank \}\)/.test(loanText) &&
+    /no longer accepting offers/.test(loanText)
+);
+
+// ---- 7.5 Customer accepts one offer; losers close; winner advances. ----
+assert(
+  '[7.5a] acceptLoanOffer is exported in the { params } shape with both ids',
+  !!(V.acceptLoanOffer && V.acceptLoanOffer.params) &&
+    /acceptLoanOffer: \{ params: loanOfferParam \}/.test(validationText) &&
+    /offerId: id\.required\(\)/.test(validationText)
+);
+assert(
+  '[7.5b] acceptLoanOffer handler scopes to requireCustomer and calls the service',
+  handlerOk('acceptLoanOffer') && /loanService\.acceptOffer\(/.test(controllerText)
+);
+assert(
+  '[7.5c] acceptOffer proves ownership through { _id, customer }',
+  /async function acceptOffer[\s\S]+?findOne\(\{ _id: requestId, customer: customerId \}\)/.test(loanText)
+);
+assert(
+  '[7.5d] a second selection is rejected with 409',
+  /already selected a loan offer/.test(loanText) && /CONFLICT/.test(loanText)
+);
+assert(
+  '[7.5e] accepting runs in withOptionalTransaction and closes losers',
+  /acceptOffer[\s\S]+?withOptionalTransaction\(async \(session\) =>/.test(loanText) &&
+    /status: 'WITHDRAWN'/.test(loanText) &&
+    /status: 'REJECTED'/.test(loanText)
+);
+assert(
+  '[7.5f] the selected offer becomes ACCEPTED and app + request advance to DOCUMENTS_PENDING',
+  /offer\.status = 'ACCEPTED'/.test(loanText) &&
+    /advanceLoanStatus\(app\.status, 'DOCUMENTS_PENDING'\)/.test(loanText) &&
+    /advanceLoanStatus\(request\.status, 'DOCUMENTS_PENDING'\)/.test(loanText)
+);
+assert(
+  '[7.5g] no BFS shortcut invents an edge outside LOAN_TRANSITIONS',
+  /function loanStatusPath[\s\S]+?LOAN_TRANSITIONS\[current\]/.test(loanText)
 );
 
 // ---- 8. State machine still sanctions the loan lifecycle. ----
@@ -230,6 +278,31 @@ assert(
 assert(
   '[8c] the customer surface cannot reach a bank-only target at all (BR-10)',
   !stateMachine.canTransition(stateMachine.LOAN_TRANSITIONS, 'LOAN_LEAD_CREATED', 'SANCTIONED')
+);
+assert(
+  '[8d] DOCUMENTS_PENDING → UNDER_BANK_REVIEW is legal',
+  stateMachine.canTransition(stateMachine.LOAN_TRANSITIONS, 'DOCUMENTS_PENDING', 'UNDER_BANK_REVIEW')
+);
+assert(
+  '[8e] the full selection → review → sanction path is legal',
+  ['OFFERS_PENDING', 'OFFERS_RECEIVED', 'CUSTOMER_SELECTING', 'BANK_SELECTED', 'APPLICATION_STARTED', 'DOCUMENTS_PENDING', 'UNDER_BANK_REVIEW', 'SANCTIONED']
+    .every((s, i, all) => i === 0 || stateMachine.canTransition(stateMachine.LOAN_TRANSITIONS, all[i - 1], s))
+);
+assert(
+  '[8f] bank status allow-list includes UNDER_BANK_REVIEW',
+  /ALLOWED_STATUS = \[[^\]]*'UNDER_BANK_REVIEW'/.test(bankValidationText)
+);
+assert(
+  '[8g] bank controller passes req.bankId into setApplicationStatus',
+  /setApplicationStatus\([\s\S]+?bankId: req\.bankId/.test(bankControllerText)
+);
+assert(
+  '[8h] setApplicationStatus scopes the application to the calling bank',
+  /bankId && String\(app\.bank\) !== String\(bankId\)/.test(loanText)
+);
+assert(
+  '[8i] a bank withdrawing before selection does not close the parent request',
+  /PRE_SELECTION_REQUEST_STATUSES[\s\S]+?target === 'WITHDRAWN'/.test(loanText)
 );
 
 // ---- 9. Admin can switch the capability off (settings, default ON). ----
@@ -345,6 +418,93 @@ async function liveDbChecks() {
       row ? `request=${row.status} app=${row.applications[0].status}` : ''
     );
 
+    // Cross-bank offer: the suspended bank must not be able to price
+    // another bank's application just because it knows the id.
+    let crossBankOffer = null;
+    try {
+      await svc.createOffer({
+        loanApplication: apps[0]._id,
+        bank: offBank._id,
+        loanAmount: 4700000,
+        tenureMonths: 180,
+        interestRate: 9,
+      });
+    } catch (e) {
+      crossBankOffer = e;
+    }
+    assert(
+      '[10f] createOffer refuses another bank\'s application (404)',
+      crossBankOffer && crossBankOffer.statusCode === 404,
+      crossBankOffer ? `statusCode=${crossBankOffer.statusCode}` : 'no error thrown'
+    );
+
+    // Customer selection: winner ACCEPTED, request + application at
+    // DOCUMENTS_PENDING, then the bank starts underwriting.
+    const selected = await svc.acceptOffer({
+      requestId: request._id,
+      offerId: offer._id,
+      customer,
+    });
+    const selectedApp = selected.applications.find((a) => String(a._id) === String(apps[0]._id));
+    const selectedOffer = selectedApp && selectedApp.offers.find((o) => String(o._id) === String(offer._id));
+    assert(
+      '[10g] accepting one offer advances request + application to DOCUMENTS_PENDING',
+      selected.status === 'DOCUMENTS_PENDING' &&
+        !!selectedApp &&
+        selectedApp.status === 'DOCUMENTS_PENDING' &&
+        !!selectedOffer &&
+        selectedOffer.status === 'ACCEPTED',
+      selected
+        ? `request=${selected.status} app=${selectedApp && selectedApp.status} offer=${selectedOffer && selectedOffer.status}`
+        : 'selection returned nothing'
+    );
+
+    await svc.setApplicationStatus(apps[0]._id, 'UNDER_BANK_REVIEW', {
+      actorType: 'bank',
+      bankId: activeBank._id,
+    });
+    const reviewed = await svc.findForCustomer(request._id, customer);
+    assert(
+      '[10h] bank review keeps the parent request in step',
+      !!reviewed &&
+        reviewed.status === 'UNDER_BANK_REVIEW' &&
+        reviewed.applications[0].status === 'UNDER_BANK_REVIEW',
+      reviewed ? `request=${reviewed.status} app=${reviewed.applications[0].status}` : 'not found'
+    );
+
+    let wrongBankStatus = null;
+    try {
+      await svc.setApplicationStatus(apps[0]._id, 'SANCTIONED', {
+        actorType: 'bank',
+        bankId: offBank._id,
+        sanctionedAmount: 4500000,
+      });
+    } catch (e) {
+      wrongBankStatus = e;
+    }
+    assert(
+      '[10i] setApplicationStatus refuses another bank\'s application (404)',
+      wrongBankStatus && wrongBankStatus.statusCode === 404,
+      wrongBankStatus ? `statusCode=${wrongBankStatus.statusCode}` : 'no error thrown'
+    );
+
+    await svc.setApplicationStatus(apps[0]._id, 'SANCTIONED', {
+      actorType: 'bank',
+      bankId: activeBank._id,
+      sanctionedAmount: 4500000,
+    });
+    const sanctioned = await svc.findForCustomer(request._id, customer);
+    assert(
+      '[10j] sanctioning syncs the request and keeps the amount in rupees',
+      !!sanctioned &&
+        sanctioned.status === 'SANCTIONED' &&
+        sanctioned.applications[0].status === 'SANCTIONED' &&
+        sanctioned.applications[0].sanctionedAmount === 4500000,
+      sanctioned
+        ? `request=${sanctioned.status} app=${sanctioned.applications[0].status} amount=${sanctioned.applications[0].sanctionedAmount}`
+        : 'not found'
+    );
+
     // Settings kill-switch: flagged OFF → 403, then restore.
     const settingsDoc = await Setting.findOne();
     let restored = false;
@@ -368,13 +528,13 @@ async function liveDbChecks() {
       await settingsDoc.save();
       restored = true;
       assert(
-        '[10f] settings.customerCanRequestLoan=false blocks a new request with 403',
+        '[10k] settings.customerCanRequestLoan=false blocks a new request with 403',
         forbidden && forbidden.statusCode === 403,
         forbidden ? `statusCode=${forbidden.statusCode}` : 'no error thrown'
       );
     } else {
       assert(
-        '[10f] settings.customerCanRequestLoan=false blocks a new request with 403',
+        '[10k] settings.customerCanRequestLoan=false blocks a new request with 403',
         true,
         'no settings row on this DB — default-ON path covered by [9a]'
       );

@@ -116,7 +116,7 @@ async function billOccurrence({
   // Past the deadline and still unpaid. §9.6: skip, credit, and count it toward the
   // auto-pause threshold. It is NOT a cancellation of the whole subscription here —
   // that is `occurrence.service`'s job, and it owns the consecutive-failure counter.
-  if (now >= deadline) {
+  if (!force && now >= deadline) {
     occurrence.billingStatus = 'unpaid_skipped';
     occurrence.generationStatus = 'skipped_no_stock';
     occurrence.skipReason = 'payment_failed';

@@ -92,6 +92,14 @@ const storePromotionSchema = mongoose.Schema(
       type: Number,
       default: 1,
     },
+    stackable: {
+      type: Boolean,
+      default: true,
+    },
+    priority: {
+      type: Number,
+      default: 0,
+    },
     startsAt: {
       type: Date,
       required: true,
@@ -104,10 +112,28 @@ const storePromotionSchema = mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // New promotions start as drafts until Admin approval. The legacy values stay in
+    // the enum so already-shipped promotions are not invalidated by this lifecycle.
     status: {
       type: String,
-      default: 'active',
-      enum: ['active', 'inactive', 'expired', 'archived'],
+      default: 'draft',
+      enum: ['draft', 'scheduled', 'live', 'paused', 'expired', 'active', 'inactive', 'archived'],
+    },
+    // Admin moderation. Without this path in the schema, Mongoose strict silently dropped
+    // `approval` written by `moderatePromotion`, so the admin screen re-opened every row
+    // as unmoderated even after an approve/reject.
+    approval: {
+      status: {
+        type: String,
+        default: 'not_required',
+        enum: ['not_required', 'pending', 'approved', 'rejected'],
+      },
+      by: {
+        type: mongoose.SchemaTypes.ObjectId,
+        ref: 'User',
+      },
+      at: Date,
+      note: String,
     },
     createdBy: {
       type: mongoose.SchemaTypes.ObjectId,
@@ -133,14 +159,28 @@ storePromotionSchema.index({ startsAt: 1, endsAt: 1 });
 storePromotionSchema.index({ applicableCategories: 1 });
 storePromotionSchema.index({ applicableProducts: 1 });
 
-storePromotionSchema.statics.findActive = async function (chainId) {
-  const now = new Date();
-  return this.find({
-    chain: chainId,
-    status: 'active',
+storePromotionSchema.statics.redeemableFilter = function (now = new Date()) {
+  return {
+    status: { $in: ['active', 'live'] },
     isActive: true,
     startsAt: { $lte: now },
     endsAt: { $gte: now },
+    $and: [
+      {
+        $or: [
+          { 'approval.status': { $in: ['approved', 'not_required'] } },
+          { 'approval.status': { $exists: false } },
+          { approval: { $exists: false } },
+        ],
+      },
+    ],
+  };
+};
+
+storePromotionSchema.statics.findActive = async function (chainId) {
+  return this.find({
+    chain: chainId,
+    ...this.redeemableFilter(),
   });
 };
 

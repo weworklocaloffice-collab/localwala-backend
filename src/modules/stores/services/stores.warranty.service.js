@@ -44,7 +44,7 @@ const assertTransition = (from, to) => {
   }
 };
 
-const createWarrantyRequest = async ({ customer, outlet, chain, order, product, variant, productName, sku, warrantyType, warrantyMonths, purchaseDate, warrantyExpiryDate, issueDescription, issueCategory, images, documents }) => {
+const createWarrantyRequest = async ({ customer, outlet, chain, order, product, variant, warrantyType, warrantyMonths, purchaseDate, warrantyExpiryDate, issueDescription, issueCategory, images, documents }) => {
   const StoreWarrantyRequest = mongoose.model('StoreWarrantyRequest');
   const StoreOrder = mongoose.model('StoreOrder');
 
@@ -53,21 +53,40 @@ const createWarrantyRequest = async ({ customer, outlet, chain, order, product, 
   if (!orderDoc) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
   if (String(orderDoc.customer) !== String(customer)) throw new ApiError(httpStatus.FORBIDDEN, 'ORDER_NOT_OWNED: this order belongs to another customer');
 
-  // Verify outlet matches order
-  if (String(orderDoc.outlet) !== String(outlet)) throw new ApiError(httpStatus.CONFLICT, 'OUTLET_MISMATCH: order belongs to a different outlet');
+  // Derive the merchant and product from the order. The customer body is not
+  // trusted for any of these: a warranty may only cover something they bought.
+  if (outlet && String(orderDoc.outlet) !== String(outlet)) {
+    throw new ApiError(httpStatus.CONFLICT, 'OUTLET_MISMATCH: order belongs to a different outlet');
+  }
+  if (chain && String(orderDoc.chain) !== String(chain)) {
+    throw new ApiError(httpStatus.CONFLICT, 'CHAIN_MISMATCH: order belongs to a different chain');
+  }
+
+  const item = orderDoc.items.find(
+    (line) => String(line.product) === String(product) && (!variant || String(line.variant) === String(variant))
+  );
+  if (!item) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'PRODUCT_NOT_IN_ORDER: this product is not part of the order');
+  }
+
+  const resolvedPurchaseDate = purchaseDate || orderDoc.deliveredAt || orderDoc.completedAt || orderDoc.placedAt || orderDoc.createdAt;
+  if (new Date(warrantyExpiryDate) <= new Date(resolvedPurchaseDate)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'INVALID_WARRANTY_WINDOW: expiry must be after the purchase date');
+  }
+  const resolvedProductName = item.variantName ? `${item.name} - ${item.variantName}` : item.name;
 
   const request = await StoreWarrantyRequest.create({
     order,
-    outlet,
-    chain,
+    outlet: orderDoc.outlet,
+    chain: orderDoc.chain,
     customer,
-    product,
-    variant,
-    productName,
-    sku,
+    product: item.product,
+    variant: item.variant,
+    productName: resolvedProductName,
+    sku: item.sku,
     warrantyType,
     warrantyMonths,
-    purchaseDate,
+    purchaseDate: resolvedPurchaseDate,
     warrantyExpiryDate,
     issueDescription,
     issueCategory,
@@ -79,9 +98,11 @@ const createWarrantyRequest = async ({ customer, outlet, chain, order, product, 
   return request;
 };
 
-const getWarrantyRequest = async (requestId, { outlet } = {}) => {
+const getWarrantyRequest = async (requestId, { outlet, customer } = {}) => {
   const StoreWarrantyRequest = mongoose.model('StoreWarrantyRequest');
-  const query = outlet ? { _id: requestId, outlet } : { _id: requestId };
+  const query = { _id: requestId };
+  if (outlet) query.outlet = outlet;
+  if (customer) query.customer = customer;
   const request = await StoreWarrantyRequest.findOne(query)
     .populate('order', 'orderNo')
     .populate('product', 'name')
@@ -112,12 +133,20 @@ const listWarrantyRequests = async ({ outlet, customer, status, page = 1, limit 
   return { items, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
 };
 
-const transitionWarranty = async (requestId, to, { outlet, actor, notes, resolution, resolutionNotes, serviceCentreName, serviceCentreAddress, serviceCentreContact, repairCost, costBearer }) => {
+const transitionWarranty = async (requestId, to, { outlet, customer, actor, notes, resolution, resolutionNotes, serviceCentreName, serviceCentreAddress, serviceCentreContact, repairCost, costBearer }) => {
   const StoreWarrantyRequest = mongoose.model('StoreWarrantyRequest');
 
-  const query = outlet ? { _id: requestId, outlet } : { _id: requestId };
+  const query = { _id: requestId };
+  if (outlet) query.outlet = outlet;
+  if (customer) query.customer = customer;
   const request = await StoreWarrantyRequest.findOne(query);
   if (!request) throw new ApiError(httpStatus.NOT_FOUND, 'Warranty request not found');
+
+  // Customers may only withdraw their own request. Approval, repair and
+  // resolution are outlet decisions and stay behind the partner route.
+  if (customer && to !== 'cancelled') {
+    throw new ApiError(httpStatus.FORBIDDEN, 'CUSTOMER_WARRANTY_SCOPE: customers may only cancel a warranty request');
+  }
 
   assertTransition(request.status, to);
 

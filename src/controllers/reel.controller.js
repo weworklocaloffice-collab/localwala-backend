@@ -25,6 +25,8 @@ const ReelReport = require('../modules/reels/models/reel.report.model');
 const feedService = require('../modules/reels/services/reel.feed.service');
 const interactionService = require('../modules/reels/services/reel.interaction.service');
 const commentService = require('../modules/reels/services/reel.comment.service');
+const { isVisible } = require('../modules/reels/services/reel.visibility');
+const { appWebSettingService } = require('../services');
 const ApiError = require('../utils/ApiError');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
@@ -32,6 +34,10 @@ const path = require('path');
 // passport's jwtVerify resolves req.user to the full Mongoose User document,
 // so the id lives at _id/id — never at uid (legacy Firebase shape).
 const resolveUserId = (req) => req.user._id || req.user.id || req.user.uid;
+
+// For routes mounted behind the optional-auth middleware: a guest has no
+// req.user at all, and dereferencing it would turn a public read into a 500.
+const resolveOptionalUserId = (req) => (req.user ? resolveUserId(req) : null);
 
 const uploadReel = catchAsync(async (req, res) => {
   const { description, hashtags, musicTitle } = req.body;
@@ -66,7 +72,7 @@ const uploadReel = catchAsync(async (req, res) => {
 // (two queries for N reels, never N+1) — docs §9.
 const fetchReels = catchAsync(async (req, res) => {
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
-  const viewerId = resolveUserId(req);
+  const viewerId = resolveOptionalUserId(req);
   // Viewer location powers the reel card's distance badge. The user schema
   // DEFAULTS `location.coordinates` to [0, 0] (Null Island), which is truthy —
   // so the sentinel must be rejected explicitly or every user who never set a
@@ -79,7 +85,10 @@ const fetchReels = catchAsync(async (req, res) => {
       viewerLocation = { lat, lng };
     }
   }
-  const result = await feedService.getFeed(options, viewerId, viewerLocation);
+  // Guests are capped by the admin-configured allowance. Reading it only for
+  // anonymous requests keeps the settings lookup off the signed-in path.
+  const guestLimit = viewerId ? null : await appWebSettingService.getReelsGuestLimit();
+  const result = await feedService.getFeed(options, viewerId, viewerLocation, guestLimit);
   res.send(result);
 });
 
@@ -142,8 +151,11 @@ const addComment = catchAsync(async (req, res) => {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Comment content is required');
   }
 
+  // Visibility, not just existence: a paused or rejected reel is absent from the feed,
+  // but this only checked that the document was there, so comments kept landing on
+  // content no customer could reach.
   const reel = await Reel.findById(reelId);
-  if (!reel) {
+  if (!reel || !isVisible(reel)) {
     throw new ApiError(httpStatus.NOT_FOUND, 'Reel not found');
   }
 
@@ -153,6 +165,13 @@ const addComment = catchAsync(async (req, res) => {
 
 const getComments = catchAsync(async (req, res) => {
   const { reelId } = req.params;
+  // Existence and visibility are checked here for the same reason as addComment: without
+  // this an id for a paused or rejected reel returned an empty page, which read as "this
+  // reel has no comments" rather than "this reel is not there".
+  const reel = await Reel.findById(reelId);
+  if (!reel || !isVisible(reel)) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Reel not found');
+  }
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
   const result = await commentService.listComments(reelId, options);
   res.send(result);
@@ -167,12 +186,21 @@ const reportReel = catchAsync(async (req, res) => {
     throw new ApiError(httpStatus.NOT_FOUND, 'Reel not found');
   }
 
-  const report = await ReelReport.create({
-    reelId,
-    reporterId: resolveUserId(req),
-    reason,
-    details,
-  });
+  // Existence is the only gate here, unlike addComment: a report about a reel that has
+  // since been paused or pulled is exactly the report you want to keep.
+  const reporterId = resolveUserId(req);
+  let report;
+  try {
+    report = await ReelReport.create({ reelId, reporterId, reason, details });
+  } catch (err) {
+    // The unique (reelId, reporterId) index decides this, not a read-then-write, so a
+    // double-tap cannot slip two copies in. 409 rather than 500: the caller's intent was
+    // recorded, and re-submitting will not change that.
+    if (err.code === 11000) {
+      throw new ApiError(httpStatus.CONFLICT, 'You have already reported this reel');
+    }
+    throw err;
+  }
   res.status(httpStatus.CREATED).send(report);
 });
 

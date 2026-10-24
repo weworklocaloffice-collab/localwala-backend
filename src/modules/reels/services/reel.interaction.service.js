@@ -21,10 +21,23 @@ const Reel = require('../../../models/reel.model');
 const ReelInteraction = require('../models/reel.interaction.model');
 const ReelView = require('../models/reel.view.model');
 const ApiError = require('../../../utils/ApiError');
+const { isVisible } = require('./reel.visibility');
 
+/**
+ * Loads a reel and refuses anything a customer cannot actually see.
+ *
+ * This used to check only that the document existed, so every write below - like, save,
+ * share, view - succeeded against a PAUSED, REJECTED, locked or not-yet-published reel.
+ * Those reels are absent from the feed, so the counters and the view log were recording
+ * engagement with content nobody could reach, and the analytics read high for exactly the
+ * reels an operator had taken down.
+ *
+ * 404 rather than 403: telling a caller that a paused reel exists leaks the moderation
+ * state, which is the same information the feed's exclusion already withholds.
+ */
 const ensureReel = async (reelId) => {
   const reel = await Reel.findById(reelId);
-  if (!reel) throw new ApiError(httpStatus.NOT_FOUND, 'Reel not found');
+  if (!reel || !isVisible(reel)) throw new ApiError(httpStatus.NOT_FOUND, 'Reel not found');
   return reel;
 };
 

@@ -37,7 +37,11 @@ const getCheckoutSummary = async ({ customer, outlet, chain, address, promoCode,
       variant: item.variant && item.variant._id ? item.variant._id : item.variant,
       quantity: item.quantity,
     })),
+    // The two codes have separate ledgers and separate order snapshots. Passing the
+    // coupon as a promo made `StoreOrder.promo` claim a voucher was a promotion and left
+    // `StoreOrder.coupon` permanently null.
     promoCode,
+    couponCode,
     customerId: customer,
     paymentMode: paymentMode || 'gateway',
   });
@@ -57,6 +61,7 @@ const getCheckoutSummary = async ({ customer, outlet, chain, address, promoCode,
     discountTotal: basket.totals.discountTotal,
     grandTotal: basket.totals.grandTotal,
     promotion: basket.promo ? { code: basket.promo.code, type: basket.promoDoc.type, value: basket.promoDoc.value } : null,
+    coupon: basket.coupon ? { code: basket.coupon.code, type: basket.couponDoc.type, value: basket.couponDoc.value } : null,
     outlet: {
       name: basket.outlet.name,
       outletCode: basket.outlet.outletCode,

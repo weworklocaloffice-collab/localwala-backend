@@ -45,6 +45,10 @@ const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
 const catalogService = require('../services/stores.catalog.service');
 const reviewService = require('../services/stores.review.service');
+const couponService = require('../services/stores.coupon.service');
+const storefrontService = require('../services/stores.storefront.service');
+const validate = require('../../../middlewares/validate');
+const V = require('../validations/stores.validation');
 
 const router = express.Router();
 
@@ -66,12 +70,23 @@ const getStoreProfile = async (req, res) => {
 
 /**
  * @function browseProducts
- * @description The chain owns the catalogue, the outlet owns availability (BR-36). The
- * `outlet` is taken from the PATH, never from the query, so a caller cannot widen the
- * result set by supplying their own outlet id.
+ * @description The chain owns the catalogue, the outlet owns availability (BR-36).
+ *
+ * `outlet` alone was not enough: `listProducts` has no outlet filter, so this returned
+ * every chain's catalogue and a storefront showed products it could not sell. The outlet
+ * is resolved first and its chain is the catalogue filter, so the query is scoped by the
+ * PATH and cannot be widened by a caller-supplied `chain`.
  */
 const browseProducts = async (req, res) => {
-  const result = await catalogService.listProducts({ ...req.query, outlet: req.params.store });
+  const StoreOutlet = mongoose.model('StoreOutlet');
+  const outlet = await StoreOutlet.findById(req.params.store).select('chain status').lean();
+  if (!outlet || outlet.status !== 'active') throw new ApiError(httpStatus.NOT_FOUND, 'Store not found');
+
+  const result = await catalogService.listProducts({
+    ...req.query,
+    chain: outlet.chain,
+    outlet: req.params.store,
+  });
   res.status(httpStatus.OK).send(result);
 };
 
@@ -81,23 +96,121 @@ const getStoreReviews = async (req, res) => {
 };
 
 /**
- * @function getStoreOffers
- * @description Only `active` AND `isActive` promotions. A draft or scheduled promotion is
- * not an offer, and both flags are checked here rather than trusted from the caller.
+ * @function activeOffers
+ * @description Only `active` AND `isActive` promotions inside their start/end window.
+ * The flags alone were checked before, so an offer whose `endsAt` had passed stayed on
+ * the storefront and failed at checkout. Chain-wide promotions (no `outlet`) are included
+ * because that is how a brand offer is modelled; an outlet promotion is scoped to the
+ * outlet in the path.
  */
-const getStoreOffers = async (req, res) => {
+const activeOffers = async (storeId) => {
+  const StoreOutlet = mongoose.model('StoreOutlet');
   const StorePromotion = mongoose.model('StorePromotion');
-  const promotions = await StorePromotion.find({ outlet: req.params.store, status: 'active', isActive: true });
+  const outlet = await StoreOutlet.findById(storeId).select('chain').lean();
+  if (!outlet) throw new ApiError(httpStatus.NOT_FOUND, 'Store not found');
+
+  const now = new Date();
+  return StorePromotion.find({
+    ...StorePromotion.redeemableFilter(now),
+    $or: [{ outlet: storeId }, { chain: outlet.chain, outlet: null }],
+  })
+    .select('name description type value maxDiscount minOrderAmount code startsAt endsAt')
+    .sort({ createdAt: -1 })
+    .lean();
+};
+
+const getStoreOffers = async (req, res) => {
+  const promotions = await activeOffers(req.params.store);
   res.status(httpStatus.OK).send({ promotions });
+};
+
+/**
+ * @function getStoreCoupons
+ * @description The redeemable subset of the same offers: a promotion without a code is
+ * an automatic discount, and showing it as a coupon the customer must type is a dead end.
+ * The code is lowercased for display; validation uppercases on input.
+ */
+const getStoreCoupons = async (req, res) => {
+  const StoreOutlet = mongoose.model('StoreOutlet');
+  const outlet = await StoreOutlet.findById(req.params.store).select('chain').lean();
+  if (!outlet) throw new ApiError(httpStatus.NOT_FOUND, 'Store not found');
+
+  const [promotions, couponDocs] = await Promise.all([
+    activeOffers(req.params.store),
+    couponService.listActiveCoupons({ chain: outlet.chain, outlet: req.params.store }),
+  ]);
+  const promotionCoupons = promotions.filter((promotion) => promotion.code);
+  res.status(httpStatus.OK).send({ coupons: [...couponDocs, ...promotionCoupons] });
 };
 
 // `eligibilityService` is not required here: eligibility is a partner-side concern and
 // this file serves only the public storefront reads. Importing it "for symmetry" would
 // be a lie about what this router does.
 
+// ---------------------------------------------------------------------------
+// chain-first customer surface (Phase 4 / Phase 16 contract)
+//
+// LITERAL segments before `/:store`. `/chains` and `/:store` are both one-segment GETs,
+// so declaring `/chains` after the catch-all would make it unreachable.
+// ---------------------------------------------------------------------------
+
+const getCatalogTree = async (req, res) => {
+  const categories = await storefrontService.getCatalogTree();
+  res.status(httpStatus.OK).send({ categories });
+};
+
+const listChains = async (req, res) => {
+  const chains = await storefrontService.listChains({
+    lat: req.query.lat,
+    lng: req.query.lng,
+    radiusKm: req.query.radiusKm,
+    limit: req.query.limit,
+  });
+  res.status(httpStatus.OK).send({ chains });
+};
+
+const getChainProfile = async (req, res) => {
+  const result = await storefrontService.getChainProfile({
+    chain: req.params.chain,
+    outlet: req.query.outlet,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const getChainProducts = async (req, res) => {
+  const result = await storefrontService.listChainProducts({
+    chain: req.params.chain,
+    outlet: req.query.outlet,
+    query: req.query,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const getChainReviews = async (req, res) => {
+  const result = await storefrontService.listChainReviews({
+    chain: req.params.chain,
+    page: req.query.page,
+    limit: req.query.limit,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const getChainOffers = async (req, res) => {
+  const promotions = await storefrontService.listChainOffers({ chain: req.params.chain });
+  res.status(httpStatus.OK).send({ promotions });
+};
+
+router.get('/catalog/tree', getCatalogTree);
+router.get('/chains', validate(V.chainListValidation), listChains);
+router.get('/chains/:chain', validate(V.chainProfileValidation), getChainProfile);
+router.get('/chains/:chain/products', validate(V.chainProductsValidation), getChainProducts);
+router.get('/chains/:chain/reviews', validate(V.chainReviewsValidation), getChainReviews);
+router.get('/chains/:chain/offers', validate(V.chainOffersValidation), getChainOffers);
+
 router.get('/:store', getStoreProfile);
 router.get('/:store/products', browseProducts);
 router.get('/:store/reviews', getStoreReviews);
 router.get('/:store/offers', getStoreOffers);
+router.get('/:store/coupons', getStoreCoupons);
 
 module.exports = router;

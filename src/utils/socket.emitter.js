@@ -65,6 +65,26 @@ const emitToUser = (userId, event, payload) => {
 };
 
 /**
+ * Emit to an arbitrary room, such as the `store-order:<id>` room a customer
+ * joins for live order tracking.
+ *
+ * @param {string} room
+ * @param {string} event
+ * @param {object} payload
+ * @returns {boolean} whether the emit happened
+ */
+const emitToRoom = (room, event, payload) => {
+  if (!io || !room) return false;
+  try {
+    io.to(room).emit(event, payload);
+    return true;
+  } catch (e) {
+    logger.warn(`socket emit ${event} to room ${room} failed: ${e.message}`);
+    return false;
+  }
+};
+
+/**
  * Emit to many users. Fan-out to a dispatch batch, so the one-failure case is
  * logged and skipped rather than aborting the loop.
  *
@@ -82,4 +102,4 @@ const emitToUsers = (userIds, event, buildPayload) => {
   return delivered;
 };
 
-module.exports = { setSocketServer, isConnected, emitToUser, emitToUsers };
+module.exports = { setSocketServer, isConnected, emitToUser, emitToRoom, emitToUsers };

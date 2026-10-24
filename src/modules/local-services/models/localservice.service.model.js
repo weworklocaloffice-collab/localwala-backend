@@ -49,6 +49,9 @@ const localServiceServiceSchema = mongoose.Schema(
     // credited = adjusted against final invoice. Must be displayed pre-booking.
     inspectionFee: moneyField(0),
     inspectionFeeTreatment: { type: String, required: false, enum: ['additional', 'credited'], default: 'additional' },
+    // Gateway payment timing: 0 = full prepayment, 1-99 = deposit now and
+    // balance later, 100 = full prepayment.
+    depositPercent: { type: Number, required: false, min: 0, max: 100, default: 0 },
     // Permitted payment modes for this service. Booking paymentMode must be listed.
     allowedPaymentModes: {
       type: [String],

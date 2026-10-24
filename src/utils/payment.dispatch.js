@@ -310,6 +310,10 @@ const dispatchFailedCallback = async (payment, reason) => {
     return { handled: false, subject: null };
   }
 
+  if (await localServicePaymentService.routeFailedCallback(payment, reason)) {
+    return { handled: true, subject: payment.paymentFrom };
+  }
+
   if (await jhatkaPaymentService.routeFailedCallback(payment, reason)) {
     return { handled: true, subject: payment.paymentFrom };
   }

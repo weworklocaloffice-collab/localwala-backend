@@ -78,7 +78,7 @@ const applyListingPackagePayment = async (payment) => {
     return;
   }
   if (order.status === 'PAID') return; // webhook replay
-  await orderService.markPaid(order._id);
+  await orderService.markPaid(order._id, { paymentInitiation: payment.id });
 };
 
 const applyHoldPayment = async (payment) => {

@@ -114,6 +114,7 @@ const refundSchema = mongoose.Schema(
     components: { type: [String], required: false, default: [] },
     requestedAmount: moneyField(0),
     approvedAmount: moneyField(0),
+    completedAmount: moneyField(0),
     reason: { type: String, required: true, trim: true },
     policyVersion: { type: Number, required: false },
     status: {
@@ -123,6 +124,9 @@ const refundSchema = mongoose.Schema(
       default: 'requested',
     },
     gatewayRefundReference: { type: String, required: false, trim: true },
+    // Why the cash leg failed, so a retry is an informed action.
+    failureReason: { type: String, required: false, trim: true },
+    completedAt: { type: Date, required: false },
   },
   { timestamps: true, toJSON: { getters: true } }
 );

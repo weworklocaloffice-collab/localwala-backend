@@ -24,7 +24,13 @@ const router = express.Router();
 // Guest-accessible on purpose (browse before sign-in). Service hardcodes
 // status:active — never expose drafts.
 router.route('/categories').get(controller.publicCategories);
+router.route('/categories/:id/subcategories').get(controller.publicSubcategories);
 router.route('/services').get(controller.publicServices);
+router.route('/services/:id').get(controller.publicServiceDetail);
+router.route('/offerings').get(controller.publicOfferings);
+router.route('/offerings/:id').get(controller.publicOfferingDetail);
+router.route('/providers').get(controller.publicProviders);
+router.route('/facets').get(controller.publicFacets);
 router.route('/availability').get(controller.searchAvailability);
 
 module.exports = router;

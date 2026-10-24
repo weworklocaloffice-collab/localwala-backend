@@ -32,9 +32,13 @@ const slugify = (value) =>
 const generateSku = (outletCode, productCode, variantCode) =>
   `${outletCode}-${productCode}-${variantCode}`.toUpperCase();
 
-const listProducts = async ({ outlet, chain, category, subcategory, brand, search, facetKeys, inStockOnly, organicOnly, page = 1, limit = 20, sort = 'name' }) => {
+const listProducts = async ({ outlet, chain, category, subcategory, brand, search, facetKeys, inStockOnly, organicOnly, status, page = 1, limit = 20, sort = 'name' }) => {
   const ChainProduct = mongoose.model('ChainProduct');
-  const filter = { status: 'active' };
+  // The partner catalogue manages inactive and archived rows too. `all` is the explicit
+  // opt-out; an absent status keeps the customer-facing default of active-only.
+  const filter = {};
+  if (status && status !== 'all') filter.status = status;
+  else if (!status) filter.status = 'active';
   if (chain) filter.chain = chain;
   if (category) filter.category = category;
   if (subcategory) filter.subcategory = subcategory;
@@ -45,16 +49,36 @@ const listProducts = async ({ outlet, chain, category, subcategory, brand, searc
       { description: { $regex: search, $options: 'i' } },
     ];
   }
+  let allowedProductIds = null;
   if (facetKeys && facetKeys.length) {
-    filter.facetKeys = { $all: facetKeys };
+    const ChainProductVariant = mongoose.model('ChainProductVariant');
+    allowedProductIds = await ChainProductVariant.distinct('product', {
+      facetKeys: { $all: facetKeys },
+      status: 'active',
+    });
   }
+  // `inStockOnly` was accepted by validation but ignored, so the browse screen could show
+  // products the selected outlet cannot sell. Availability is per outlet and the stock row
+  // is the authority; `allowNegativeStock` rows are sellable even when availableQty is 0.
+  if (inStockOnly && outlet) {
+    const StoreOutletStockItem = mongoose.model('StoreOutletStockItem');
+    const stockProductIds = await StoreOutletStockItem.distinct('product', {
+      outlet,
+      $or: [{ availableQty: { $gt: 0 } }, { allowNegativeStock: true }],
+    });
+    allowedProductIds =
+      allowedProductIds === null
+        ? stockProductIds
+        : allowedProductIds.filter((id) => stockProductIds.some((stockId) => String(stockId) === String(id)));
+  }
+  if (allowedProductIds !== null) filter._id = { $in: allowedProductIds };
   if (organicOnly) filter.isOrganic = true;
 
   const sortMap = {
     name: { name: 1 },
     newest: { createdAt: -1 },
-    price_asc: { 'variants.price': 1 },
-    price_desc: { 'variants.price': -1 },
+    price_asc: { basePrice: 1 },
+    price_desc: { basePrice: -1 },
   };
 
   const [items, total] = await Promise.all([
@@ -68,7 +92,52 @@ const listProducts = async ({ outlet, chain, category, subcategory, brand, searc
     ChainProduct.countDocuments(filter),
   ]);
 
-  return { items, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
+  let enriched = items;
+  if (outlet && items.length) {
+    const ChainProductVariant = mongoose.model('ChainProductVariant');
+    const StoreOutletStockItem = mongoose.model('StoreOutletStockItem');
+    const productIds = items.map((item) => item._id);
+
+    const [variants, stockRows] = await Promise.all([
+      ChainProductVariant.find({ product: { $in: productIds }, status: 'active' })
+        .select('_id product')
+        .lean(),
+      StoreOutletStockItem.find({ outlet, product: { $in: productIds } })
+        .select('product variant availableQty allowNegativeStock')
+        .lean(),
+    ]);
+
+    const variantCounts = new Map();
+    for (const variant of variants) {
+      const key = String(variant.product);
+      variantCounts.set(key, (variantCounts.get(key) || 0) + 1);
+    }
+
+    const stockByProduct = new Map();
+    for (const row of stockRows) {
+      const key = String(row.product);
+      const current = stockByProduct.get(key) || { availableQty: 0, variantsInStock: 0 };
+      current.availableQty += Math.max(0, row.availableQty || 0);
+      if ((row.availableQty || 0) > 0 || row.allowNegativeStock) current.variantsInStock += 1;
+      stockByProduct.set(key, current);
+    }
+
+    enriched = items.map((item) => {
+      const key = String(item._id);
+      const stock = stockByProduct.get(key) || { availableQty: 0, variantsInStock: 0 };
+      return {
+        ...item,
+        availability: {
+          inStock: stock.variantsInStock > 0,
+          availableQty: stock.availableQty,
+          variantsInStock: stock.variantsInStock,
+          variantCount: variantCounts.get(key) || 0,
+        },
+      };
+    });
+  }
+
+  return { items: enriched, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
 };
 
 /**
@@ -89,10 +158,12 @@ const listProducts = async ({ outlet, chain, category, subcategory, brand, searc
  * the CHAIN's; what the customer actually pays is the outlet's, recomputed server-side by
  * `resolveBasket` (BR-36), and that is still the figure that decides the order.
  */
-const getProduct = async (productId) => {
+const getProduct = async (productId, { chain } = {}) => {
   const ChainProduct = mongoose.model('ChainProduct');
   const ChainProductVariant = mongoose.model('ChainProductVariant');
-  const product = await ChainProduct.findById(productId)
+  const filter = { _id: productId };
+  if (chain) filter.chain = chain;
+  const product = await ChainProduct.findOne(filter)
     .populate('category', 'name slug')
     .populate('subcategory', 'name slug')
     .populate('brand', 'name slug logo')
@@ -135,9 +206,11 @@ const createProduct = async ({ chain, category, subcategory, brand, name, slug, 
   return product;
 };
 
-const updateProduct = async (productId, updates) => {
+const updateProduct = async (productId, updates, { chain } = {}) => {
   const ChainProduct = mongoose.model('ChainProduct');
-  const product = await ChainProduct.findById(productId);
+  const filter = { _id: productId };
+  if (chain) filter.chain = chain;
+  const product = await ChainProduct.findOne(filter);
   if (!product) throw new ApiError(httpStatus.NOT_FOUND, 'Product not found');
 
   const allowed = ['name', 'description', 'images', 'hasVariants', 'variantAxes', 'basePrice', 'baseMrp', 'tax', 'taxPercentage', 'hsn', 'tags', 'searchTerms', 'isOrganic', 'warranty', 'status'];
@@ -157,9 +230,9 @@ const updateProduct = async (productId, updates) => {
  * fields. A hard delete here would orphan every order line that referenced it, and those
  * lines are the reason BR-25 exists.
  */
-const deleteProduct = async (productId, { by, reason } = {}) => {
+const deleteProduct = async (productId, { by, reason, chain } = {}) => {
   const ChainProduct = mongoose.model('ChainProduct');
-  const archived = await ChainProduct.archive(productId, { by, reason });
+  const archived = await ChainProduct.archive(productId, { by, reason, chain });
   if (!archived) throw new ApiError(httpStatus.NOT_FOUND, 'Product not found');
   return archived;
 };
@@ -298,6 +371,39 @@ const approveProduct = async (productId, { status, by, note } = {}) => {
   return product;
 };
 
+/**
+ * The active taxonomy a partner needs to fill the product form.
+ *
+ * The admin taxonomy endpoints are cross-tenant and expose archive controls. A partner
+ * only needs the live tree, so these three reads are deliberately narrow: active rows,
+ * a small field projection, and no writes.
+ */
+const listCategories = async () => {
+  const StoreCategory = mongoose.model('StoreCategory');
+  return StoreCategory.find({ status: true })
+    .select('key name icon sortOrder')
+    .sort({ sortOrder: 1, name: 1 })
+    .lean();
+};
+
+const listSubcategories = async ({ category } = {}) => {
+  const StoreSubcategory = mongoose.model('StoreSubcategory');
+  const filter = { status: true };
+  if (category) filter.category = category;
+  return StoreSubcategory.find(filter)
+    .select('key name slug category sortOrder categoryDefaults')
+    .sort({ sortOrder: 1, name: 1 })
+    .lean();
+};
+
+const listBrands = async () => {
+  const StoreBrand = mongoose.model('StoreBrand');
+  return StoreBrand.find({ status: 'approved' })
+    .select('name slug logo categories subcategories')
+    .sort({ name: 1 })
+    .lean();
+};
+
 module.exports = {
   listProducts,
   getProduct,
@@ -306,6 +412,9 @@ module.exports = {
   deleteProduct,
   generateVariants,
   getProductForm,
+  listCategories,
+  listSubcategories,
+  listBrands,
   slugify,
   generateSku,
 };

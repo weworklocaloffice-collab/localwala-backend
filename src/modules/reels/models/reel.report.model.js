@@ -55,6 +55,13 @@ reelReportSchema.plugin(paginate);
 reelReportSchema.index({ reelId: 1, status: 1 });
 reelReportSchema.index({ reporterId: 1, createdAt: -1 });
 
+// One report per reporter per reel, enforced by the database rather than by a
+// findOne-then-create in the controller. The route was previously unthrottled and
+// un-deduplicated, so the same submission could be inserted any number of times and the
+// moderation queue filled with copies of a single complaint. A duplicate now surfaces
+// as a 11000 and is answered as "already reported" - see reel.controller.js.
+reelReportSchema.index({ reelId: 1, reporterId: 1 }, { unique: true });
+
 const ReelReport = mongoose.model('ReelReport', reelReportSchema);
 
 module.exports = ReelReport;

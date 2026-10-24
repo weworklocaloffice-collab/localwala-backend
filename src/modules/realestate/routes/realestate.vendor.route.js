@@ -88,6 +88,12 @@ router.post(
   validate(V.cancel),
   controller.cancelOrder
 );
+router.post(
+  '/orders/:id/pay',
+  realestateTenantMiddleware,
+  validate(V.pay),
+  controller.payOrder
+);
 
 router.get(
   '/entitlements',

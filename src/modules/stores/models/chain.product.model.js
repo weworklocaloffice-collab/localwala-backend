@@ -21,6 +21,12 @@ const { toJSON, paginate, slugGenerator } = require('../../../models/plugins');
 
 const chainProductSchema = mongoose.Schema(
   {
+    chain: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'StoreChain',
+      required: true,
+      index: true,
+    },
     name: {
       type: String,
       required: true,
@@ -29,7 +35,6 @@ const chainProductSchema = mongoose.Schema(
     slug: {
       type: String,
       source: 'name',
-      unique: true,
     },
     description: {
       type: String,
@@ -45,8 +50,35 @@ const chainProductSchema = mongoose.Schema(
       ref: 'StoreSubcategory',
     },
     brand: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'StoreBrand',
+    },
+    images: {
+      type: [String],
+      default: [],
+    },
+    videoUrl: {
       type: String,
       trim: true,
+    },
+    hasVariants: {
+      type: Boolean,
+      default: false,
+    },
+    variantAxes: [
+      {
+        type: mongoose.SchemaTypes.ObjectId,
+        ref: 'StoreAttributeTemplate',
+      },
+    ],
+    basePrice: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+    baseMrp: {
+      type: Number,
+      min: 0,
     },
     defaultGstRate: {
       type: Number,
@@ -72,6 +104,62 @@ const chainProductSchema = mongoose.Schema(
       type: String,
       enum: ['inclusive', 'exclusive', 'none'],
       default: 'inclusive',
+    },
+    tax: {
+      type: String,
+      enum: ['inclusive', 'exclusive', 'none'],
+      default: 'inclusive',
+    },
+    taxPercentage: {
+      type: Number,
+      min: 0,
+      max: 28,
+      default: 0,
+    },
+    taxConfig: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'TaxConfiguration',
+    },
+    tags: {
+      type: [String],
+      default: [],
+    },
+    searchTerms: {
+      type: [String],
+      default: [],
+    },
+    isOrganic: {
+      type: Boolean,
+      default: false,
+    },
+    organicVerification: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'StoreOrganicVerification',
+    },
+    warranty: {
+      months: { type: Number, min: 0 },
+      provider: { type: String, trim: true },
+      terms: { type: String, trim: true },
+      type: {
+        type: String,
+        enum: ['manufacturer', 'store', 'manufacturer_service_centre'],
+      },
+    },
+    rating: {
+      type: Number,
+      default: 0,
+    },
+    ratingCount: {
+      type: Number,
+      default: 0,
+    },
+    soldCount: {
+      type: Number,
+      default: 0,
+    },
+    createdBy: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'User',
     },
     attributes: {
       type: Map,
@@ -178,8 +266,10 @@ chainProductSchema.statics.findByCategory = async function (categoryId) {
 /**
  * Archive, never delete (BR-25).
  */
-chainProductSchema.statics.archive = async function (productId, { by, reason } = {}) {
-  const product = await this.findById(productId);
+chainProductSchema.statics.archive = async function (productId, { by, reason, chain } = {}) {
+  const filter = { _id: productId };
+  if (chain) filter.chain = chain;
+  const product = await this.findOne(filter);
   if (!product) return null;
   product.status = 'archived';
   product.archivedAt = new Date();

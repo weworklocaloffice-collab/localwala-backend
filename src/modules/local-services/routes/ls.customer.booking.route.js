@@ -28,6 +28,10 @@ router.route('/bookings').post(appAuth('localservices_customer_read'), validate(
 
 router.route('/bookings/:id').get(appAuth('localservices_customer_read'), validate(V.bookingIdParam), controller.getMyBooking);
 
+router.route('/bookings/:id/payment').get(appAuth('localservices_customer_read'), validate(V.bookingIdParam), controller.getBookingPayment);
+
+router.route('/bookings/:id/pay').post(appAuth('localservices_customer_read'), validate(V.paymentBody), controller.initiatePayment);
+
 // Target status is route param (realestate pattern), allow-listed by service table.
 router.route('/bookings/:id/:status').post(appAuth('localservices_customer_read'), validate(V.transitionParam), controller.transitionBooking);
 

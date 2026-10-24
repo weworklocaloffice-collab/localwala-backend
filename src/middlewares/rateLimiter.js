@@ -56,6 +56,15 @@ const reelsCommentLimiter = rateLimit({
   keyGenerator: userAwareKey,
 });
 
+// Reports are the one reels write that was left unthrottled, so a single authenticated
+// caller could fill the moderation queue with duplicates at request speed and bury the
+// real submissions. Tight on purpose: a genuine user reports a handful of times a week.
+const reelsReportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: Number(process.env.RATE_REELS_REPORT_MAX) || 10,
+  keyGenerator: userAwareKey,
+});
+
 // Admin uploads cost S3 + transcode. Admins are trusted, so this only catches
 // runaway clients — state flips (publish/pause) stay unthrottled.
 const reelsAdminUploadLimiter = rateLimit({
@@ -87,6 +96,7 @@ module.exports = {
   contactsSyncLimiter,
   reelsInteractLimiter,
   reelsCommentLimiter,
+reelsReportLimiter,
   reelsAdminUploadLimiter,
   realestateSearchLimiter,
   supportChatSendLimiter,

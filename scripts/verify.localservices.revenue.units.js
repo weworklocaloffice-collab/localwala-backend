@@ -65,12 +65,14 @@ const baseRule = (over = {}) => ({
   ...over,
 });
 
-// 1. Home Services headline: labour 400, parts 250 => fee 60, commission 20, provider 380, platform 80
+// 1. Home Services headline: labour 400, parts 250 => fee 60, commission 20,
+// provider 630 (parts pass through), platform 80, customer 710.
 const r1 = revenue.calculateRevenue(baseRule(), { labourAmount: 400, partsAmount: 250 });
 ok('headline fee 60', r1.bookingFee === 60, JSON.stringify(r1));
 ok('headline commission 20 (5% x 400, parts excluded)', r1.commissionAmount === 20, JSON.stringify(r1));
-ok('headline provider 380', r1.providerPayable === 380, JSON.stringify(r1));
+ok('headline provider 630 (labour + parts - commission)', r1.providerPayable === 630, JSON.stringify(r1));
 ok('headline platform 80', r1.platformRevenue === 80, JSON.stringify(r1));
+ok('headline customer 710', r1.customerTotal === 710, JSON.stringify(r1));
 ok('snapshot frozen', r1.ruleSnapshot.code === 'HOME-STD' && r1.ruleSnapshot.version === 2);
 
 // 2. Parts excluded vs included

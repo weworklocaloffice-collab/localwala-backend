@@ -54,6 +54,19 @@ const appWebSettingSchema = mongoose.Schema(
       default: true,
     },
 
+    /// Reels ///
+    // How many reels a signed-out visitor may watch before the app asks them to
+    // sign in. Read by the reels feed service on every anonymous request; 0 means
+    // guests get no reels at all, and a null/absent value falls back to the
+    // service default. Admin-editable from System Settings > App Web Settings.
+    reelsGuestLimit: {
+      type: Number,
+      default: 5,
+      min: 0,
+      max: 100,
+    },
+    /// Reels ///
+
     /// User App Info //
     userAndroidForceUpdateVersion: {
       type: String,

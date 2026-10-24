@@ -116,6 +116,49 @@ const run = async () => {
   // mirrors the application builder above.
   ck('the store event builder is exported', typeof notifyService.buildStoreEventNotification === 'function');
 
+  console.log('\n=== order lifecycle events build for both audiences ===\n');
+
+  const orderEvents = Object.keys(notifyService.STORE_ORDER_NOTIFICATIONS || {});
+  ck('order events are declared', orderEvents.length > 0, `count=${orderEvents.length}`);
+
+  const order = {
+    _id: 'order123',
+    orderNo: 100234,
+    outlet: 'outlet123',
+    grandTotal: 549,
+    lifecycle: 'accepted',
+    customer: 'customer123',
+    chain: 'chain123',
+  };
+
+  for (const event of orderEvents) {
+    const built = await notifyService.buildOrderNotification(order, event, {
+      outletName: 'Miyapur Mart',
+      driverName: 'Raj',
+      reason: 'out of stock',
+    });
+    ck(`${event} builds a title`, !!built.title, built.title);
+    ck(`${event} builds a body`, !!built.body);
+    ck(`${event} carries a type`, !!built.type);
+    ck(`${event} carries a route`, !!built.route);
+    ck(`${event} names an audience`, Array.isArray(built.audience) && built.audience.length > 0);
+    ck(`${event} tags the vertical`, built.data && built.data.vertical === 'stores');
+    ck(`${event} carries the order id`, built.data && built.data.orderId === 'order123');
+    ck(`${event} leaks no undefined`, !/undefined/i.test(built.title + built.body));
+  }
+
+  let unknownOrder = false;
+  try {
+    await notifyService.buildOrderNotification(order, 'no_such_event');
+  } catch (e) {
+    unknownOrder = /Unknown store order notification event/.test(e.message);
+  }
+  ck('an unknown order event throws a named error', unknownOrder);
+
+  const noDb = await notifyService.notifyOrderLifecycle(order, 'order_accepted', { outletName: 'Miyapur Mart' });
+  ck('notifying without a database resolves instead of throwing', noDb && noDb.sent === false);
+  ck('no recipients are invented without a database', noDb.recipients === 0);
+
   console.log('\n=== no Firebase app is a skip, not an exception ===\n');
 
   ck('adminReady() is false with no Firebase app', notifyService.adminReady() === false);

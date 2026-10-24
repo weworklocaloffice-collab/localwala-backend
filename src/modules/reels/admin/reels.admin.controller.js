@@ -78,6 +78,7 @@ const uploadProxy = catchAsync(async (req, res) => {
       cta,
       cityId: req.body.cityId,
       localityId: req.body.localityId,
+      thumbnailUrl: req.body.thumbnailUrl,
       adminId: resolveAdminId(req),
     });
     res.status(httpStatus.OK).send(result);

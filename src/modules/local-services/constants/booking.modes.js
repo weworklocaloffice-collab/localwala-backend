@@ -37,7 +37,7 @@ module.exports.BOOKING_STATUSES = Object.freeze([
  * Target is route param + Joi allow-listed.
  */
 module.exports.BOOKING_TRANSITIONS = Object.freeze({
-  DRAFT: ['REQUESTED', 'CANCELLED'],
+  DRAFT: ['REQUESTED', 'PAYMENT_PENDING', 'CANCELLED'],
   REQUESTED: ['PENDING_PROVIDER', 'CANCELLED'],
   PENDING_PROVIDER: ['ACCEPTED', 'CANCELLED'],
   ACCEPTED: ['PAYMENT_PENDING', 'CONFIRMED', 'CANCELLED'],

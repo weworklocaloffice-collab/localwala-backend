@@ -18,6 +18,7 @@
 
 const RealEstateSale = require('../models/realestate.sale.model');
 const RealEstatePropertyHold = require('../models/realestate.property.hold.model');
+const RealEstateLead = require('../models/realestate.lead.model');
 const commissionService = require('./realestate.commission.service');
 const fcmNotificationService = require('../../../services/fcm.notification.service');
 
@@ -96,7 +97,7 @@ async function recordSale(
         data: { saleId: String(sale._id), propertyId: String(property) },
       });
     }
-  } catch (e) {
+  } catch {
     /* notify-only */
   }
 
@@ -141,10 +142,80 @@ async function findByIdForVendor(saleId, vendorId) {
   return doc ? doc.toObject({ getters: true }) : null;
 }
 
+/**
+ * Customer's own purchases, newest first.
+ *
+ * The customer id comes from the access token, never the query, so this
+ * endpoint cannot enumerate another customer's sale history. Hydrated
+ * reads keep `saleValue` / `holdPrincipalApplied` in rupees at the edge.
+ *
+ * @param {mongoose.Types.ObjectId} customerId
+ * @param {{ page?: number, limit?: number }} opts
+ */
+async function listForCustomer(customerId, { page = 1, limit = 20 } = {}) {
+  if (!customerId) return { results: [], total: 0, page, limit };
+  const filter = { customer: customerId };
+  const [docs, total] = await Promise.all([
+    RealEstateSale.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate('property', 'title propertyCode addressLine')
+      .populate('hold', 'holdCode status'),
+    RealEstateSale.countDocuments(filter),
+  ]);
+  const results = docs.map((d) => d.toObject({ getters: true }));
+  return { results, total, page, limit };
+}
+
+/**
+ * One sale, scoped to the customer who bought it. A sale belonging to
+ * someone else is indistinguishable from a missing sale.
+ */
+async function findByIdForCustomer(saleId, customerId) {
+  const doc = await RealEstateSale.findOne({ _id: saleId, customer: customerId })
+    .populate('property', 'title propertyCode addressLine transactionType')
+    .populate('hold', 'holdCode status principal');
+  return doc ? doc.toObject({ getters: true }) : null;
+}
+
+async function listForExecutive(executiveId, { page = 1, limit = 20 } = {}) {
+  const leads = await RealEstateLead.find({ executive: executiveId }).select('_id').lean();
+  if (!leads.length) return { results: [], total: 0, page, limit };
+  const filter = { lead: { $in: leads.map((l) => l._id) } };
+  const [docs, total] = await Promise.all([
+    RealEstateSale.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate('customer', 'firstName lastName mobile')
+      .populate('property', 'title propertyCode'),
+    RealEstateSale.countDocuments(filter),
+  ]);
+  const results = docs.map((d) => d.toObject({ getters: true }));
+  return { results, total, page, limit };
+}
+
+async function findByIdForExecutive(saleId, executiveId) {
+  const leads = await RealEstateLead.find({ executive: executiveId }).select('_id').lean();
+  if (!leads.length) return null;
+  const doc = await RealEstateSale.findOne({
+    _id: saleId,
+    lead: { $in: leads.map((l) => l._id) },
+  })
+    .populate('customer', 'firstName lastName mobile')
+    .populate('property', 'title propertyCode');
+  return doc ? doc.toObject({ getters: true }) : null;
+}
+
 const realEstateSaleService = {
   recordSale,
   listForVendor,
   findByIdForVendor,
+  listForCustomer,
+  findByIdForCustomer,
+  listForExecutive,
+  findByIdForExecutive,
 };
 
 module.exports = realEstateSaleService;

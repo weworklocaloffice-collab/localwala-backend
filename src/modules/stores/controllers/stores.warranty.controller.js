@@ -25,27 +25,28 @@ const createWarrantyRequest = catchAsync(async (req, res) => {
   const request = await warrantyService.createWarrantyRequest({
     ...req.body,
     customer: req.user._id,
-    outlet: req.outletId,
-    chain: req.chainId,
   });
   res.status(httpStatus.CREATED).send({ request });
 });
 
 const getWarrantyRequest = catchAsync(async (req, res) => {
-  const request = await warrantyService.getWarrantyRequest(req.params.warranty, { outlet: req.outletId });
+  const request = await warrantyService.getWarrantyRequest(req.params.warranty, req.outletId
+    ? { outlet: req.outletId }
+    : { customer: req.user._id });
   res.status(httpStatus.OK).send({ request });
 });
 
 const listWarrantyRequests = catchAsync(async (req, res) => {
   const filter = pick(req.query, ['status', 'page', 'limit']);
   if (req.outletId) filter.outlet = req.outletId;
+  else filter.customer = req.user._id;
   const result = await warrantyService.listWarrantyRequests(filter);
   res.status(httpStatus.OK).send(result);
 });
 
 const transitionWarranty = catchAsync(async (req, res) => {
   const request = await warrantyService.transitionWarranty(req.params.warranty, req.params.status, {
-    outlet: req.outletId,
+    ...(req.outletId ? { outlet: req.outletId } : { customer: req.user._id }),
     actor: req.user._id,
     ...req.body,
   });

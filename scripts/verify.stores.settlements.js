@@ -120,6 +120,24 @@ const cleanup = async () => {
 const run = async () => {
   await mongoose.connect(process.env.MONGODB_URL);
 
+  console.log('\n=== cadence and T+days choose the window ===\n');
+
+  const iso = (d) => d.toISOString();
+  const daily = settlementService.settlementPeriodFor('daily', 2, new Date('2026-03-10T05:00:00Z'));
+  ck('daily T+2 settles the day that ended two days ago',
+    iso(daily.from) === '2026-03-07T00:00:00.000Z' && iso(daily.to) === '2026-03-08T00:00:00.000Z',
+    `${iso(daily.from)} -> ${iso(daily.to)}`);
+
+  const weekly = settlementService.settlementPeriodFor('weekly', 2, new Date('2026-03-11T05:00:00Z'));
+  ck('weekly T+2 settles the prior Monday-Sunday week',
+    iso(weekly.from) === '2026-03-02T00:00:00.000Z' && iso(weekly.to) === '2026-03-09T00:00:00.000Z',
+    `${iso(weekly.from)} -> ${iso(weekly.to)}`);
+
+  const monthly = settlementService.settlementPeriodFor('monthly', 2, new Date('2026-03-03T05:00:00Z'));
+  ck('monthly T+2 settles the prior calendar month',
+    iso(monthly.from) === '2026-02-01T00:00:00.000Z' && iso(monthly.to) === '2026-03-01T00:00:00.000Z',
+    `${iso(monthly.from)} -> ${iso(monthly.to)}`);
+
   console.log('\n=== exactly-once generation ===\n');
 
   await makeOrder();
@@ -154,8 +172,8 @@ const run = async () => {
 
   const line = items[0];
   ck('the line records the order number', !!line.orderNo);
-  ck('the line records what the customer saw', g(line.customerVisibleTotal) === g(line.grossAmount) + g(line.taxTotal) + g(line.deliveryFee),
-    `customerVisible=${line.customerVisibleTotal} gross=${line.grossAmount} tax=${line.taxTotal} fee=${line.deliveryFee}`);
+  ck('the line gross is what the customer was charged', g(line.customerVisibleTotal) === g(line.grossAmount),
+    `customerVisible=${line.customerVisibleTotal} gross=${line.grossAmount}`);
 
   console.log('\n=== BR-42: a refund reduces what the outlet is paid ===\n');
 

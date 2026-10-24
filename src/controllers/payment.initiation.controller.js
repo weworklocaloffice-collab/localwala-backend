@@ -30,7 +30,7 @@ const Stripe = require('stripe');
 const superagent = require('superagent');
 const catchAsync = require('../utils/catchAsync');
 const pick = require('../utils/pick');
-const { paymentInitiationService, paymentConfigService, ordersService } = require('../services');
+const { paymentInitiationService, paymentConfigService } = require('../services');
 // F-4: every gateway now dispatches the paid callback through one entry
 // point. The vertical-specific bridges (stores, real-estate) and the six
 // legacy handlers all live in `utils/payment.dispatch.js`. The gateway

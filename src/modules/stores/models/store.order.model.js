@@ -158,7 +158,7 @@ const storeOrderSchema = mongoose.Schema(
     coupon: {
       coupon: {
         type: mongoose.SchemaTypes.ObjectId,
-        ref: 'Coupon',
+        ref: 'StoreCoupon',
       },
       title: String,
       discountAmount: { type: Number, default: 0 },

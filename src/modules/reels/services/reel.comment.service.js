@@ -25,6 +25,17 @@ const addComment = async (reelId, userId, text) => {
   return comment;
 };
 
+/**
+ * `select` is not optional here.
+ *
+ * A bare `populate: 'userId'` hands back the whole User document, and this endpoint is
+ * customer facing and only needs the name to render - so the response was carrying every
+ * commenter's mobile, email, phoneHash, countryCode and location to any caller with a
+ * valid app token. Projected to exactly what `comments_sheet.dart` and the inline comment
+ * preview read.
+ */
+const COMMENT_AUTHOR_FIELDS = 'firstName lastName image';
+
 const listComments = async (reelId, { page = 1, limit = 10 } = {}) =>
   ReelComment.paginate(
     { reelId, status: 'VISIBLE' },
@@ -32,7 +43,7 @@ const listComments = async (reelId, { page = 1, limit = 10 } = {}) =>
       page: Number(page) || 1,
       limit: Math.min(Number(limit) || 10, 50),
       sortBy: 'createdAt:desc',
-      populate: 'userId',
+      populate: { path: 'userId', select: COMMENT_AUTHOR_FIELDS },
     }
   );
 

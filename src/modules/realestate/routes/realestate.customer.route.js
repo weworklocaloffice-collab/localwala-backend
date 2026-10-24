@@ -89,6 +89,12 @@ router.get('/visits/:id', appAuth(), validate(V.visitParams), controller.getMyVi
 // Same literal-before-param ordering as `/visits`.
 router.post('/loans', appAuth(), validate(V.createLoan), controller.createLoanRequest);
 router.get('/loans', appAuth(), validate(V.loanList), controller.listMyLoans);
+router.post(
+  '/loans/:id/offers/:offerId/accept',
+  appAuth(),
+  validate(V.acceptLoanOffer),
+  controller.acceptLoanOffer
+);
 router.get('/loans/:id', appAuth(), validate(V.loanParams), controller.getMyLoan);
 
 // Holds — customer money in trust (BR-13). Create → pay via the
@@ -107,6 +113,24 @@ router.post(
   validate(HV.convertToSale),
   holdController.convertToSale
 );
+
+// Document requests (Flow 12 underwriting). A bank asks the customer
+// for a document; the customer answers with an uploaded file. The
+// requests are the customer's own - the tenant is `req.user`.
+router.get('/document-requests', appAuth(), controller.listMyDocumentRequests);
+router.post(
+  '/document-requests/:id/submit',
+  appAuth(),
+  validate(V.documentRequestSubmit),
+  controller.submitMyDocumentRequest
+);
+
+// Purchases (sale history). A purchase is a recorded sale against a
+// property the customer bought - it is created by the hold conversion,
+// never by the customer. `/purchases` is declared before `/purchases/:id`
+// so the literal path is never read as an id.
+router.get('/purchases', appAuth(), validate(V.purchaseList), controller.listMyPurchases);
+router.get('/purchases/:id', appAuth(), validate(V.purchaseParams), controller.getMyPurchase);
 
 // Saved properties (Favourite with type: 'property'). Reuses the shared
 // Favourite model; the Real Estate module only owns the route surface and

@@ -49,6 +49,13 @@ reelInteractionSchema.plugin(paginate);
 reelInteractionSchema.index({ reelId: 1, userId: 1, type: 1 }, { unique: true });
 reelInteractionSchema.index({ reelId: 1, type: 1 });
 
+// The nightly reconciliation job groups every interaction by `{ reelId, type }` after
+// matching on `type` alone (workers/reels.cron.service.js). Neither index above can
+// serve a `type`-only predicate - both lead on `reelId` - so the job was doing a full
+// collection scan of the largest reels table once a day. Leading on `type` also puts
+// the grouping key in index order.
+reelInteractionSchema.index({ type: 1, reelId: 1 });
+
 const ReelInteraction = mongoose.model('ReelInteraction', reelInteractionSchema);
 
 module.exports = ReelInteraction;

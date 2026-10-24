@@ -16,6 +16,7 @@
  * LWL|WWL|2026|LOCALWALA|NODE
  */
 
+const { PaymentInitiation } = require('../../../models');
 const RealEstateListingOrder = require('../models/realestate.listing.order.model');
 const RealEstateListingPackage = require('../models/realestate.listing.package.model');
 const entitlementService = require('./realestate.listing.entitlement.service');
@@ -37,18 +38,14 @@ const auditService = require('./realestate.audit.service');
  * listing through any request. The rule that makes a package "the entitlement to list"
  * was enforced only by tests calling services directly.
  *
- * ## Payment is NOT implemented here
+ * ## Payment goes through the shared stack
  *
- * `markPaid` is the seam. Doc §0A.2 says to reuse `payment.initiation.controller.js` and
- * add a `listing_package` branch to `paymentFrom`, explicitly *not* to build a second
- * payment stack. That branch belongs in the shared payment controller, and wiring it is a
- * separate piece of work from this service.
+ * `realestate.listing.order.payment.service.js` creates a `listing_package`
+ * `PaymentInitiation`; the shared gateway callback reaches `markPaid` through
+ * `realestate.payment.service.routePaidCallback`. No second payment stack exists.
  *
- * So this service creates the order as `PENDING_PAYMENT` and stops. `markPaid` is what a
- * payment webhook calls once the gateway confirms. Until that branch exists, `markPaid` is
- * reachable only from tests — which is stated here rather than hidden, because an endpoint
- * that grants entitlements without taking money is exactly the kind of thing that must not
- * be discoverable by accident.
+ * This service still creates orders as `PENDING_PAYMENT` and grants nothing until
+ * `markPaid` runs, so an unpaid order can never hold a listing right.
  */
 
 /**
@@ -159,8 +156,13 @@ async function createOrder(vendorId, packageCode) {
  * than granting a second entitlement — free listings nobody paid for is not a rounding
  * error, it is revenue that never arrives.
  *
+ * Gateway callbacks pass `{ paymentInitiation }`. Admin recovery additionally
+ * passes `{ allowUnpaidStatuses, actor, actorType, reason, paymentRef }` so a
+ * lost confirmation can settle a PENDING_PAYMENT/FAILED/CANCELLED order
+ * without weakening the default PENDING_PAYMENT-only path.
+ *
  * @param {mongoose.Types.ObjectId} orderId
- * @param {Object} [payment] — { paymentInitiation?, paymentRef? }
+ * @param {Object} [payment]
  * @returns {Promise<Object>} the paid order, with `entitlement` populated
  */
 async function markPaid(orderId, payment = {}) {
@@ -171,9 +173,16 @@ async function markPaid(orderId, payment = {}) {
     return order; // already settled; a retry must not grant again
   }
 
-  if (order.status !== 'PENDING_PAYMENT') {
+  const allowedFrom = Array.isArray(payment.allowUnpaidStatuses)
+    ? payment.allowUnpaidStatuses
+    : [];
+  if (order.status !== 'PENDING_PAYMENT' && !allowedFrom.includes(order.status)) {
     throw new Error(`Cannot mark a ${order.status} order as paid`);
   }
+
+  const fromStatus = order.status;
+  const actorType = payment.actorType || 'SYSTEM';
+  const actor = payment.actor || undefined;
 
   const entitlement = await entitlementService.grant(
     order.vendor,
@@ -196,14 +205,17 @@ async function markPaid(orderId, payment = {}) {
     eventType: 'LISTING_PACKAGE_ORDER_PAID',
     targetType: 'ListingOrder',
     targetId: order._id,
-    actorType: 'SYSTEM',
-    before: { status: 'PENDING_PAYMENT' },
+    actor,
+    actorType,
+    reason: payment.reason,
+    before: { status: fromStatus },
     after: { status: 'PAID' },
     metadata: {
       paymentRef: order.paymentRef,
       amountRupees: order.amount,
       entitlement: String(entitlement._id),
       vendor: String(order.vendor),
+      manual: actorType !== 'SYSTEM',
     },
   });
 
@@ -211,7 +223,9 @@ async function markPaid(orderId, payment = {}) {
     eventType: 'ENTITLEMENT_GRANTED',
     targetType: 'ListingEntitlement',
     targetId: entitlement._id,
-    actorType: 'SYSTEM',
+    actor,
+    actorType,
+    reason: payment.reason,
     after: { totalCount: entitlement.totalCount, status: entitlement.status },
     metadata: {
       order: String(order._id),
@@ -295,6 +309,12 @@ async function markUnpaid(orderId, to = 'CANCELLED') {
 
   order.status = to;
   await order.save();
+
+  await PaymentInitiation.updateMany(
+    { listingOrder: order._id, status: 'initiated' },
+    { $set: { status: 'cancelled' } }
+  );
+
   return order;
 }
 
@@ -330,11 +350,30 @@ async function findForVendorById(orderId, vendorId) {
 async function listAll({ status, page = 1, limit = 20 } = {}) {
   const filter = {};
   if (status) filter.status = status;
-  return RealEstateListingOrder.paginate(filter, {
+  const result = await RealEstateListingOrder.paginate(filter, {
     page,
     limit,
     sort: { createdAt: -1 },
+    populate: [
+      { path: 'vendor', select: 'businessName displayName slug' },
+      { path: 'package', select: 'code name' },
+    ],
   });
+
+  result.results = result.results.map((doc) => {
+    const row = doc.toObject({ getters: true });
+    if (row.vendor && typeof row.vendor === 'object') {
+      row.vendorName = row.vendor.businessName || row.vendor.displayName || '';
+      row.vendorCode = row.vendor.slug || '';
+    }
+    if (row.package && typeof row.package === 'object') {
+      row.packageName = row.package.name || '';
+      row.packageCode = row.package.code || '';
+    }
+    return row;
+  });
+
+  return result;
 }
 
 module.exports = {

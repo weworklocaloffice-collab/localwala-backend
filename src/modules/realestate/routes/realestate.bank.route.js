@@ -37,6 +37,27 @@ const router = express.Router();
 
 router.get('/applications', bankAuth, controller.listApplications);
 router.get('/applications/:id', bankAuth, controller.getApplication);
+// The timeline of one application - who moved it, when and why.
+router.get('/applications/:id/status-history', bankAuth, controller.getApplicationStatusHistory);
+// What the bank asked the customer for, and what came back.
+router.get(
+  '/applications/:id/document-requests',
+  bankAuth,
+  controller.listApplicationDocumentRequests
+);
+router.post(
+  '/applications/:id/document-requests',
+  bankAuth,
+  validate(V.createDocumentRequest),
+  controller.createApplicationDocumentRequest
+);
+// The bank accepts or rejects what the customer sent.
+router.patch(
+  '/document-requests/:requestId',
+  bankAuth,
+  validate(V.reviewDocumentRequest),
+  controller.reviewDocumentRequest
+);
 router.get('/offers', bankAuth, controller.listOffers);
 router.post('/offers', bankAuth, validate(V.createOffer), controller.createOffer);
 router.post('/applications/:id/status/:status', bankAuth, validate(V.setStatus), controller.setApplicationStatus);

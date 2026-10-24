@@ -23,6 +23,8 @@ const leadService = require('../services/realestate.lead.service');
 const favouriteService = require('../services/realestate.property.favourite.service');
 const visitService = require('../services/realestate.visit.service');
 const loanService = require('../services/realestate.loan.service');
+const saleService = require('../services/realestate.sale.service');
+const documentRequestService = require('../services/realestate.document.request.service');
 const RealEstateLead = require('../models/realestate.lead.model');
 const RealEstateProperty = require('../models/realestate.property.model');
 const searchService = require('../services/realestate.property.search.service');
@@ -328,6 +330,77 @@ const getMyLoan = catchAsync(async (req, res) => {
   res.send({ data: request });
 });
 
+/**
+ * POST /customer/loans/:id/offers/:offerId/accept — choose one bank.
+ * The service proves the request belongs to this customer, closes the
+ * losing offers/applications, and advances the winner to
+ * DOCUMENTS_PENDING so the bank portal can start underwriting.
+ */
+const acceptLoanOffer = catchAsync(async (req, res) => {
+  const customerId = requireCustomer(req);
+  const request = await loanService.acceptOffer({
+    requestId: req.params.id,
+    offerId: req.params.offerId,
+    customerId,
+  });
+  res.send({ data: request });
+});
+
+/**
+ * GET /customer/purchases �?" this customer's completed/cancelled sales.
+ * Newest first; the tenant is always `req.user.id`.
+ */
+const listMyPurchases = catchAsync(async (req, res) => {
+  const customerId = requireCustomer(req);
+  const { page, limit } = req.query;
+  const result = await saleService.listForCustomer(customerId, { page, limit });
+  res.send(result);
+});
+
+/**
+ * GET /customer/purchases/:id �?" one purchase. A sale belonging to
+ * another customer is treated as missing, so the id cannot be probed.
+ */
+const getMyPurchase = catchAsync(async (req, res) => {
+  const customerId = requireCustomer(req);
+  const sale = await saleService.findByIdForCustomer(req.params.id, customerId);
+  if (!sale) throw new ApiError(httpStatus.NOT_FOUND, 'Purchase not found');
+  res.send({ data: sale });
+});
+
+/**
+ * GET /customer/document-requests
+ *
+ * What the banks have asked this customer for, newest first. Every row
+ * is this customer's own - the customer id comes from the token, so
+ * there is no way to ask for another customer's paperwork.
+ */
+const listMyDocumentRequests = catchAsync(async (req, res) => {
+  const customerId = requireCustomer(req);
+  const results = await documentRequestService.listForCustomer(customerId);
+  res.send({ results });
+});
+
+/**
+ * POST /customer/document-requests/:id/submit
+ *
+ * The customer answers a request with an uploaded file. `fileUrl` is the
+ * url the shared media upload already returned - the customer app
+ * uploads first, then answers, exactly like the vendor document flow.
+ */
+const submitMyDocumentRequest = catchAsync(async (req, res) => {
+  const customerId = requireCustomer(req);
+  const request = await documentRequestService.submitByCustomer({
+    requestId: req.params.id,
+    customerId,
+    fileUrl: req.body.fileUrl,
+    fileName: req.body.fileName || '',
+    mimeType: req.body.mimeType || '',
+    sizeBytes: req.body.sizeBytes,
+  });
+  res.send({ data: request.toObject({ getters: true }) });
+});
+
 module.exports = {
   createEnquiry,
   listMyLeads,
@@ -344,4 +417,9 @@ module.exports = {
   createLoanRequest,
   listMyLoans,
   getMyLoan,
+  acceptLoanOffer,
+  listMyPurchases,
+  getMyPurchase,
+  listMyDocumentRequests,
+  submitMyDocumentRequest,
 };

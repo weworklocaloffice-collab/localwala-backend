@@ -32,9 +32,30 @@ const ownProvider = async (userId) => {
   return provider;
 };
 
+const ownProviderProfile = async (userId) => {
+  const provider = await Provider.findOne({ owner: userId }).sort({ createdAt: -1 });
+  if (!provider) {
+    const e = new Error('No provider profile');
+    e.statusCode = 404;
+    throw e;
+  }
+  return provider;
+};
+
+// Admin oversight: list all availability rules across providers.
+const adminListAvailabilityRules = catchAsync(async (req, res) => {
+  const filter = {};
+  if (req.query.provider) filter.provider = req.query.provider;
+  if (req.query.service) filter.service = req.query.service;
+  if (req.query.status) filter.status = req.query.status;
+  if (req.query.day !== undefined && req.query.day !== '') filter.day = Number(req.query.day);
+  const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  res.status(httpStatus.OK).send(await LocalServiceAvailabilityRule.paginate(filter, options));
+});
+
 const createStaff = catchAsync(async (req, res) => {
   const provider = await ownProvider(req.user._id);
-  const doc = await LocalServiceStaff.create({ provider: provider._id, ...req.body });
+  const doc = await LocalServiceStaff.create({ ...req.body, provider: provider._id });
   res.status(httpStatus.CREATED).send({ staff: doc });
 });
 
@@ -45,8 +66,23 @@ const listStaff = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ results: docs });
 });
 
+const updateStaff = catchAsync(async (req, res) => {
+  const provider = await ownProviderProfile(req.user._id);
+  const doc = await LocalServiceStaff.findOneAndUpdate(
+    { _id: req.params.id, provider: provider._id },
+    { $set: req.body },
+    { new: true, runValidators: true }
+  );
+  if (!doc) {
+    const e = new Error('Staff not found');
+    e.statusCode = 404;
+    throw e;
+  }
+  res.status(httpStatus.OK).send({ staff: doc });
+});
+
 const upsertAvailability = catchAsync(async (req, res) => {
-  const provider = await ownProvider(req.user._id);
+  const provider = await ownProviderProfile(req.user._id);
   const doc = await LocalServiceAvailabilityRule.findOneAndUpdate(
     { provider: provider._id, service: req.body.service || null, day: req.body.day },
     { ...req.body, provider: provider._id },
@@ -56,7 +92,7 @@ const upsertAvailability = catchAsync(async (req, res) => {
 });
 
 const upsertCoverage = catchAsync(async (req, res) => {
-  const provider = await ownProvider(req.user._id);
+  const provider = await ownProviderProfile(req.user._id);
   const doc = await LocalServiceCoverage.findOneAndUpdate(
     { provider: provider._id },
     { ...req.body, provider: provider._id },
@@ -65,4 +101,10 @@ const upsertCoverage = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ coverage: doc });
 });
 
-module.exports = { createStaff, listStaff, upsertAvailability, upsertCoverage };
+const getCoverage = catchAsync(async (req, res) => {
+  const provider = await ownProviderProfile(req.user._id);
+  const doc = await LocalServiceCoverage.findOne({ provider: provider._id });
+  res.status(httpStatus.OK).send({ coverage: doc });
+});
+
+module.exports = { createStaff, listStaff, updateStaff, upsertAvailability, upsertCoverage, getCoverage, adminListAvailabilityRules };

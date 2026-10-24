@@ -20,11 +20,23 @@ const { status: httpStatus } = require('http-status');
 const { AppWebSetting } = require('../models');
 const ApiError = require('../utils/ApiError');
 
+/// How many reels a signed-out visitor may page through before the app asks them
+/// to sign in. Used when no settings document exists or the field is unset.
+const REELS_GUEST_LIMIT_DEFAULT = 5;
+const REELS_GUEST_LIMIT_TTL_MS = 60 * 1000;
+
+let reelsGuestLimitCache = { value: null, expiresAt: 0 };
+
+const invalidateReelsGuestLimitCache = () => {
+  reelsGuestLimitCache = { value: null, expiresAt: 0 };
+};
+
 const createAppWebSetting = async (param) => {
   if ((await AppWebSetting.countDocuments()) > 0) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Already exist');
   }
   const details = await AppWebSetting.create(param);
+  invalidateReelsGuestLimitCache();
   return { id: details.id, success: true };
 };
 
@@ -32,11 +44,33 @@ const getAppWebSetting = async () => {
   return AppWebSetting.findOne();
 };
 
+/**
+ * Guest reel allowance for the public feed.
+ *
+ * The feed is readable without a token, so this is read on every anonymous
+ * request. One indexed `findOne` on a one-row collection would be tolerable on
+ * its own, but the result changes only when an admin saves, so it is cached for
+ * a minute and invalidated explicitly on save/update - that way a change lands
+ * immediately instead of up to a minute later.
+ */
+const getReelsGuestLimit = async () => {
+  const now = Date.now();
+  if (reelsGuestLimitCache.expiresAt > now) return reelsGuestLimitCache.value;
+
+  const setting = await AppWebSetting.findOne({}, { reelsGuestLimit: 1 }).lean();
+  const raw = setting ? setting.reelsGuestLimit : undefined;
+  const value = Number.isInteger(raw) && raw >= 0 ? raw : REELS_GUEST_LIMIT_DEFAULT;
+
+  reelsGuestLimitCache = { value, expiresAt: now + REELS_GUEST_LIMIT_TTL_MS };
+  return value;
+};
+
 const updateAppWebSetting = async (slug, param) => {
   const appWebSetting = await getAppWebSetting(slug);
 
   Object.assign(appWebSetting, param);
   await appWebSetting.save();
+  invalidateReelsGuestLimitCache();
   return { success: true };
 };
 
@@ -182,6 +216,7 @@ const kitchenAppVersionDetail = async () => {
 module.exports = {
   createAppWebSetting,
   getAppWebSetting,
+  getReelsGuestLimit,
   updateAppWebSetting,
   userAppVersionDetail,
   vendorAppVersionDetail,

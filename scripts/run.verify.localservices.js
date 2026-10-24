@@ -30,7 +30,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const SCRIPTS = path.resolve('/');
+const SCRIPTS = __dirname;
 
 // /**
 //  * Every `verify.localservices.*.js` except this runner, which must not invoke itself.

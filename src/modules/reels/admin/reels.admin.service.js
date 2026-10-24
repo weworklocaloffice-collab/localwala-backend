@@ -107,6 +107,12 @@ const createReel = async (adminId, data) => {
     cta: withCta(data.vertical, data.target, data.cta),
     cityId: cleanObjectId(data.cityId),
     localityId: cleanObjectId(data.localityId),
+    // Mirrors `updateReel` so a custom cover survives a create-then-edit round trip
+    // instead of being reset back to the transcode's own thumbnail.
+    thumbnail: data.thumbnailUrl || undefined,
+    media: data.thumbnailUrl
+      ? { thumbnailUrl: data.thumbnailUrl, thumbnailSource: 'CUSTOM' }
+      : undefined,
     status: 'DRAFT',
   });
   return reel;
@@ -284,7 +290,14 @@ const listReports = async ({ status, page = 1, limit = 20 } = {}) => {
     page: Number(page) || 1,
     limit: Math.min(Number(limit) || 20, 100),
     sortBy: 'createdAt:desc',
-    populate: 'reelId,reporterId',
+    // Projected like the comment list: the moderation table reads a reporter name and a
+    // reel description, and a bare populate would attach every reporter's mobile, email
+    // and phoneHash to every row. `thumbnail`/`status` are included because a moderator
+    // deciding between HIDE_REEL and DISMISS is deciding about the video itself.
+    populate: [
+      { path: 'reporterId', select: 'firstName lastName image' },
+      { path: 'reelId', select: 'description status thumbnail vertical' },
+    ],
   });
 };
 

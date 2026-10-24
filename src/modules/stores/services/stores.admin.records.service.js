@@ -19,6 +19,7 @@
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
+const promotionService = require('./stores.promotion.service');
 
 /**
  * The admin read surface for records that have no outlet-scoped admin route yet.
@@ -280,6 +281,18 @@ const moderatePromotion = async (promotionId, { status, by, note }) => {
   }
 
   promotion.approval = { status, by, at: new Date(), note };
+
+  // Approval is the transition that lets a promotion leave draft. `scheduled` and `live`
+  // are derived from the promotion's own window, never from the Admin call, so approving
+  // an offer that starts next week does not make it redeemable today.
+  if (status === 'approved' || status === 'not_required') {
+    if (promotion.status !== 'paused') promotionService.applyWindowStatus(promotion);
+    promotion.approvedBy = by;
+  } else {
+    promotion.status = 'draft';
+    promotion.isActive = false;
+  }
+
   await promotion.save();
   return promotion;
 };

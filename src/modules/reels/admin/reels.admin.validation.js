@@ -60,6 +60,9 @@ const uploadProxyValidation = {
     cta: Joi.string().optional(),
     cityId: objectId.optional(),
     localityId: objectId.optional(),
+    // Carried through the upload so a cover chosen before the file is picked survives
+    // the transcode, which only auto-generates a thumbnail when the source is AUTO.
+    thumbnailUrl: Joi.string().uri().optional(),
   }),
 };
 
@@ -86,6 +89,10 @@ const createReelValidation = {
     // service drop it, otherwise a draft with no location can never save.
     cityId: objectId.allow(null, '').optional(),
     localityId: objectId.allow(null, '').optional(),
+    // Present on update already. Without it here, saving a draft for a NEW reel that has
+    // a custom thumbnail was a hard 400: the panel sends the same payload to both
+    // endpoints, and the create schema had no allowance for the key.
+    thumbnailUrl: Joi.string().uri().optional(),
   }),
 };
 

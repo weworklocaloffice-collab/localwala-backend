@@ -31,6 +31,7 @@ const localServiceRevenueEntrySchema = mongoose.Schema(
   {
     idempotencyKey: { type: String, required: true, trim: true },
     bookingId: { type: String, required: false, trim: true },
+    provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceProvider', required: false },
     paymentId: { type: mongoose.SchemaTypes.ObjectId, ref: 'PaymentInitiation', required: false },
     rule: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceRevenueRule', required: true },
     ruleSnapshot: { type: mongoose.Schema.Types.Mixed, required: true },
@@ -63,6 +64,8 @@ localServiceRevenueEntrySchema.plugin(paginate);
 
 localServiceRevenueEntrySchema.index({ idempotencyKey: 1 }, { unique: true });
 localServiceRevenueEntrySchema.index({ bookingId: 1, createdAt: -1 });
+localServiceRevenueEntrySchema.index({ provider: 1, status: 1, createdAt: -1 });
+localServiceRevenueEntrySchema.index({ settlement: 1 });
 localServiceRevenueEntrySchema.index({ rule: 1, createdAt: -1 });
 localServiceRevenueEntrySchema.index({ status: 1, createdAt: -1 });
 

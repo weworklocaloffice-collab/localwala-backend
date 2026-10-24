@@ -26,6 +26,62 @@ const generateSettlementNo = async () => {
   return (last?.settlementNo || 100000) + 1;
 };
 
+const startOfUtcDay = (date) => {
+  const copy = new Date(date);
+  copy.setUTCHours(0, 0, 0, 0);
+  return copy;
+};
+
+const startOfUtcWeek = (date) => {
+  const copy = startOfUtcDay(date);
+  const day = copy.getUTCDay(); // 0 = Sunday
+  const sinceMonday = (day + 6) % 7;
+  copy.setUTCDate(copy.getUTCDate() - sinceMonday);
+  return copy;
+};
+
+const startOfUtcMonth = (date) => {
+  const copy = startOfUtcDay(date);
+  copy.setUTCDate(1);
+  return copy;
+};
+
+/**
+ * The last completed settlement period for a chain's cadence, already aged by
+ * `tPlusDays`.
+ *
+ * `to` is exclusive. Daily windows end at midnight UTC, weekly windows on Monday
+ * midnight, monthly windows on the first midnight. A daily cron can therefore call
+ * this repeatedly: it returns the same window until the next one becomes eligible,
+ * and `generateSettlement` dedupes on that exact tuple.
+ */
+const settlementPeriodFor = (cadence = 'daily', tPlusDays = 0, now = new Date()) => {
+  const delay = Number.isFinite(Number(tPlusDays)) ? Math.max(0, Number(tPlusDays)) : 0;
+  const days = delay * 24 * 60 * 60 * 1000;
+
+  if (cadence === 'weekly') {
+    let to = startOfUtcWeek(now);
+    while (to.getTime() + days > now.getTime()) to = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+    return { from, to };
+  }
+
+  if (cadence === 'monthly') {
+    let to = startOfUtcMonth(now);
+    while (to.getTime() + days > now.getTime()) {
+      to = new Date(to);
+      to.setUTCMonth(to.getUTCMonth() - 1);
+    }
+    const from = new Date(to);
+    from.setUTCMonth(from.getUTCMonth() - 1);
+    return { from, to };
+  }
+
+  const to = new Date(startOfUtcDay(now).getTime() - days);
+  const from = new Date(to.getTime() - 24 * 60 * 60 * 1000);
+  return { from, to };
+};
+
 const generateSettlement = async ({ vertical, counterpartyType, counterparty, store, chain, settlementType, period, from, to }) => {
   const Settlement = mongoose.model('Settlement');
   const SettlementItem = mongoose.model('SettlementItem');
@@ -37,7 +93,7 @@ const generateSettlement = async ({ vertical, counterpartyType, counterparty, st
   const orders = await StoreOrder.find({
     outlet: store,
     lifecycle: { $in: ['delivered', 'completed'] },
-    createdAt: { $gte: from, $lte: to },
+    createdAt: { $gte: from, $lt: to },
   }).lean();
 
   if (!orders.length) return null;
@@ -81,12 +137,12 @@ const generateSettlement = async ({ vertical, counterpartyType, counterparty, st
       orderNo: order.orderNo,
       outlet: order.outlet,
       chain: order.chain,
-      grossAmount: order.itemsSubtotal,
+      grossAmount: order.grandTotal,
       refundAmount: order.refundedAmount || 0,
       adjustmentAmount: 0,
       platformFee: 0,
       deliveryTip: order.deliveryTip || 0,
-      netAmount: order.grandTotal - (order.refundedAmount || 0),
+      netAmount: order.grandTotal - (order.refundedAmount || 0) + (order.deliveryTip || 0),
       customerVisibleTotal: order.grandTotal,
       taxTotal: order.taxTotal || 0,
       deliveryFee: order.deliveryFee || 0,
@@ -100,7 +156,10 @@ const generateSettlement = async ({ vertical, counterpartyType, counterparty, st
     });
     lineItems.push(item._id);
 
-    grossOrderValue += order.itemsSubtotal;
+    // `grandTotal` is the amount actually charged: net of discounts, including tax
+    // and fees. Summing `itemsSubtotal` instead both ignored tax/fees and disagreed
+    // with the per-item `netAmount` written above.
+    grossOrderValue += order.grandTotal;
     refunds += order.refundedAmount || 0;
     deliveryTips += order.deliveryTip || 0;
     orderCount += 1;
@@ -203,4 +262,5 @@ module.exports = {
   markFailed,
   reverseSettlement,
   generateSettlementNo,
+  settlementPeriodFor,
 };

@@ -157,15 +157,11 @@ const buildApplicationNotification = (application, event) => {
  * @param {string}        event       the event key
  * @returns {Promise<{sent:boolean, reason?:string, tokenCount:number, checked:number}>}
  */
-const notifyApplication = async (userId, application, event) => {
-  let payload;
-  try {
-    payload = buildApplicationNotification(application, event);
-  } catch (error) {
-    // An unknown event key is a bug in the CALLER. Surfacing 'unknown_event' rather than
-    // throwing keeps the onboarding transaction alive; the retry for the caller's own
-    // call site should be the one that throws.
-    return { sent: false, reason: 'unknown_event', tokenCount: 0, checked: 0 };
+const dbReady = () => mongoose.connection.readyState === 1;
+
+const deliverPush = async (userId, payload) => {
+  if (!dbReady()) {
+    return { sent: false, reason: 'no_db', tokenCount: 0, checked: 0 };
   }
 
   let tokens;
@@ -194,9 +190,23 @@ const notifyApplication = async (userId, application, event) => {
       tokens,
     });
     return { sent: result.successCount > 0, reason: result.successCount ? undefined : 'send_failed', tokenCount: tokens.length, checked: result.successCount + result.failureCount };
-  } catch (error) {
+  } catch {
     return { sent: false, reason: 'send_failed', tokenCount: tokens.length, checked: 0 };
   }
+};
+
+const notifyApplication = async (userId, application, event) => {
+  let payload;
+  try {
+    payload = buildApplicationNotification(application, event);
+  } catch (error) {
+    // An unknown event key is a bug in the CALLER. Surfacing 'unknown_event' rather than
+    // throwing keeps the onboarding transaction alive; the retry for the caller's own
+    // call site should be the one that throws.
+    return { sent: false, reason: 'unknown_event', tokenCount: 0, checked: 0 };
+  }
+
+  return deliverPush(userId, payload);
 };
 
 /**
@@ -250,44 +260,253 @@ const notifyStoreEvent = async (userId, event, context = {}) => {
     return { sent: false, reason: 'unknown_event', tokenCount: 0, checked: 0 };
   }
 
-  let tokens;
+  return deliverPush(userId, payload);
+};
+
+const STORE_ORDER_NOTIFICATIONS = Object.freeze({
+  new_order: {
+    type: 'store.order.new',
+    title: 'New order {{orderNo}}',
+    body: '{{outletName}} has a new order worth {{amount}}. Accept it in Orders.',
+    route: '/orders',
+    audience: ['partner'],
+  },
+  order_accepted: {
+    type: 'store.order.accepted',
+    title: 'Order {{orderNo}} accepted',
+    body: '{{outletName}} accepted your order. We will tell you when it is ready.',
+    route: '/orders',
+    audience: ['customer'],
+  },
+  order_rejected: {
+    type: 'store.order.rejected',
+    title: 'Order {{orderNo}} declined',
+    body: '{{outletName}} could not take your order. {{reason}}',
+    route: '/orders',
+    audience: ['customer'],
+  },
+  order_ready: {
+    type: 'store.order.ready',
+    title: 'Order {{orderNo}} is ready',
+    body: '{{outletName}} has packed your order and it is waiting for pickup.',
+    route: '/orders',
+    audience: ['customer'],
+  },
+  driver_assigned: {
+    type: 'store.order.driver_assigned',
+    title: 'Driver assigned to order {{orderNo}}',
+    body: '{{driverName}} will deliver your order from {{outletName}}.',
+    route: '/orders',
+    audience: ['customer', 'driver'],
+  },
+  driver_on_the_way: {
+    type: 'store.order.driver_on_the_way',
+    title: 'Driver is on the way',
+    body: '{{driverName}} has accepted order {{orderNo}} and is on the way to {{outletName}}.',
+    route: '/orders',
+    audience: ['customer'],
+  },
+  out_for_delivery: {
+    type: 'store.order.out_for_delivery',
+    title: 'Order {{orderNo}} is out for delivery',
+    body: 'Your order from {{outletName}} is on the way.',
+    route: '/orders',
+    audience: ['customer'],
+  },
+  order_delivered: {
+    type: 'store.order.delivered',
+    title: 'Order {{orderNo}} delivered',
+    body: 'Order {{orderNo}} from {{outletName}} has been delivered.',
+    route: '/orders',
+    audience: ['customer', 'partner'],
+  },
+  order_cancelled: {
+    type: 'store.order.cancelled',
+    title: 'Order {{orderNo}} cancelled',
+    body: 'Order {{orderNo}} from {{outletName}} was cancelled. {{reason}}',
+    route: '/orders',
+    audience: ['customer', 'partner'],
+  },
+  payment_failed: {
+    type: 'store.order.payment_failed',
+    title: 'Payment failed for order {{orderNo}}',
+    body: 'We could not confirm payment for your order from {{outletName}}. Please retry in the app.',
+    route: '/orders',
+    audience: ['customer'],
+  },
+  delivery_failed: {
+    type: 'store.order.delivery_failed',
+    title: 'Delivery failed for order {{orderNo}}',
+    body: 'Delivery for order {{orderNo}} from {{outletName}} could not be completed. {{reason}}',
+    route: '/orders',
+    audience: ['customer', 'partner'],
+  },
+});
+
+const buildOrderNotification = async (order, event, context = {}) => {
+  const template = STORE_ORDER_NOTIFICATIONS[event];
+  if (!template) throw new Error(`Unknown store order notification event '${event}'`);
+
+  let title = template.title;
+  let body = template.body;
+
+  if (dbReady()) {
+    try {
+      const translation = await mongoose
+        .model('OrderNotificationTranslation')
+        .findOne({ slug: `store_${event}` })
+        .lean();
+      const first = Array.isArray(translation?.translations) ? translation.translations[0] : null;
+      if (first?.title) title = first.title;
+      if (first?.description) body = first.description;
+    } catch {
+      // A missing translation collection or row falls back to the built-in English text.
+    }
+  }
+
+  let outletName = context.outletName;
+  if (!outletName && order.outlet && dbReady()) {
+    try {
+      const outlet = await mongoose.model('StoreOutlet').findById(order.outlet).select('name').lean();
+      outletName = outlet?.name;
+    } catch {
+      outletName = undefined;
+    }
+  }
+
+  const reason = context.reason ? `Reason: ${context.reason}` : '';
+  const values = {
+    orderNo: order.orderNo != null ? String(order.orderNo) : '',
+    outletName: outletName || 'The store',
+    amount: order.grandTotal != null ? `INR ${order.grandTotal}` : '',
+    driverName: context.driverName || 'Your driver',
+    reason,
+  };
+
+  return {
+    title: fill(title, values),
+    body: fill(body, values),
+    type: template.type,
+    route: template.route,
+    audience: template.audience,
+    data: {
+      type: template.type,
+      orderId: order._id ? String(order._id) : '',
+      orderNo: values.orderNo,
+      lifecycle: order.lifecycle || '',
+      vertical: 'stores',
+      route: template.route,
+      click_action: 'FLUTTER_NOTIFICATION_CLICK',
+    },
+  };
+};
+
+const resolveOrderRecipients = async (order, audience = []) => {
+  if (!dbReady()) return [];
+
+  const ids = new Set();
+
+  if (audience.includes('customer') && order.customer) {
+    ids.add(String(order.customer));
+  }
+
+  if (audience.includes('partner') && order.chain) {
+    try {
+      const assignments = await mongoose
+        .model('StoreRoleAssignment')
+        .find({
+          chain: order.chain,
+          status: 'active',
+          role: { $in: ['owner', 'manager', 'order_manager', 'dispatcher'] },
+          $or: [
+            { scopeType: 'chain' },
+            { scopeType: 'business' },
+            { scopeType: 'outlet', outlets: order.outlet },
+          ],
+        })
+        .select('user')
+        .lean();
+      assignments.forEach((row) => {
+        if (row.user) ids.add(String(row.user));
+      });
+    } catch {
+      // No assignment collection means no partner recipient, not a failed order.
+    }
+  }
+
+  if (audience.includes('driver') && order._id) {
+    try {
+      const delivery = await mongoose
+        .model('StoreDelivery')
+        .findOne({ order: order._id })
+        .select('driver')
+        .lean();
+      if (delivery?.driver) {
+        const driver = await mongoose
+          .model('StoreDriver')
+          .findById(delivery.driver)
+          .select('user')
+          .lean();
+        if (driver?.user) ids.add(String(driver.user));
+      }
+    } catch {
+      // Delivery can be absent for pickup orders.
+    }
+  }
+
+  return Array.from(ids);
+};
+
+const notifyOrderLifecycle = async (order, event, context = {}) => {
+  if (!order) return { sent: false, reason: 'no_order', recipients: 0, results: [] };
+
+  let payload;
   try {
-    tokens = await PushNotificationToken.find({ user: new mongoose.Types.ObjectId(String(userId)) })
-      .select('token')
-      .lean()
-      .map((t) => t.token);
+    payload = await buildOrderNotification(order, event, context);
   } catch {
-    tokens = [];
+    return { sent: false, reason: 'unknown_event', recipients: 0, results: [] };
   }
 
-  if (!tokens.length) {
-    return { sent: false, reason: 'no_token', tokenCount: 0, checked: 0 };
+  const recipients = await resolveOrderRecipients(order, payload.audience);
+  const results = [];
+
+  for (const userId of recipients) {
+    let feedWritten = false;
+    try {
+      await mongoose.model('NotificationList').create({
+        user: userId,
+        title: payload.title,
+        content: payload.body,
+        payload: { ...payload.data, route: payload.route },
+        kind: 'store_order',
+        order: order._id ? String(order._id) : '',
+      });
+      feedWritten = true;
+    } catch {
+      feedWritten = false;
+    }
+
+    const push = await deliverPush(userId, payload);
+    results.push({ userId, feedWritten, ...push });
   }
 
-  if (!adminReady()) {
-    return { sent: false, reason: 'no_admin_app', tokenCount: tokens.length, checked: 0 };
-  }
-
-  try {
-    const result = await admin.messaging().sendEachForMulticast({
-      notification: { title: payload.title, body: payload.body },
-      data: payload.data,
-      android: { priority: 'high', notification: { channelId: 'high_importance_channel', clickAction: 'FLUTTER_NOTIFICATION_CLICK' } },
-      tokens,
-    });
-    return { sent: result.successCount > 0, reason: result.successCount ? undefined : 'send_failed', tokenCount: tokens.length, checked: result.successCount + result.failureCount };
-  } catch {
-    return { sent: false, reason: 'send_failed', tokenCount: tokens.length, checked: 0 };
-  }
+  return {
+    sent: results.some((row) => row.sent),
+    recipients: results.length,
+    results,
+  };
 };
 
 module.exports = {
   STORE_APPLICATION_NOTIFICATIONS,
   STORE_PAYMENT_NOTIFICATIONS,
+  STORE_ORDER_NOTIFICATIONS,
   buildApplicationNotification,
   buildStoreEventNotification,
+  buildOrderNotification,
   fill,
   notifyApplication,
   notifyStoreEvent,
+  notifyOrderLifecycle,
   adminReady,
 };

@@ -55,6 +55,36 @@ const ok = (label, cond, detail) => {
   );
   ok('no-business summary-only', r.settlement === null && r.summary.count === 0);
 
+  // Generate with linked Business uses the GLOBAL settlementNo and reports
+  // customer refunds (provider + platform reversal), not platform-only.
+  const entries = [
+    { _id: 'e1', bookingFee: 6000, commissionAmount: 2000, platformRevenue: 8000, providerPayable: 38000, entryType: 'charge' },
+    { _id: 'e2', bookingFee: -6000, commissionAmount: -2000, platformRevenue: -8000, providerPayable: 0, entryType: 'reversal' },
+  ];
+  let created;
+  let consumed = [];
+  const SettlementModel = {
+    findOne: () => ({ sort: () => ({ lean: async () => ({ settlementNo: 42 }) }) }),
+    create: async (doc) => {
+      created = doc;
+      return { _id: 's1', ...doc };
+    },
+  };
+  const EntryWithBusiness = {
+    find: () => ({ lean: async () => entries }),
+    updateMany: async (q, update) => {
+      consumed = { q, update };
+    },
+  };
+  const rb = await settlement.generateSettlement(
+    { providerId: 'p1', from: new Date('2026-01-01'), to: new Date('2026-02-01') },
+    { EntryModel: EntryWithBusiness, ProviderModel: { findById: async () => ({ _id: 'p1', business: 'b1' }) }, SettlementModel }
+  );
+  ok('global settlementNo 43', created && created.settlementNo === 43, JSON.stringify(created));
+  ok('settlement refunds include provider reversal', created && created.totals.refunds === 80, JSON.stringify(created && created.totals));
+  ok('settlement net payable 380', created && created.totals.netAmount === 380, JSON.stringify(created && created.totals));
+  ok('entries consumed by settlement', consumed.q && consumed.q._id.$in.length === 2 && rb.settlement._id === 's1');
+
   // Notify never throws, returns null on bad input.
   const n1 = await notify.notifyUser({}, { NotifyModel: { create: async () => { throw new Error('db down'); } } });
   ok('notify swallows errors', n1 === null);

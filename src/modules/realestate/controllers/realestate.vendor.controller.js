@@ -22,6 +22,7 @@ const ApiError = require('../../../utils/ApiError');
 const vendorService = require('../services/realestate.vendor.service');
 const packageService = require('../services/realestate.listing.package.service');
 const orderService = require('../services/realestate.listing.order.service');
+const listingOrderPaymentService = require('../services/realestate.listing.order.payment.service');
 const entitlementService = require('../services/realestate.listing.entitlement.service');
 const propertyService = require('../services/realestate.property.service');
 const documentService = require('../services/realestate.document.service');
@@ -222,6 +223,25 @@ const cancelOrder = catchAsync(async (req, res) => {
 });
 
 /**
+ * POST /vendor/orders/:id/pay
+ *
+ * Starts the gateway payment for a PENDING_PAYMENT order and returns the
+ * initiation id as `payLink`. The app opens it through the shared
+ * `v1/public/payments/makePayment/:id` flow; confirmation reaches
+ * `markPaid` via the `listing_package` callback branch.
+ */
+const payOrder = catchAsync(async (req, res) => {
+  const vendor = await resolveVendor(req);
+  const { order, initiation } = await listingOrderPaymentService.initiateOrderPayment({
+    orderId: req.params.id,
+    vendorId: vendor._id,
+    userId: req.userId,
+    paymentConfigId: req.body?.payment || null,
+  });
+  res.status(httpStatus.CREATED).send({ data: order, payLink: String(initiation._id) });
+});
+
+/**
  * GET /vendor/entitlements
  * What the vendor has bought and how much of it is left.
  */
@@ -374,6 +394,17 @@ const uploadPropertyDocument = catchAsync(async (req, res) => {
   } catch (e) {
     if (e.code === 'PROPERTY_NOT_FOUND') {
       throw new ApiError(httpStatus.NOT_FOUND, 'Property not found');
+    }
+    if (
+      [
+        'DOCUMENT_SIZE_REQUIRED',
+        'DOCUMENT_SIZE_INVALID',
+        'DOCUMENT_TOO_LARGE',
+        'DOCUMENT_MIME_TYPE_REQUIRED',
+        'DOCUMENT_MIME_TYPE_NOT_ALLOWED',
+      ].includes(e.code)
+    ) {
+      throw new ApiError(httpStatus.BAD_REQUEST, e.message);
     }
     throw e;
   }
@@ -742,6 +773,7 @@ module.exports = {
   listOrders,
   getOrder,
   cancelOrder,
+  payOrder,
   listEntitlements,
   listActive,
   approve,

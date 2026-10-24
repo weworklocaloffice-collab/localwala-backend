@@ -18,6 +18,8 @@
 
 const RealEstatePropertyDocument = require('../models/realestate.property.document.model');
 const RealEstateProperty = require('../models/realestate.property.model');
+const RealEstateSetting = require('../models/realestate.setting.model');
+const { assertDocumentUpload } = require('../utils/realestate.document.rules');
 const fcmNotificationService = require('../../../services/fcm.notification.service');
 
 /**
@@ -91,13 +93,23 @@ async function upload({
   const allowedVisibility = ['INTERNAL', 'CUSTOMER_VISIBLE'];
   const finalVisibility = allowedVisibility.includes(visibility) ? visibility : 'INTERNAL';
 
+  const settings = await RealEstateSetting.findOne()
+    .select('documentMaxSizeBytes')
+    .lean();
+  const normalizedMimeType = assertDocumentUpload({
+    category,
+    mimeType,
+    sizeBytes,
+    maxSizeBytes: settings && settings.documentMaxSizeBytes,
+  });
+
   const doc = await RealEstatePropertyDocument.create({
     property: propertyId,
     category,
     title,
     fileUrl,
     fileName,
-    mimeType,
+    mimeType: normalizedMimeType,
     sizeBytes,
     checksum,
     visibility: finalVisibility,

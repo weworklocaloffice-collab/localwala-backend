@@ -29,7 +29,7 @@ const localServiceReservationSchema = mongoose.Schema(
   {
     booking: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceBooking', required: true },
     resource: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceResource', required: false },
-    provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'Business', required: false },
+    provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceProvider', required: false },
     startAt: { type: Date, required: true },
     endAt: { type: Date, required: true },
     status: { type: String, required: true, enum: ['held', 'confirmed', 'released', 'expired'], default: 'held' },

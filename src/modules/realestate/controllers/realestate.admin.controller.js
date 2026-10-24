@@ -18,6 +18,7 @@
 
 const { status: httpStatus } = require('http-status');
 const catchAsync = require('../../../utils/catchAsync');
+const ApiError = require('../../../utils/ApiError');
 const propertyService = require('../services/realestate.property.service');
 const holdRefundService = require('../services/realestate.hold.refund.service');
 const holdService = require('../services/realestate.hold.service');
@@ -741,6 +742,28 @@ const listPackagePayments = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(result);
 });
 
+const markPackagePaymentPaid = catchAsync(async (req, res) => {
+  let order;
+  try {
+    order = await orderService.markPaid(req.params.id, {
+      allowUnpaidStatuses: ['PENDING_PAYMENT', 'FAILED', 'CANCELLED'],
+      actor: req.user.id,
+      actorType: 'admin',
+      reason: req.body.reason,
+      paymentRef: req.body.paymentRef || undefined,
+    });
+  } catch (e) {
+    if (e.message === 'Order not found') {
+      throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+    }
+    if (e.message.startsWith('Cannot mark a ')) {
+      throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, e.message);
+    }
+    throw e;
+  }
+  res.status(httpStatus.OK).send({ data: order });
+});
+
 module.exports = {
   setPropertyStatus,
   listVerificationQueue,
@@ -797,4 +820,5 @@ module.exports = {
   matchCustodyStatement,
   listListingPackages,
   listPackagePayments,
+  markPackagePaymentPaid,
 };

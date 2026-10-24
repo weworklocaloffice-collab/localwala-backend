@@ -182,10 +182,60 @@ const loanIdParam = Joi.object({
   id: id.required(),
 });
 
+const loanOfferParam = Joi.object({
+  id: id.required(),
+  offerId: id.required(),
+});
+
 const loanListQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(20),
 }).unknown(true);
+
+/**
+ * Purchases are read-only. There is deliberately no status filter: a
+ * customer sees their own COMPLETED and CANCELLED rows, and the tenant
+ * comes from the token.
+ */
+const purchaseIdParam = Joi.object({
+  id: id.required(),
+});
+
+const purchaseListQuery = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(100).default(20),
+}).unknown(true);
+
+/**
+ * The customer's answer to a document request.
+ *
+ * `fileUrl` is required: a request answered with no file is not an
+ * answer, and the bank would have to ask again.
+ *
+ * The value is either an absolute http(s) url or a relative media path
+ * (the shared upload endpoint answers with one). A relative path may not
+ * walk up the tree: `../../etc/passwd` is not a document.
+ */
+const documentRequestSubmitBody = Joi.object({
+  fileUrl: Joi.string()
+    .trim()
+    .max(2048)
+    .required()
+    .custom((value, helpers) => {
+      if (/^https?:\/\//i.test(value)) return value;
+      if (/^[A-Za-z0-9_\-./]+$/.test(value) && !value.includes('..')) {
+        return value;
+      }
+      return helpers.error('any.invalid');
+    }),
+  fileName: Joi.string().trim().max(255).allow('').optional(),
+  mimeType: Joi.string().trim().max(120).allow('').optional(),
+  sizeBytes: Joi.number().integer().min(0).optional(),
+}).unknown(false);
+
+const documentRequestParams = Joi.object({
+  id: id.required(),
+});
 
 /**
  * ## The export shape matters more than it looks
@@ -216,5 +266,10 @@ module.exports = {
   visitList: { query: visitListQuery },
   createLoan: { body: loanCreateBody },
   loanParams: { params: loanIdParam },
+  acceptLoanOffer: { params: loanOfferParam },
   loanList: { query: loanListQuery },
+  purchaseParams: { params: purchaseIdParam },
+  purchaseList: { query: purchaseListQuery },
+  documentRequestParams: { params: documentRequestParams },
+  documentRequestSubmit: { params: documentRequestParams, body: documentRequestSubmitBody },
 };

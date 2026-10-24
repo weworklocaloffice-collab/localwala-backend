@@ -20,6 +20,7 @@ const { status: httpStatus } = require('http-status');
 const catchAsync = require('../../../utils/catchAsync');
 const pick = require('../../../utils/pick');
 const promotionService = require('../services/stores.promotion.service');
+const couponService = require('../services/stores.coupon.service');
 
 const validatePromotion = catchAsync(async (req, res) => {
   const promo = await promotionService.validatePromotion({
@@ -49,8 +50,46 @@ const listPromotions = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(result);
 });
 
+const pausePromotion = catchAsync(async (req, res) => {
+  const promotion = await promotionService.pausePromotion({
+    promotion: req.params.promotion,
+    chain: req.chainId,
+    outlet: req.outletId,
+  });
+  res.status(httpStatus.OK).send({ promotion });
+});
+
+const resumePromotion = catchAsync(async (req, res) => {
+  const promotion = await promotionService.resumePromotion({
+    promotion: req.params.promotion,
+    chain: req.chainId,
+    outlet: req.outletId,
+  });
+  res.status(httpStatus.OK).send({ promotion });
+});
+
+const createCoupon = catchAsync(async (req, res) => {
+  const coupon = await couponService.createCoupon({
+    ...req.body,
+    chain: req.chainId,
+    outlet: req.outletId,
+    createdBy: req.user._id,
+  });
+  res.status(httpStatus.CREATED).send({ coupon });
+});
+
+const listCoupons = catchAsync(async (req, res) => {
+  const filter = pick(req.query, ['status', 'page', 'limit']);
+  const result = await couponService.listCoupons({ ...filter, chain: req.chainId, outlet: req.outletId });
+  res.status(httpStatus.OK).send(result);
+});
+
 module.exports = {
   validatePromotion,
   createPromotion,
   listPromotions,
+  pausePromotion,
+  resumePromotion,
+  createCoupon,
+  listCoupons,
 };

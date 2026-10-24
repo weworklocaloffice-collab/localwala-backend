@@ -71,6 +71,7 @@ async function applyRevenueForBooking(
     const entry = await Entry.create({
       idempotencyKey,
       bookingId: String(bookingId),
+      provider: scope.provider || undefined,
       paymentId: paymentId || undefined,
       rule: rule._id,
       ruleSnapshot: calc.ruleSnapshot,
@@ -132,6 +133,7 @@ async function reverseRevenueForBooking(
       const rev = await Entry.create({
         idempotencyKey: key,
         bookingId: String(bookingId),
+        provider: ch.provider || undefined,
         paymentId: ch.paymentId || undefined,
         rule: ch.rule,
         ruleSnapshot: { ...snap, reversedFrom: String(ch._id || ch.idempotencyKey), reversalReason: reason, refundRatio: ratio },
@@ -143,7 +145,7 @@ async function reverseRevenueForBooking(
         commissionBase: 0,
         commissionAmount: neg(ch.commissionAmount),
         customerTotal: neg((Number(ch.bookingFee) || 0) + (Number(ch.commissionAmount) || 0)),
-        providerPayable: 0,
+        providerPayable: neg(ch.providerPayable),
         platformRevenue: neg(ch.platformRevenue),
         currency: ch.currency || 'INR',
         payer: ch.payer,

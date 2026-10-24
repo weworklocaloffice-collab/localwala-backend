@@ -72,8 +72,30 @@ const featuredBody = {
     .unknown(false),
 };
 
+const planStatusBody = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object()
+    .keys({ status: Joi.string().valid('active', 'inactive').required() })
+    .unknown(false),
+};
+
+const featuredStatusBody = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object()
+    .keys({ status: Joi.string().valid('active', 'expired', 'cancelled').required() })
+    .unknown(false),
+};
+
 const idParam = {
   params: Joi.object().keys({ id: objectId.required() }),
 };
 
-module.exports = { recurringBody, leadBody, planBody, featuredBody, idParam };
+module.exports = {
+  recurringBody,
+  leadBody,
+  planBody,
+  featuredBody,
+  planStatusBody,
+  featuredStatusBody,
+  idParam,
+};

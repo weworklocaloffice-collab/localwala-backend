@@ -21,6 +21,12 @@ const { toJSON, paginate, slugGenerator } = require('../../../models/plugins');
 
 const chainProductVariantSchema = mongoose.Schema(
   {
+    chain: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'StoreChain',
+      required: true,
+      index: true,
+    },
     product: {
       type: mongoose.SchemaTypes.ObjectId,
       ref: 'ChainProduct',
@@ -62,6 +68,14 @@ const chainProductVariantSchema = mongoose.Schema(
     barcode: {
       type: String,
       trim: true,
+    },
+    image: {
+      type: String,
+      trim: true,
+    },
+    images: {
+      type: [String],
+      default: [],
     },
     weight: {
       type: Number,

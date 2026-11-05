@@ -122,6 +122,17 @@ async function initiateBookingPayment(
       content: `Payment received for booking ${booking.bookingCode}`,
       payload: { bookingId: String(booking._id), kind: 'local_service_payment' },
     });
+    try {
+      const outbox = require('./localservice.outbox.service');
+      await outbox.enqueue({
+        aggregateType: 'booking',
+        aggregateId: String(booking._id),
+        eventType: 'booking.paid',
+        payload: { bookingId: String(booking._id), amount, mode: 'wallet' },
+      });
+    } catch (e) {
+      console.error('LocalServices outbox enqueue failed:', e && e.message);
+    }
     return { initiation: null, booking: paid.booking, wallet };
   }
 
@@ -169,6 +180,18 @@ async function initiateBookingPayment(
     paymentRef: paymentRef || `LS-BOOKING-${booking.bookingCode}${isBalance ? `-BAL-${Math.round(amount * 100)}` : ''}`,
     paymentFrom: 'localServiceBooking',
   });
+
+  try {
+    const outbox = require('./localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'booking',
+      aggregateId: String(booking._id),
+      eventType: 'booking.payment_initiated',
+      payload: { bookingId: String(booking._id), amount, mode: 'gateway' },
+    });
+  } catch (e) {
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
 
   return { initiation, booking };
 }

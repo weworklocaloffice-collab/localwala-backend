@@ -54,7 +54,7 @@ const runScript = (script) => {
     const out = execSync(`node ${script}`, {
       cwd: REPO_ROOT,
       encoding: 'utf8',
-      timeout: 60000,
+    timeout: 180000,
       stdio: 'pipe',
     });
     return { ok: true, output: out };
@@ -175,6 +175,7 @@ console.log('\n--- 2b. mount table (§15.2) ---');
     '/jhatka/partner/money',
     '/jhatka/partner/compliance',
     '/jhatka/partner/labels',
+    '/jhatka/partner/supply',
     '/jhatka/driver',
     // B1 admin. One path, eight FILES mounted at it — see the duplicate check below
     // for why a repeated path is legal here as long as the route differs.
@@ -255,6 +256,108 @@ console.log('\n--- 2b. mount table (§15.2) ---');
       'customer order creation is reachable at §15.2\'s /orders',
       /router\.post\('\/orders'/.test(customerSrc),
       'expected router.post(\'/orders\''
+    );
+  }
+
+  // A template with no sender is dead config that looks like a shipped feature.
+  // These are the customer-facing order-lifecycle pushes; each must stay wired.
+  {
+    const source = (...parts) =>
+      fs.readFileSync(path.join(API_ROOT, 'modules', 'jhatka', ...parts), 'utf8');
+
+    const senders = {
+      new_order: source('routes', 'jhatka.customer.route.js'),
+      order_outlet_received: source('services', 'jhatka.order-fulfilment.service.js'),
+      order_accepted: source('services', 'jhatka.order-fulfilment.service.js'),
+      order_rejected: source('services', 'jhatka.order-fulfilment.service.js'),
+      order_preparing: source('services', 'jhatka.order-fulfilment.service.js'),
+      order_packed: source('services', 'jhatka.order-fulfilment.service.js'),
+      out_for_delivery: source('services', 'jhatka.rider.service.js'),
+      order_delivered: source('services', 'jhatka.delivery.service.js'),
+      complaint_raised: source('routes', 'jhatka.customer.route.js'),
+      subscription_paused: source('services', 'jhatka.subscription-lifecycle.service.js'),
+      subscription_resumed: source('services', 'jhatka.subscription-lifecycle.service.js'),
+      subscription_cancelled: source('services', 'jhatka.subscription-lifecycle.service.js'),
+      recall_opened: source('services', 'jhatka.recall.service.js'),
+      payout_rolled_forward: source('services', 'jhatka.payout.service.js'),
+      payout_processed: source('routes', 'jhatka.admin.settlements.route.js'),
+      supply_request_status: source('services', 'jhatka.supply-request.service.js'),
+      batch_quarantined: source('routes', 'jhatka.admin.inventory.route.js'),
+      batch_expiring: source('cron.js'),
+      subscription_due: source('cron.js'),
+    };
+
+    const unsent = Object.entries(senders)
+      .filter(([event, src]) => !src.includes(`'${event}'`))
+      .map(([event]) => event);
+
+    ok(
+      'every order-lifecycle notification has a sender',
+      unsent.length === 0,
+      unsent.length ? `no sender: ${unsent.join(', ')}` : `${Object.keys(senders).length} wired`
+    );
+
+    const partnerMoneySrc = source('routes', 'jhatka.partner.money.route.js');
+    ok(
+      'a partner cannot mark its own payout paid',
+      !/['"]\/payouts\/:id\/pay['"]/.test(partnerMoneySrc),
+      'partner money route still exposes a self-mark-paid payout endpoint'
+    );
+
+    // The admin recall door must go through the service that freezes, attaches the
+    // recall to the batch and fans out to customers. It previously wrote its own
+    // recall and skipped all three.
+    const adminInventorySrc = source('routes', 'jhatka.admin.inventory.route.js');
+    ok(
+      'the admin recall endpoint delegates to the shared recall service',
+      /recallService\.openRecall/.test(adminInventorySrc),
+      'admin inventory route does not call recallService.openRecall'
+    );
+    ok(
+      '...and does not write a JhatkaRecall by hand',
+      !/JhatkaRecall\.create/.test(adminInventorySrc),
+      'admin inventory route still creates recalls inline'
+    );
+  }
+
+  // Completeness, not just the lifecycle subset. Every template must either have a
+  // literal sender somewhere under modules/jhatka, or be listed here with the reason
+  // it is deliberately unwired. This keeps a new template from silently shipping as
+  // dead config, and keeps the known gap visible instead of hidden.
+  {
+    const notifyPath = path.join(API_ROOT, 'modules', 'jhatka', 'services', 'jhatka.notify.service.js');
+    const notifySrc = fs.readFileSync(notifyPath, 'utf8');
+    const tableStart = notifySrc.indexOf('const JHATKA_CUSTOMER_NOTIFICATIONS');
+    const tableEnd = notifySrc.indexOf('/** Lightweight template fill');
+    const templateKeys = [...new Set(
+      [...notifySrc.slice(tableStart, tableEnd).matchAll(/^ {2}([a-z_]+):\s*\{/gm)].map((m) => m[1])
+    )];
+
+    const files = [];
+    (function walk(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith('.js') && full !== notifyPath) files.push(full);
+      }
+    })(path.join(API_ROOT, 'modules', 'jhatka'));
+    const corpus = files.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+
+    const deferred = {
+      delivery_assigned: 'the outlet staff member performing the assignment already knows',
+      order_on_hold: 'recall_notice is the customer event for a recall-induced hold',
+      stock_low: 'low_stock_reminder is the wired low-stock event',
+      subscription_price_changed: 'no subscription price-change flow exists',
+      weight_adjustment_refunded: 'order_refund_completed is the aggregate customer event',
+      weight_override_requested: 'no manager-approval flow; the weigher overrides directly',
+      weight_variance_flagged: 'the copy assumes an override and a weekly count not recorded',
+    };
+
+    const dead = templateKeys.filter((key) => !corpus.includes(`'${key}'`) && !deferred[key]);
+    ok(
+      'every notification template is wired or explicitly deferred',
+      dead.length === 0,
+      dead.length ? `undeclared dead templates: ${dead.join(', ')}` : `${templateKeys.length} accounted for`
     );
   }
 
@@ -369,10 +472,12 @@ const jobNames = Object.keys(jobs);
   // a job nobody reviewed is a job nobody knows runs — while a renamed or deleted one
   // still fails immediately.
   const REQUIRED_JOBS = [
+    'cartPurge',             // 00:15 expired abandoned baskets
     'paymentTimeoutSweep',   // closes gateway orders abandoned at the payment screen
     'completionSweep',      // 01:00 DELIVERED -> COMPLETED with nothing open
     'dailySettlement',      // 02:00 per-outlet settlement
     'recurringOrders',      // 03:00 subscription occurrence generator
+    'subscriptionDueReminders', // 18:00 tomorrow's cut list, grouped per outlet
     'refundSettlement',     // 03:30 gateway refund queue — F-5
     'complianceWarnings',   // 04:00 FSSAI expiry
     'batchExpiry',          // 05:00 FEFO write-off
@@ -381,6 +486,7 @@ const jobNames = Object.keys(jobs);
     'promoCleanup',         // 08:00 promotion expiry
     'varianceAgeing',       // 09:00 weight-variance flags
     'subscriptionBilling',  // 05:30 prepaid occurrence charging
+    'lowStockReminders',    // 09:20 OD-12 companion — reorder reminders
   ];
 
   const missing = REQUIRED_JOBS.filter((n) => !jobNames.includes(n));

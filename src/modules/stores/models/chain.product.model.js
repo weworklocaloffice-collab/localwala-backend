@@ -279,4 +279,7 @@ chainProductSchema.statics.archive = async function (productId, { by, reason, ch
   return product;
 };
 
+chainProductSchema.index({ chain: 1, status: 1 });
+chainProductSchema.index({ chain: 1, category: 1, status: 1 });
+
 module.exports = mongoose.model('ChainProduct', chainProductSchema);

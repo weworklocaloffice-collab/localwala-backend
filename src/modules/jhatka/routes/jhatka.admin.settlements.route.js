@@ -61,6 +61,7 @@ const {
 const router = express.Router();
 const validate = require('../../../middlewares/validate');
 const V = require('../validations/jhatka.admin.validation');
+const notifyService = require('../services/jhatka.notify.service');
 
 const SETTLEMENT_STATUS = ['draft', 'finalised', 'disputed'];
 const PAYOUT_STATUS = ['draft', 'approved', 'paid', 'disputed', 'void'];
@@ -74,6 +75,10 @@ const SETTLEMENT_TRANSITIONS = {
   // -10.7: a finalised settlement is never recomputed. Only superseded.
   finalised: [],
 };
+
+// `.lean()` bypasses the model's toJSON `id` virtual. Admin rows route on `id`,
+// so make the lean shapes carry the same identifier the model promises.
+const withLeanId = (doc) => (doc ? { ...doc, id: String(doc._id) } : doc);
 
 /** GET /v1/jhatka/admin/settlements */
 router.get('/settlements', webAuth('jhatka_settlement_read'), async (req, res, next) => {
@@ -100,7 +105,7 @@ router.get('/settlements', webAuth('jhatka_settlement_read'), async (req, res, n
     ]);
 
     return res.json({
-      settlements,
+      settlements: settlements.map(withLeanId),
       page: Number(page),
       limit: Number(limit),
       total,
@@ -135,7 +140,7 @@ router.get('/settlements/payouts', webAuth('jhatka_settlement_read'), async (req
       .lean();
 
     return res.json({
-      payouts,
+      payouts: payouts.map(withLeanId),
       count: payouts.length,
       summary: {
         draft: payouts.filter((p) => p.status === 'draft').length,
@@ -197,6 +202,74 @@ router.post('/settlements/payouts/:payout/approve', webAuth('jhatka_settlement_w
   }
 });
 
+/**
+ * POST /v1/jhatka/admin/settlements/payouts/:payout/pay
+ *
+ * Record the external bank/UPI transfer that settles an approved statement.
+ * Finance-only: the payee cannot mark its own payout paid, and `draft` is not
+ * payable (approval is the control that freezes the amount and destination).
+ */
+router.post('/settlements/payouts/:payout/pay', webAuth('jhatka_settlement_write'), validate(V.namedParam('payout')), validate(V.payoutPayBody), async (req, res, next) => {
+  try {
+    const payout = await JhatkaOperatorPayout.findById(req.params.payout);
+    if (!payout) throw new ApiError(httpStatus.NOT_FOUND, 'Payout not found');
+
+    if (payout.status === 'paid') {
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        'Payout is already paid',
+        true, '', { code: 'ALREADY_PAID', paidAt: payout.paidAt, paymentReference: payout.paymentReference }
+      );
+    }
+    if (payout.status !== 'approved') {
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        `Payout is ${payout.status}; only an approved payout can be paid`,
+        true, '', { code: 'ILLEGAL_STATUS_TRANSITION' }
+      );
+    }
+    if (Number(payout.netPayout) <= 0) {
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        'Payout has no payable amount',
+        true, '', { code: 'NOT_PAYABLE' }
+      );
+    }
+    if (!payout.payoutDetails?.ifsc && !payout.payoutDetails?.upiId) {
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        'No payout destination on file (IFSC or UPI). Nothing can be transferred.',
+        true, '', { code: 'NO_PAYOUT_DESTINATION' }
+      );
+    }
+
+    // `netPayout` and `paidAmount` are both moneyFields, and this is a HYDRATED
+    // document: reading `netPayout` returns RUPEES and assigning it to the
+    // `paidAmount` setter converts back to paise. Do not divide by 100 here.
+    payout.totals.paidAmount = payout.netPayout;
+    payout.status = 'paid';
+    payout.paidAt = new Date();
+    payout.paidBy = req.user._id;
+    payout.paidByName = req.user.name;
+    payout.paymentReference = req.body.paymentReference;
+    if (req.body.notes !== undefined) payout.notes = req.body.notes;
+    await payout.save();
+
+    const periodLabel = payout.period?.label
+      || `${new Date(payout.period.from).toISOString().slice(0, 10)} to ${new Date(payout.period.to).toISOString().slice(0, 10)}`;
+    await notifyService.notifyOutlet(payout.outlet, 'payout_processed', {
+      payoutNo: payout.payoutNo,
+      netPayout: `Rs ${Number(payout.netPayout).toFixed(2)}`,
+      periodLabel,
+      payoutMethod: payout.payoutMethod === 'wallet' ? 'wallet' : 'bank transfer',
+    });
+
+    return res.json({ payout: payout.toObject(), paid: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 /** GET /v1/jhatka/admin/settlements/payables — supplier payables. */
 router.get('/settlements/payables', webAuth('jhatka_payables_read'), async (req, res, next) => {
   try {
@@ -213,7 +286,7 @@ router.get('/settlements/payables', webAuth('jhatka_payables_read'), async (req,
       .lean();
 
     return res.json({
-      payables,
+      payables: payables.map(withLeanId),
       count: payables.length,
       summary: {
         draft: payables.filter((p) => p.status === 'draft').length,
@@ -247,7 +320,13 @@ router.get('/settlements/commission-rules', webAuth('jhatka_commission_read'), a
       )[0] || null;
     }
 
-    return res.json({ rules, count: rules.length, effective });
+    return res.json({
+      rules: rules.map(withLeanId),
+      count: rules.length,
+      effective: Object.fromEntries(
+        Object.entries(effective).map(([model, rule]) => [model, rule ? withLeanId(rule) : null])
+      ),
+    });
   } catch (error) {
     return next(error);
   }
@@ -263,8 +342,8 @@ router.post('/settlements/commission-rules', webAuth('jhatka_commission_write'),
   try {
     const {
       code, name, businessModel, basis, revenueShareBasis, settlementCycle,
-      commissionPct, flatAmount, minimumOrderAmount, minimumNetPayout,
-      effectiveFrom, notes,
+      ratePercent, platformFeePercent, flatAmount, minimumOrderAmount,
+      minimumNetPayout, effectiveFrom, notes,
     } = req.body || {};
 
     for (const f of ['code', 'name', 'businessModel', 'basis', 'effectiveFrom']) {
@@ -300,7 +379,16 @@ router.post('/settlements/commission-rules', webAuth('jhatka_commission_write'),
       basis,
       revenueShareBasis: revenueShareBasis || undefined,
       settlementCycle: settlementCycle || 'monthly',
-      commissionPct: commissionPct === undefined ? undefined : Number(commissionPct),
+      // The model field is `ratePercent`. This used to write `commissionPct`,
+      // which the schema does not define — Mongoose silently stripped it, so
+      // every rule created through this API was saved with NO rate at all
+      // while looking complete in the response.
+      // `platformFeePercent` is the OTHER rate: the platform's charge,
+      // deducted from payouts. The two must never be netted — one is the
+      // partner's earning, the other is what LocalWala keeps.
+      ratePercent: ratePercent === undefined ? undefined : Number(ratePercent),
+      platformFeePercent:
+        platformFeePercent === undefined ? undefined : Number(platformFeePercent),
       flatAmount,
       minimumOrderAmount,
       minimumNetPayout,
@@ -331,7 +419,8 @@ router.patch('/settlements/commission-rules/:rule', webAuth('jhatka_commission_w
     const { status, notes } = req.body || {};
 
     if (rule.status === 'active') {
-      const lockedFields = ['commissionPct', 'flatAmount', 'basis', 'minimumNetPayout', 'minimumOrderAmount'];
+      const lockedFields = ['ratePercent', 'platformFeePercent', 'flatAmount', 'basis',
+        'minimumNetPayout', 'minimumOrderAmount'];
       const attempted = lockedFields.filter((f) => req.body[f] !== undefined);
       if (attempted.length) {
         throw new ApiError(
@@ -372,12 +461,13 @@ router.patch('/settlements/commission-rules/:rule', webAuth('jhatka_commission_w
 
     if (notes !== undefined) rule.notes = notes;
     if (rule.status !== 'active') {
-      const editable = ['name', 'commissionPct', 'flatAmount', 'basis', 'revenueShareBasis',
-        'settlementCycle', 'minimumOrderAmount', 'minimumNetPayout', 'effectiveFrom'];
+      const editable = ['name', 'ratePercent', 'platformFeePercent', 'flatAmount', 'basis',
+        'revenueShareBasis', 'settlementCycle', 'minimumOrderAmount', 'minimumNetPayout',
+        'effectiveFrom'];
       for (const f of editable) {
         if (req.body[f] === undefined) continue;
         if (['effectiveFrom'].includes(f)) rule[f] = new Date(req.body[f]);
-        else if (['commissionPct'].includes(f)) rule[f] = Number(req.body[f]);
+        else if (['ratePercent', 'platformFeePercent'].includes(f)) rule[f] = Number(req.body[f]);
         else if (['flatAmount', 'minimumOrderAmount', 'minimumNetPayout'].includes(f)) {
           rule[f] = asMoney(Number(req.body[f]));
         } else rule[f] = req.body[f];

@@ -1,0 +1,3 @@
+key,name,description,icon,sortOrder,parent,status
+smart_home,Smart Home,Connected home devices and accessories,tablerHomeBolt,25,electronics,true
+smart_lighting,Smart Lighting,App-controlled bulbs and strips,tablerBulb,26,smart_home,true

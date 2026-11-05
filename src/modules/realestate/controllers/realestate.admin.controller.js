@@ -44,6 +44,14 @@ const setPropertyStatus = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(property);
 });
 
+const verifyProperty = catchAsync(async (req, res) => {
+  const property = await propertyService.changeStatus(req.params.id, req.body.target, {
+    actorType: 'admin',
+    reason: req.body.reason,
+  });
+  res.status(httpStatus.OK).send(property);
+});
+
 const listVerificationQueue = catchAsync(async (req, res) => {
   const result = await propertyService.listVerificationQueue({
     page: parseInt(req.query.page, 10) || 1,
@@ -766,6 +774,7 @@ const markPackagePaymentPaid = catchAsync(async (req, res) => {
 
 module.exports = {
   setPropertyStatus,
+  verifyProperty,
   listVerificationQueue,
   completeRefund,
   forfeitHold,

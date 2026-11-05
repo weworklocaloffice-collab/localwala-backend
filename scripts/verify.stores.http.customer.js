@@ -54,6 +54,9 @@ const StoreOutletProduct = require('../src/modules/stores/models/store.outlet.pr
 const StoreCart = require('../src/modules/stores/models/store.cart.model');
 const StoreOrder = require('../src/modules/stores/models/store.order.model');
 const StoreRefund = require('../src/modules/stores/models/store.refund.model');
+const StoreReturnRequest = require('../src/modules/stores/models/store.return.request.model');
+const StoreExchangeRequest = require('../src/modules/stores/models/store.exchange.request.model');
+const StoreReview = require('../src/modules/stores/models/store.review.model');
 const StoreStockReservation = require('../src/modules/stores/models/store.stock.reservation.model');
 const StoreInventoryMovement = require('../src/modules/stores/models/store.inventory.movement.model');
 const tokenService = require('../src/services/token.service');
@@ -645,6 +648,139 @@ const run = async () => {
     ck('10. the delivery ladder is walkable to completed', ladderOk, failedAt);
   }
 
+  // -- 11. post-sale ----------------------------------------------------------
+  //
+  // The customer app's Return/exchange and Review buttons used to call routes that
+  // trusted client price fields and failed outright (`items` was undefined). This
+  // block exercises the real Joi + appAuth + controller path, not just the service.
+  console.log('\n--- customer returns, exchanges and reviews ---');
+
+  if (shopA && customer) {
+    const postSaleOrder = await StoreOrder.create({
+      orderNo: 8800000 + Math.floor(Math.random() * 89999),
+      customer: customer.user._id,
+      outlet: shopA.outlet._id,
+      chain: shopA.chain._id,
+      items: [
+        {
+          product: shopA.product._id,
+          variant: shopA.variant._id,
+          name: 'Post-sale item',
+          variantName: 'Standard',
+          sku: shopA.variant.sku,
+          quantity: 1,
+          orderedQuantity: 1,
+          fulfilledQuantity: 1,
+          cancelledQuantity: 0,
+          unitPrice: 100,
+          discountAmount: 0,
+          taxAmount: 18,
+          lineTotal: 100,
+          lineGrand: 118,
+          fulfilment: 'picked',
+        },
+      ],
+      itemsSubtotal: 100,
+      deliveryFee: 0,
+      grandTotal: 118,
+      paymentMode: 'gateway',
+      paymentStatus: 'paid',
+      paidAmount: 118,
+      lifecycle: 'delivered',
+      deliveredAt: new Date(),
+      invoiceStatus: 'issued',
+      invoiceNo: 'HTTP-POSTSALE-' + stamp,
+    });
+
+    const postSaleBody = {
+      order: String(postSaleOrder._id),
+      items: [
+        {
+          product: String(shopA.product._id),
+          variant: String(shopA.variant._id),
+          quantity: 1,
+          condition: 'damaged',
+        },
+      ],
+      reason: 'damaged on arrival',
+      reasonCategory: 'damaged_in_delivery',
+    };
+
+    const returnResponse = await request('POST', '/v1/stores/customer/returns', {
+      token: customer.token,
+      body: postSaleBody,
+    });
+    ck('11a. POST /customer/returns answers 201', returnResponse.status === 201, 'status ' + returnResponse.status);
+    ck(
+      '11b. the refund is derived from the order line, not the body',
+      returnResponse.body && returnResponse.body.request && returnResponse.body.request.items[0].refundAmount === 118,
+      JSON.stringify(returnResponse.body).slice(0, 180)
+    );
+    ck(
+      '11c. the return is scoped to the order outlet',
+      returnResponse.body &&
+        returnResponse.body.request &&
+        String(returnResponse.body.request.outlet) === String(shopA.outlet._id),
+      JSON.stringify(returnResponse.body).slice(0, 180)
+    );
+
+    const spoofResponse = await request('POST', '/v1/stores/customer/returns', {
+      token: customer.token,
+      body: {
+        ...postSaleBody,
+        items: [{ ...postSaleBody.items[0], refundAmount: 1 }],
+      },
+    });
+    ck('11d. a client-supplied refundAmount is rejected with 400', spoofResponse.status === 400, 'status ' + spoofResponse.status);
+
+    const reviewResponse = await request(
+      'POST',
+      '/v1/stores/customer/orders/' + postSaleOrder._id + '/review',
+      { token: customer.token, body: { rating: 5, comment: 'Arrived quickly' } }
+    );
+    ck('11e. POST order review answers 201', reviewResponse.status === 201, 'status ' + reviewResponse.status);
+    ck(
+      '11f. the review stores the order chain and outlet',
+      reviewResponse.body &&
+        reviewResponse.body.review &&
+        String(reviewResponse.body.review.chain) === String(shopA.chain._id) &&
+        String(reviewResponse.body.review.outlet) === String(shopA.outlet._id),
+      JSON.stringify(reviewResponse.body).slice(0, 180)
+    );
+
+    const duplicateReview = await request(
+      'POST',
+      '/v1/stores/customer/orders/' + postSaleOrder._id + '/review',
+      { token: customer.token, body: { rating: 1 } }
+    );
+    ck('11g. a second review for the order is refused with 409', duplicateReview.status === 409, 'status ' + duplicateReview.status);
+
+    const exchangeResponse = await request('POST', '/v1/stores/customer/exchanges', {
+      token: customer.token,
+      body: {
+        order: String(postSaleOrder._id),
+        items: [
+          {
+            originalProduct: String(shopA.product._id),
+            originalVariant: String(shopA.variant._id),
+            quantity: 1,
+            condition: 'defective',
+          },
+        ],
+        reason: 'defective on arrival',
+        reasonCategory: 'defective',
+      },
+    });
+    ck('11h. POST /customer/exchanges answers 201', exchangeResponse.status === 201, 'status ' + exchangeResponse.status);
+    ck(
+      '11i. a same-item exchange requires no payment',
+      exchangeResponse.body &&
+        exchangeResponse.body.request &&
+        exchangeResponse.body.request.paymentRequired === false,
+      JSON.stringify(exchangeResponse.body).slice(0, 180)
+    );
+  }
+
   console.log('\n' + '=========================================');
   if (failures === 0) {
     console.log('ALL STORES HTTP CUSTOMER CHECKS PASSED');
@@ -659,6 +795,9 @@ const cleanup = async () => {
   // that is how a test run can destroy a developer's local data; every delete here is
   // filtered on an id this run created.
   try {
+    await StoreReview.deleteMany({ outlet: { $in: created.outlets } });
+    await StoreReturnRequest.deleteMany({ outlet: { $in: created.outlets } });
+    await StoreExchangeRequest.deleteMany({ outlet: { $in: created.outlets } });
     await StoreRefund.deleteMany({ outlet: { $in: created.outlets } });
     await StoreStockReservation.deleteMany({ outlet: { $in: created.outlets } });
     await StoreInventoryMovement.deleteMany({ outlet: { $in: created.outlets } });

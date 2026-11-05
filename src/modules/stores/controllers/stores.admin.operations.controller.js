@@ -59,10 +59,11 @@ const inventoryDrift = catchAsync(async (req, res) => {
 const complianceExpiry = catchAsync(async (req, res) => {
   const rows = await operationsService.complianceExpiry();
   res.status(httpStatus.OK).send({
-    results: [...rows.documents, ...rows.subscriptions],
+    results: [...rows.documents, ...rows.subscriptions, ...rows.brandCertifications],
     documents: rows.documents,
     subscriptions: rows.subscriptions,
-    totalResults: rows.documents.length + rows.subscriptions.length,
+    brandCertifications: rows.brandCertifications,
+    totalResults: rows.documents.length + rows.subscriptions.length + rows.brandCertifications.length,
   });
 });
 

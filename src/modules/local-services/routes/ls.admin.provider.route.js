@@ -30,6 +30,7 @@ const router = express.Router();
 router.route('/').get(webAuth('localservices_catalog_read'), controller.adminListProviders);
 router.route('/offerings').get(webAuth('localservices_catalog_read'), controller.adminListOfferings);
 router.route('/:id').get(webAuth('localservices_catalog_read'), validate(V.idParam), controller.adminGetProvider);
+router.route('/:id').patch(webAuth('localservices_catalog_write'), validate(V.idParam), controller.adminUpdateProvider);
 router.route('/:id/:status').post(webAuth('localservices_catalog_write'), validate(V.statusParam), controller.transitionProvider);
 
 // Offering moderation: draft -> pending -> active, active <-> inactive.

@@ -32,7 +32,7 @@ const createOrder = catchAsync(async (req, res) => {
 });
 
 const getOrder = catchAsync(async (req, res) => {
-  const order = await orderService.getOrder(req.params.order);
+  const order = await orderService.getOrder(req.params.order, { outlet: req.outletId });
   res.status(httpStatus.OK).send({ order });
 });
 
@@ -46,6 +46,7 @@ const transitionOrder = catchAsync(async (req, res) => {
   const order = await orderService.transitionOrder(req.params.order, req.params.status, {
     actor: req.user._id,
     notes: req.body.notes,
+    outlet: req.outletId,
   });
   res.status(httpStatus.OK).send({ order });
 });
@@ -53,16 +54,47 @@ const transitionOrder = catchAsync(async (req, res) => {
 const cancelOrder = catchAsync(async (req, res) => {
   const order = await orderService.cancelOrder(req.params.order, {
     reason: req.body.reason,
-    cancelledBy: req.body.cancelledBy || 'customer',
+    cancelledBy: 'store',
     cancelledByUserId: req.user._id,
+    outlet: req.outletId,
   });
   res.status(httpStatus.OK).send({ order });
 });
 
+const rejectOrder = catchAsync(async (req, res) => {
+  const order = await orderService.cancelOrder(req.params.order, {
+    reason: req.body.reason,
+    cancelledBy: 'store',
+    cancelledByUserId: req.user._id,
+    outlet: req.outletId,
+    target: 'rejected',
+  });
+  res.status(httpStatus.OK).send({ order });
+});
+
+const editOrder = catchAsync(async (req, res) => {
+  const order = await orderService.editOrder(req.params.order, {
+    items: req.body.items,
+    outlet: req.outletId,
+    customer: req.user._id,
+  });
+  res.status(httpStatus.OK).send({ order });
+});
+
+const listCustomers = catchAsync(async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 20;
+  const result = await orderService.listCustomers({ outlet: req.outletId, page, limit });
+  res.status(httpStatus.OK).send(result);
+});
+
 module.exports = {
   createOrder,
+  editOrder,
   getOrder,
   listOrders,
+  listCustomers,
   transitionOrder,
   cancelOrder,
+  rejectOrder,
 };

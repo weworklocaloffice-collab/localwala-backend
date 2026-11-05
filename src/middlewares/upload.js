@@ -38,6 +38,7 @@ function getExtensionFromMime(mimeType) {
     'image/webp': '.webp',
     'image/gif': '.gif',
     'image/svg+xml': '.svg',
+    'application/pdf': '.pdf',
   };
   return mimeMap[mimeType] || '';
 }
@@ -134,5 +135,20 @@ const verifyUploadedImage = (file) => {
   }
 };
 
+const verifyUploadedFile = (file) => {
+  if (!file) throw new ApiError(httpStatus.BAD_REQUEST, 'Please select a file to upload!');
+  const mime = file.mimetype || '';
+  if (mime === 'application/pdf') {
+    const head = sniffHead(file, 8);
+    if (head.toString('ascii', 0, 4) !== '%PDF') {
+      if (file.path) fs.unlink(file.path, () => {});
+      throw new ApiError(httpStatus.BAD_REQUEST, 'File content does not match its PDF type');
+    }
+    return;
+  }
+  verifyUploadedImage(file);
+};
+
 module.exports.verifyUploadedImage = verifyUploadedImage;
+module.exports.verifyUploadedFile = verifyUploadedFile;
 

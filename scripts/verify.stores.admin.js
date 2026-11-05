@@ -203,6 +203,28 @@ const run = async () => {
     ck(`${name} resolves without throwing`, ok, detail);
   }
 
+  const certBrand = await taxonomyService.createBrand({
+    name: 'Admintest Cert Brand ' + STAMP,
+    categories: [category._id],
+    status: 'approved',
+  });
+  const certAdded = await taxonomyService.addBrandCertification(certBrand._id, {
+    type: 'distributorship',
+    validTo: new Date(Date.now() + 10 * 86400000),
+  });
+  await taxonomyService.reviewBrandCertification(certBrand._id, certAdded.index, {
+    status: 'approved',
+    by: new mongoose.Types.ObjectId(),
+  });
+
+  const compliance = await operationsService.complianceExpiry();
+  ck(
+    'the compliance console includes expiring brand certifications',
+    compliance.brandCertifications.some(
+      (row) => String(row.brandId) === String(certBrand._id)
+    )
+  );
+
   console.log('\n=== admin reads are cross-tenant by design ===\n');
 
   // No outlet filter: the whole point of this file. Partner services would 400 here;

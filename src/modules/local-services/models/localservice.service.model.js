@@ -60,6 +60,7 @@ const localServiceServiceSchema = mongoose.Schema(
     },
     configVersion: { type: Number, required: false, default: 1 },
     status: { type: String, required: true, enum: ['draft', 'active', 'inactive'], default: 'draft' },
+    avgRating: { type: Number, required: false, default: 0, min: 0, max: 5 },
   },
   { timestamps: true, toJSON: { getters: true } }
 );

@@ -18,6 +18,7 @@
 
 const Joi = require('joi');
 const { objectId } = require('../../../validations/custom.validation');
+const { password } = require('../../../validations/custom.validation');
 
 const PERIODS = ['daily', 'weekly', 'monthly'];
 
@@ -85,6 +86,26 @@ const partnerListValidation = {
     business: Joi.string().custom(objectId),
     limit: Joi.number().integer(),
     page: Joi.number().integer(),
+  }),
+};
+
+/**
+ * The admin outlet directory and its create-dialog picker.
+ *
+ * `availableFor` is not a model. It is a picker mode: verified, trading, direct
+ * outlets with no agreement yet. Keeping it in validation means a typo cannot
+ * silently return every outlet to a picker that is supposed to show only the
+ * eligible ones.
+ */
+const outletListValidation = {
+  query: Joi.object().keys({
+    search: Joi.string().allow(null, ''),
+    model: Joi.string().valid('direct', 'franchise', 'commission_partner'),
+    status: Joi.string().valid('pending', 'active', 'suspended'),
+    city: Joi.string().custom(objectId),
+    availableFor: Joi.string().valid('commission_partner', 'franchise'),
+    limit: Joi.number().integer().min(1).max(100),
+    page: Joi.number().integer().min(0),
   }),
 };
 
@@ -205,6 +226,73 @@ const settlementDetailValidation = {
   }),
 };
 
+const adminOutletCreateValidation = {
+  body: Joi.object().keys({
+    // Owner login (mandatory).
+    firstName: Joi.string().required().trim(),
+    lastName: Joi.string().required().trim(),
+    countryCode: Joi.string().required(),
+    mobile: Joi.number().required(),
+    email: Joi.string().required().email(),
+    password: Joi.string().custom(password).required(),
+    locale: Joi.string().allow(),
+
+    // Outlet.
+    businessName: Joi.string().required().trim(),
+    businessModel: Joi.string().valid('direct', 'commission_partner', 'franchise').default('direct'),
+    shortDescription: Joi.string().allow('', null),
+    address: Joi.string().allow('', null),
+    logo: Joi.string().allow('', null),
+    cover: Joi.string().allow('', null),
+    city: Joi.string().custom(objectId).required(),
+    locality: Joi.string().custom(objectId).required(),
+    coordinates: Joi.array().items(Joi.number()).length(2).allow('', null),
+
+    // Commission partner agreement (required when model is commission_partner).
+    partnerCode: Joi.string().trim().allow('', null),
+    name: Joi.string().trim().allow('', null),
+    commissionPercentage: Joi.number().min(0).max(100).when('businessModel', {
+      is: 'commission_partner',
+      then: Joi.required(),
+      otherwise: Joi.allow(null),
+    }),
+    commissionBasis: Joi.string().valid('product_only', 'product_and_delivery').default('product_only'),
+    payoutMethod: Joi.string().valid('wallet', 'bank').default('wallet'),
+    payoutDetails: Joi.object().keys({
+      accountName: Joi.string().allow('', null),
+      accountNumber: Joi.string().allow('', null),
+      ifsc: Joi.string().allow('', null),
+      upiId: Joi.string().allow('', null),
+    }),
+    agreement: Joi.object().keys({
+      startDate: Joi.date(),
+      endDate: Joi.date().allow('', null),
+      minimumGuarantee: Joi.number().min(0),
+      documentUrl: Joi.string().allow('', null),
+      notes: Joi.string().allow('', null),
+    }),
+
+    // Franchise agreement (required when model is franchise).
+    operator: Joi.string().custom(objectId).allow('', null),
+    franchiseCode: Joi.string().trim().allow('', null),
+    revenueSharePercentage: Joi.number().min(0).max(100).when('businessModel', {
+      is: 'franchise',
+      then: Joi.required(),
+      otherwise: Joi.allow(null),
+    }),
+    revenueShareBasis: Joi.string().valid('product_only', 'product_and_delivery').default('product_only'),
+    joiningFee: Joi.number().min(0).default(0),
+    royalty: Joi.number().min(0).default(0),
+    royaltyFrequency: Joi.string().valid('monthly', 'quarterly', 'annual').default('monthly'),
+    supplyModel: Joi.string().valid('platform_supplied', 'local_procurement', 'mixed').default('platform_supplied'),
+    procurementEnabled: Joi.boolean().default(false),
+    territory: Joi.object().keys({
+      city: Joi.string().custom(objectId).allow('', null),
+      localities: Joi.array().items(Joi.string().custom(objectId)),
+    }),
+  }),
+};
+
 const settlementSummaryValidation = {
   query: Joi.object().keys({
     from: Joi.date().allow('', null),
@@ -219,6 +307,7 @@ module.exports = {
   partnerUpdateValidation,
   partnerStatusValidation,
   partnerListValidation,
+  outletListValidation,
   franchiseCreateValidation,
   franchiseListValidation,
   franchiseOperatorListValidation,
@@ -228,5 +317,6 @@ module.exports = {
   settlementPayValidation,
   settlementListValidation,
   settlementDetailValidation,
+  adminOutletCreateValidation,
   settlementSummaryValidation,
 };

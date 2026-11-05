@@ -1,4 +1,4 @@
-/**
+﻿/**
  * LocalWala – Local Commerce & Delivery Platform
  * (NodeJS, MongoDB, Angular & Flutter)
  *
@@ -20,9 +20,16 @@ const express = require('express');
 const validate = require('../../../middlewares/validate');
 const webAuth = require('../../../middlewares/webAuth');
 const controller = require('../controllers/stores.admin.taxonomy.controller');
+const importController = require('../controllers/stores.admin.taxonomy.import.controller');
+const brandRequestController = require('../controllers/stores.brand.request.controller');
 const productsController = require('../controllers/stores.catalog.controller');
 const inventoryController = require('../controllers/stores.inventory.controller');
 const V = require('../validations/stores.admin.validation');
+// Product/inventory reads are cross-tenant but their query shape is identical to the
+// partner one, so the partner schemas are reused rather than duplicated. They live on
+// the partner module, not on the admin module - referencing them through `V` left five
+// routes with `validate(undefined)`, which the middleware silently skipped.
+const catalogV = require('../validations/stores.validation');
 
 const router = express.Router();
 
@@ -47,6 +54,30 @@ const router = express.Router();
  * literal siblings here, so ordering is not a hazard in this file — but the pattern is
  * kept so a future `GET /categories/tree` is appended above, not below, by habit.
  */
+
+// -- taxonomy import / export -------------------------------------------------
+
+/**
+ * A file is a batch write, so it needs `stores_taxonomy_write`; the export is a read of
+ * the same rows the lists expose, so it needs only `stores_taxonomy_read`. Keeping the
+ * collection in the path lets one handler serve all three without a body flag that a
+ * caller could point at a model name.
+ */
+router
+  .route('/import/:collection')
+  .post(
+    webAuth('stores_taxonomy_write'),
+    validate(V.taxonomyCollection),
+    importController.importCollection
+  );
+
+router
+  .route('/export/:collection')
+  .get(
+    webAuth('stores_taxonomy_read'),
+    validate(V.taxonomyExport),
+    importController.exportCollection
+  );
 
 // -- categories ---------------------------------------------------------------
 
@@ -90,6 +121,45 @@ router
   .patch(webAuth('stores_taxonomy_write'), validate(V.brandUpdate), validate(V.brandId), controller.updateBrand)
   .delete(webAuth('stores_taxonomy_write'), validate(V.brandId), controller.removeBrand);
 
+router.post(
+  '/brands/:brand/certifications',
+  webAuth('stores_taxonomy_write'),
+  validate(V.brandCertificationCreate),
+  controller.addBrandCertification
+);
+
+router.patch(
+  '/brands/:brand/certifications/:index',
+  webAuth('stores_taxonomy_write'),
+  validate(V.brandCertificationReview),
+  controller.reviewBrandCertification
+);
+
+router.post(
+  '/brands/:brand/merge',
+  webAuth('stores_taxonomy_write'),
+  validate(V.brandMerge),
+  controller.mergeBrand
+);
+
+// -- brand requests -----------------------------------------------------------
+
+router
+  .route('/brand-requests')
+  .get(
+    webAuth('stores_taxonomy_read'),
+    validate(V.brandRequestList),
+    brandRequestController.adminListRequests
+  );
+
+router
+  .route('/brand-requests/:request')
+  .patch(
+    webAuth('stores_taxonomy_write'),
+    validate(V.brandRequestReview),
+    brandRequestController.reviewRequest
+  );
+
 // -- attribute templates ------------------------------------------------------
 
 router
@@ -116,7 +186,7 @@ router
 router.get(
   '/products',
   webAuth('stores_taxonomy_read'),
-  validate(V.productAdminList),
+  validate(catalogV.productAdminList),
   productsController.listProducts
 );
 
@@ -134,7 +204,7 @@ router.get(
 router.patch(
   '/products/:product/approval',
   webAuth('stores_taxonomy_write'),
-  validate(V.productApproval),
+  validate(catalogV.productApproval),
   productsController.approveProduct
 );
 
@@ -147,21 +217,21 @@ router.patch(
 router.get(
   '/inventory/stock',
   webAuth('stores_taxonomy_read'),
-  validate(V.inventoryStockList),
+  validate(catalogV.inventoryStockList),
   inventoryController.getStockForOutlet
 );
 
 router.get(
   '/inventory/stock/low',
   webAuth('stores_taxonomy_read'),
-  validate(V.inventoryStockList),
+  validate(catalogV.inventoryStockList),
   inventoryController.getLowStockItems
 );
 
 router.get(
   '/inventory/movements',
   webAuth('stores_taxonomy_read'),
-  validate(V.inventoryMovementList),
+  validate(catalogV.inventoryMovementList),
   inventoryController.getMovements
 );
 

@@ -104,7 +104,11 @@ const resolveOutlet = async (req, res, next) => {
  * @returns {Function} Express middleware
  */
 const storeAuth = (...requiredRights) => async (req, res, next) => {
-  return appAuth(...requiredRights)(req, res, async (authError) => {
+  // Option B: authorization comes from the StoreRoleAssignment (resolved
+  // below), not from the platform User.role rights. `requiredRights` is
+  // retained for call-site compatibility but no longer gates access �?"
+  // the service layer enforces specific permissions via assertCan.
+  return appAuth()(req, res, async (authError) => {
     if (authError) {
       return next(authError);
     }
@@ -118,7 +122,7 @@ const storeAuth = (...requiredRights) => async (req, res, next) => {
  * blocked — a suspended outlet must still deliver and settle what customers paid for.
  */
 const storeAuthSuspendedOk = (...requiredRights) => async (req, res, next) => {
-  return appAuth(...requiredRights)(req, res, async (authError) => {
+  return appAuth()(req, res, async (authError) => {
     if (authError) {
       return next(authError);
     }
@@ -151,7 +155,7 @@ const storeAuthSuspendedOk = (...requiredRights) => async (req, res, next) => {
  * @returns {Function} Express middleware
  */
 const storeScope = (...requiredRights) => async (req, res, next) => {
-  return appAuth(...requiredRights)(req, res, async (authError) => {
+  return appAuth()(req, res, async (authError) => {
     if (authError) {
       return next(authError);
     }

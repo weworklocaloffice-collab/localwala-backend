@@ -38,7 +38,7 @@ const mkCart = (over = {}) =>
   new Cart({ customer: CUSTOMER, outlet: OUTLET, items: [], ...over });
 
 // ---------------------------------------------------------------------------
-section('§15.2 — the customer cart surface exists as four routes plus a quote');
+section('§15.2 — the customer cart surface exists as five routes plus a quote');
 // ---------------------------------------------------------------------------
 {
   ok('the model is registered as JhatkaCart', !!Cart);
@@ -51,6 +51,7 @@ section('§15.2 — the customer cart surface exists as four routes plus a quote
 
   for (const expected of [
     '/cart:get',
+    '/cart:delete',
     '/cart/items:post',
     '/cart/items/:item:patch',
     '/cart/items/:item:delete',
@@ -168,7 +169,7 @@ section('Cart and order price IDENTICALLY, or a basket cannot become an order');
   // The cart service must expose the whole pricing surface. A missing export means a
   // route silently re-derives pricing inline, which is the duplication this file exists
   // to prevent.
-  for (const fn of ['repriceCart', 'addToCart', 'updateCartItem', 'removeCartItem', 'quoteCart']) {
+  for (const fn of ['repriceCart', 'addToCart', 'updateCartItem', 'removeCartItem', 'clearCart', 'purgeStaleCarts', 'quoteCart']) {
     ok(`cart service exports ${fn}`, typeof cartService[fn] === 'function');
   }
 }

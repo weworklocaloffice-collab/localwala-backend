@@ -84,18 +84,45 @@ const listBrands = catchAsync(async (req, res) => {
 });
 
 const createBrand = catchAsync(async (req, res) => {
-  const brand = await taxonomyService.createBrand(req.body);
+  const brand = await taxonomyService.createBrand({ ...req.body, by: req.user._id });
   res.status(httpStatus.CREATED).send(brand);
 });
 
 const updateBrand = catchAsync(async (req, res) => {
-  const brand = await taxonomyService.updateBrand(req.params.brand, req.body);
+  const brand = await taxonomyService.updateBrand(req.params.brand, req.body, { by: req.user._id });
   res.status(httpStatus.OK).send(brand);
 });
 
 const removeBrand = catchAsync(async (req, res) => {
-  const brand = await taxonomyService.removeBrand(req.params.brand);
+  const brand = await taxonomyService.removeBrand(req.params.brand, { by: req.user._id });
   res.status(httpStatus.OK).send(brand);
+});
+
+const addBrandCertification = catchAsync(async (req, res) => {
+  const result = await taxonomyService.addBrandCertification(req.params.brand, req.body);
+  res.status(httpStatus.CREATED).send(result);
+});
+
+const reviewBrandCertification = catchAsync(async (req, res) => {
+  const brand = await taxonomyService.reviewBrandCertification(
+    req.params.brand,
+    Number(req.params.index),
+    {
+      status: req.body.status,
+      rejectionReason: req.body.rejectionReason,
+      by: req.user._id,
+    }
+  );
+  res.status(httpStatus.OK).send(brand);
+});
+
+const mergeBrand = catchAsync(async (req, res) => {
+  const result = await taxonomyService.mergeBrand(req.params.brand, {
+    targetBrand: req.body.targetBrand,
+    note: req.body.note,
+    by: req.user._id,
+  });
+  res.status(httpStatus.OK).send(result);
 });
 
 // -- attribute templates ------------------------------------------------------
@@ -134,6 +161,9 @@ module.exports = {
   createBrand,
   updateBrand,
   removeBrand,
+  addBrandCertification,
+  reviewBrandCertification,
+  mergeBrand,
   listAttributeTemplates,
   createAttributeTemplate,
   updateAttributeTemplate,

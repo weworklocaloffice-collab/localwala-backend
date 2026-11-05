@@ -95,6 +95,8 @@ const myScope = catchAsync(async (req, res) => {
   });
 });
 
+const { computeOpenStatus } = require('../../../utils/openStatus');
+
 const myOutlets = catchAsync(async (req, res) => {
   const permitted = req.permittedOutletIds || [];
 
@@ -105,11 +107,17 @@ const myOutlets = catchAsync(async (req, res) => {
   }
 
   const outlets = await StoreOutlet.find({ _id: { $in: permitted } })
-    .select('name slug outletCode logo cover status operational chain address location')
+    .select('name slug outletCode logo cover status operational chain address location operatingHours')
     .sort({ name: 1 })
     .lean();
 
-  return res.send({ outlets, activeOutletId: req.outletId || null });
+  const now = new Date();
+  const enriched = outlets.map((outlet) => {
+    const openStatus = computeOpenStatus(outlet, now);
+    return { ...outlet, ...openStatus };
+  });
+
+  return res.send({ outlets: enriched, activeOutletId: req.outletId || null });
 });
 
 /**
@@ -190,11 +198,16 @@ const myOutletDetail = catchAsync(async (req, res) => {
     throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
   }
 
-  return res.send(pick(outlet, [
-    '_id', 'chain', 'outletCode', 'name', 'logo', 'cover', 'photos', 'description',
-    'address', 'location', 'serviceLocalities', 'operatingHours', 'holidays',
-    'deliveryConfig', 'taxIdentity', 'contact', 'status', 'operational', 'suspension',
-  ]));
+  const openStatus = computeOpenStatus(outlet, new Date());
+  return res.send({
+    ...pick(outlet, [
+      '_id', 'chain', 'outletCode', 'name', 'logo', 'cover', 'photos', 'description',
+      'address', 'location', 'serviceLocalities', 'operatingHours', 'holidays',
+      'deliveryConfig', 'taxIdentity', 'contact', 'status', 'operational', 'suspension',
+      'subscription', 'settings',
+    ]),
+    ...openStatus,
+  });
 });
 
 const myChainDetail = catchAsync(async (req, res) => {

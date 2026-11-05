@@ -30,6 +30,7 @@ const SELF_ROLES = ['dairyPartner', 'dairyDriver'];
 
 const registerPartnerValidation = {
   body: Joi.object().keys({
+    id: Joi.string().required(),
     firstName: Joi.string().required().trim(),
     lastName: Joi.string().required().trim(),
     countryCode: Joi.string().required(),
@@ -66,17 +67,21 @@ const registerPartnerValidation = {
     fssaiExpiry: Joi.date().allow('', null),
     gstNumber: Joi.string().allow('', null),
     identityProof: Joi.string().allow('', null),
+
+    remember: Joi.bool().allow(),
+    userAgent: Joi.string().allow('', null),
   }),
 };
 
 const registerDriverValidation = {
   body: Joi.object().keys({
+    id: Joi.string().required(),
     firstName: Joi.string().required().trim(),
     lastName: Joi.string().required().trim(),
     countryCode: Joi.string().required(),
     mobile: Joi.number().required(),
     email: Joi.string().required().email(),
-  password: Joi.string().custom(password).required(),
+    password: Joi.string().custom(password).required(),
     locale: Joi.string().allow(),
 
     role: Joi.string().required().valid('dairyDriver'),
@@ -107,6 +112,9 @@ const registerDriverValidation = {
     fssaiLicence: Joi.string().allow('', null),
     age: Joi.number().integer().min(18).allow('', null),
     dob: Joi.date().allow('', null),
+
+    remember: Joi.bool().allow(),
+    userAgent: Joi.string().allow('', null),
   }),
 };
 

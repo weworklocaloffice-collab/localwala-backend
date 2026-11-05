@@ -43,6 +43,8 @@ router.route('/bookings/:id/reschedule').post(appAuth('localservices_customer_re
 
 router.route('/bookings/:id/dispute').post(appAuth('localservices_customer_read'), validate(V.disputeBody), controller.disputeBooking);
 
+router.route('/bookings/:id/complete-confirmation').post(appAuth('localservices_customer_read'), validate(V.bookingIdParam), controller.confirmCompletion);
+
 router.route('/bookings/:id/review').post(appAuth('localservices_customer_read'), validate(V.reviewBody), controller.submitReview);
 
 router.route('/bookings/:id/invoice').get(appAuth('localservices_customer_read'), validate(V.bookingIdParam), controller.getInvoice);

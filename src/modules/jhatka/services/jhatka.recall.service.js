@@ -23,9 +23,11 @@
  * whether the stock is OFFERABLE. Those are different facts, so this ledger row is
  * written directly rather than derived from a delta.
  *
- * The consequence is deliberate and worth stating: on a `RECALL_FREEZE` row,
- * `availableAfter` is NOT `onHandAfter - reservedAfter`. Any replay that recomputes
- * availability that way will disagree for these rows and must honour the freeze.
+ * The frozen quantity is moved into the `quarantined` counter, so the documented
+ * invariant `availableQty = onHand - reserved - quarantined` still holds on frozen
+ * rows and the release route can tell a frozen row from an empty one. A recalled
+ * batch is NOT releasable through the quarantine release route — the recall
+ * process owns it — so for these batches the freeze is permanent by design.
  */
 
 const { status: httpStatus } = require('http-status');
@@ -49,7 +51,8 @@ const RECALL_SEVERITIES = ['advisory', 'withdraw', 'recall'];
 }
 
 /**
- * Open a recall: record it, freeze the batch, and zero availability across its stock.
+ * Open a recall: record it, and unless `advisory`, freeze the batch and zero
+ * availability across its stock.
  *
  * Scoped to the outlet on every read, so another outlet's batch id is indistinguishable
  * from one that does not exist.
@@ -66,6 +69,21 @@ async function openRecall({ models, outletId, actor, nextNumber, batch: batchId,
     if (!batch) throw new ApiError(httpStatus.NOT_FOUND, 'Batch not found for this outlet');
     if (batch.status === 'discarded') {
       throw new ApiError(httpStatus.CONFLICT, 'A discarded batch cannot be recalled');
+    }
+
+    // One open recall per batch. Two operators racing the same bad batch must not
+    // produce two documents that each claim to own the freeze and the fan-out.
+    const existing = await models.JhatkaRecall.findOne({
+      batch: batch._id,
+      status: { $ne: 'closed' },
+    }).session(session);
+    if (existing) {
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        'An open recall already exists for this batch',
+        true, '',
+        { code: 'RECALL_EXISTS', recallId: String(existing._id) }
+      );
     }
 
     const outlet = await models.JhatkaOutlet.findById(outletId).select('business').session(session).lean();
@@ -96,60 +114,71 @@ async function openRecall({ models, outletId, actor, nextNumber, batch: batchId,
 
     // Freeze the batch FIRST, before anything is reconciled or notified. That order is
     // the §-5 reversal rule: quarantine, then stock, then customers.
-    batch.status = 'quarantined';
-    batch.quarantinedAt = new Date();
-    batch.quarantineReason = `Recall ${recall.recallNo}: ${reason}`;
-    batch.recalls = [...(batch.recalls || []), recall._id];
-    await batch.save({ session });
+    //
+    // `advisory` is a note, not a stock action: the model's own header says the
+    // product is fine, so the batch keeps selling. `withdraw` and `recall` stop
+    // selling it, which means freezing every line and recording that in the ledger.
+    let frozenLines = 0;
+    if (severity !== 'advisory') {
+      batch.status = 'quarantined';
+      batch.quarantinedAt = new Date();
+      batch.quarantineReason = `Recall ${recall.recallNo}: ${reason}`;
+      // `recalls` is a SUBDOCUMENT array (`{recall, severity, at}`), not an id list.
+      // Pushing the bare id fails `JhatkaBatch` validation - which is how the admin
+      // path's missing linkage stayed hidden until the service owned the write.
+      batch.recalls = [
+        ...(batch.recalls || []),
+        { recall: recall._id, severity, at: new Date() },
+      ];
+      await batch.save({ session });
 
-    // Record the freeze in the ledger for every stock line on this batch.
-    const items = await models.JhatkaInventoryItem.find({ batch: batch._id, outlet: outletId }).session(session);
+      // Record the freeze in the ledger for every stock line on this batch.
+      const items = await models.JhatkaInventoryItem.find({ batch: batch._id, outlet: outletId }).session(session);
+      frozenLines = items.length;
 
-    for (const item of items) {
-      const movementSeq = await receiptService.nextSeq(
-        { JhatkaInventoryMovement: models.JhatkaInventoryMovement },
-        session,
-        item._id
-      );
+      for (const item of items) {
+        // Fence first so the movement row below records the post-freeze counters.
+        // `availableQty = onHand - reserved - quarantined` must keep holding: the
+        // frozen amount moves into the `quarantined` counter rather than vanishing.
+        const fence = Math.max(0, Number(item.availableQty || 0));
+        if (fence > 0) {
+          item.quarantined = Number(item.quarantined || 0) + fence;
+          item.availableQty = 0;
+        }
 
-      // `qtyDelta` and `reservedDelta` are both 0: the stock is still physically on
-      // hand and still reserved. Only its AVAILABILITY changes. See the file header.
-      await models.JhatkaInventoryMovement.create(
-        [
-          {
-            outlet: outletId,
-            inventoryItem: item._id,
-            kind: item.kind,
-            movementType: 'RECALL_FREEZE',
-            qtyDelta: 0,
-            reservedDelta: 0,
-            onHandAfter: item.onHand,
-            reservedAfter: item.reserved,
-            availableAfter: 0,
-            reason: `Recall ${recall.recallNo}`,
-            referenceType: 'JhatkaRecall',
-            referenceId: recall._id,
-            movementSeq,
-            performedBy: actor._id,
-            performedByName: actor.name,
-          },
-        ],
-        { session }
-      );
+        const movementSeq = await receiptService.nextSeq(
+          { JhatkaInventoryMovement: models.JhatkaInventoryMovement },
+          session,
+          item._id
+        );
 
-      // Only `availableQty` changes; `onHand` and `reserved` are untouched, and
-      // `quarantined` is deliberately NOT incremented here.
-      //
-      // `JhatkaInventoryItem` documents `availableQty = onHand - reserved - quarantined`,
-      // so writing 0 without raising `quarantined` leaves the stored triple
-      // inconsistent, and `POST /batches/:batch/release` does not put the availability
-      // back. That is a PRE-EXISTING behaviour, carried over verbatim rather than
-      // silently "fixed" during a refactor: making the freeze reversible is a decision
-      // about release semantics that also has to be applied to the admin quarantine
-      // route, which writes the same movement without touching availability at all.
-      // Raised for review rather than changed here.
-      item.availableQty = 0;
-      await item.save({ session });
+        // `qtyDelta` and `reservedDelta` are both 0: the stock is still physically on
+        // hand and still reserved. Only its AVAILABILITY changes. See the file header.
+        await models.JhatkaInventoryMovement.create(
+          [
+            {
+              outlet: outletId,
+              inventoryItem: item._id,
+              kind: item.kind,
+              movementType: 'RECALL_FREEZE',
+              qtyDelta: 0,
+              reservedDelta: 0,
+              onHandAfter: item.onHand,
+              reservedAfter: item.reserved,
+              availableAfter: item.availableQty,
+              reason: `Recall ${recall.recallNo}`,
+              referenceType: 'JhatkaRecall',
+              referenceId: recall._id,
+              movementSeq,
+              performedBy: actor._id,
+              performedByName: actor.name,
+            },
+          ],
+          { session }
+        );
+
+        await item.save({ session });
+      }
     }
 
     return {
@@ -159,7 +188,7 @@ async function openRecall({ models, outletId, actor, nextNumber, batch: batchId,
         severity: recall.severity,
         status: recall.status,
         initiatedAt: recall.initiatedAt,
-        frozenLines: items.length,
+        frozenLines,
       },
       batch: { id: String(batch._id), batchNo: batch.batchNo, status: batch.status },
     };
@@ -172,10 +201,17 @@ async function openRecall({ models, outletId, actor, nextNumber, batch: batchId,
       outletId,
       recallId: result.recall.id,
       batchId: result.batch.id,
-      actor,
     });
     result.recall.status = scope.status;
     result.scope = scope.summary;
+
+    await notifyService.notifyOutlet(outletId, 'recall_opened', {
+      batchNo: result.batch.batchNo,
+      affectedOrders: result.scope.affectedOrders,
+      heldOrders: result.scope.held,
+      reason,
+    });
+
     return result;
   });
 }
@@ -194,7 +230,7 @@ async function openRecall({ models, outletId, actor, nextNumber, batch: batchId,
  * (`UNACKNOWLEDGED_CUSTOMERS`) reads these rows, so a row that claims delivery without
  * one is worse than no row at all.
  */
-async function scopeRecall({ models, outletId, recallId, batchId, actor }) {
+async function scopeRecall({ models, outletId, recallId, batchId }) {
   const recall = await models.JhatkaRecall.findOne({ _id: recallId, outlet: outletId });
   if (!recall) throw new ApiError(httpStatus.NOT_FOUND, 'Recall not found for this outlet');
 
@@ -244,29 +280,32 @@ async function scopeRecall({ models, outletId, recallId, batchId, actor }) {
       channel: undefined,
     }));
 
-  // Undelivered orders stop where they are, where the table allows it. States
-  // without an ON_HOLD edge (e.g. DELIVERED-adjacent or terminal) stay put and
-  // remain counted in undeliveredCount for the console.
+  // Only a `recall` stops orders in flight. A `withdraw` stops SELLING the batch
+  // but must not silently strand orders already placed - that customer would see
+  // a hold with no message explaining it. An `advisory` changes no order at all.
+  // States without an ON_HOLD edge stay put and remain counted in undeliveredCount.
   let heldCount = 0;
-  for (const o of scope.affectedOrders) {
-    if (!o.lifecycle || o.lifecycle === 'DELIVERED') continue;
-    const doc = byOrderId.get(String(o.order));
-    if (!doc) continue;
-    if (!models.JhatkaOrder.canTransition(doc.lifecycle, 'ON_HOLD')) continue;
-    await models.JhatkaOrder.updateOne(
-      { _id: doc._id },
-      {
-        $set: {
-          lifecycle: 'ON_HOLD',
-          hold: {
-            onHoldAt: now,
-            reason: `Batch recall ${recall.recallNo}`,
-            batch: batchId,
+  if (recall.severity === 'recall') {
+    for (const o of scope.affectedOrders) {
+      if (!o.lifecycle || o.lifecycle === 'DELIVERED') continue;
+      const doc = byOrderId.get(String(o.order));
+      if (!doc) continue;
+      if (!models.JhatkaOrder.canTransition(doc.lifecycle, 'ON_HOLD')) continue;
+      await models.JhatkaOrder.updateOne(
+        { _id: doc._id },
+        {
+          $set: {
+            lifecycle: 'ON_HOLD',
+            hold: {
+              onHoldAt: now,
+              reason: `Batch recall ${recall.recallNo}`,
+              batch: batchId,
+            },
           },
-        },
-      }
-    );
-    heldCount += 1;
+        }
+      );
+      heldCount += 1;
+    }
   }
 
   recall.affectedOrderItems = {

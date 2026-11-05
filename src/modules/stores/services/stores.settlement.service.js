@@ -19,6 +19,8 @@
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
+const { withOptionalTransaction } = require('../../../utils/optionalTransaction');
+const { AUDIT_ACTIONS, recordAudit } = require('./stores.audit.service');
 
 const generateSettlementNo = async () => {
   const Settlement = mongoose.model('Settlement');
@@ -83,18 +85,19 @@ const settlementPeriodFor = (cadence = 'daily', tPlusDays = 0, now = new Date())
 };
 
 const generateSettlement = async ({ vertical, counterpartyType, counterparty, store, chain, settlementType, period, from, to }) => {
+  return withOptionalTransaction(async (session) => {
   const Settlement = mongoose.model('Settlement');
   const SettlementItem = mongoose.model('SettlementItem');
   const StoreOrder = mongoose.model('StoreOrder');
 
-  const existing = await Settlement.findOne({ vertical, counterparty, store, period, from, to });
+  const existing = await Settlement.findOne({ vertical, counterparty, store, period, from, to }).session(session);
   if (existing) return existing;
 
   const orders = await StoreOrder.find({
     outlet: store,
     lifecycle: { $in: ['delivered', 'completed'] },
     createdAt: { $gte: from, $lt: to },
-  }).lean();
+  }).session(session).lean();
 
   if (!orders.length) return null;
 
@@ -106,7 +109,7 @@ const generateSettlement = async ({ vertical, counterpartyType, counterparty, st
 
   // `SettlementItem.settlement` is required, so the parent row must exist before the first
   // item is written. The shell is created with empty totals and filled after the loop.
-  const settlement = await Settlement.create({
+  const settlement = await Settlement.create([{
     settlementNo: await generateSettlementNo(),
     vertical,
     counterpartyType,
@@ -128,10 +131,10 @@ const generateSettlement = async ({ vertical, counterpartyType, counterparty, st
     },
     lineItems: [],
     status: 'pending',
-  });
+  }], session ? { session } : {}).then(r => r[0]);
 
   for (const order of orders) {
-    const item = await SettlementItem.create({
+    const item = await SettlementItem.create([{
       settlement: settlement._id,
       order: order._id,
       orderNo: order.orderNo,
@@ -153,7 +156,7 @@ const generateSettlement = async ({ vertical, counterpartyType, counterparty, st
       itemCount: order.totalItems || 0,
       quantity: order.totalQuantity || 0,
       categorySnapshot: order.categorySnapshot || [],
-    });
+    }], session ? { session } : {}).then(r => r[0]);
     lineItems.push(item._id);
 
     // `grandTotal` is the amount actually charged: net of discounts, including tax
@@ -177,14 +180,20 @@ const generateSettlement = async ({ vertical, counterpartyType, counterparty, st
     netAmount,
   };
   settlement.lineItems = lineItems;
-  await settlement.save();
+  await settlement.save(session ? { session } : {});
 
   return settlement;
+  }, 'settlement generation');
 };
 
-const getSettlement = async (settlementId) => {
+const settlementByIdFilter = (settlementId, scope = {}) => ({
+  _id: settlementId,
+  ...(scope.outlet ? { store: scope.outlet } : {}),
+});
+
+const getSettlement = async (settlementId, scope = {}) => {
   const Settlement = mongoose.model('Settlement');
-  const settlement = await Settlement.findById(settlementId)
+  const settlement = await Settlement.findOne(settlementByIdFilter(settlementId, scope))
     .populate('lineItems')
     .populate('counterparty', 'name')
     .populate('store', 'name outletCode')
@@ -210,9 +219,13 @@ const listSettlements = async ({ vertical, counterparty, store, status, period, 
   return { items, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
 };
 
-const markSettled = async (settlementId, { payoutMethod, payoutDetails, gatewayReference, approvedBy }) => {
+const markSettled = async (
+  settlementId,
+  { payoutMethod, payoutDetails, gatewayReference, approvedBy },
+  scope = {},
+) => {
   const Settlement = mongoose.model('Settlement');
-  const settlement = await Settlement.findById(settlementId);
+  const settlement = await Settlement.findOne(settlementByIdFilter(settlementId, scope));
   if (!settlement) throw new ApiError(httpStatus.NOT_FOUND, 'Settlement not found');
   if (settlement.status !== 'pending') throw new ApiError(httpStatus.CONFLICT, `Settlement is ${settlement.status}, not pending`);
 
@@ -225,23 +238,47 @@ const markSettled = async (settlementId, { payoutMethod, payoutDetails, gatewayR
   settlement.settlementDate = new Date();
 
   await settlement.save();
+
+  await recordAudit({
+    actor: approvedBy,
+    role: 'admin',
+    action: AUDIT_ACTIONS.settlementSettled,
+    targetType: 'Settlement',
+    targetId: settlement._id,
+    chain: settlement.chain,
+    outlet: settlement.store,
+    after: { status: 'settled', payoutMethod, gatewayReference },
+  });
+
   return settlement;
 };
 
-const markFailed = async (settlementId, { failureReason }) => {
+const markFailed = async (settlementId, { failureReason, by }, scope = {}) => {
   const Settlement = mongoose.model('Settlement');
-  const settlement = await Settlement.findById(settlementId);
+  const settlement = await Settlement.findOne(settlementByIdFilter(settlementId, scope));
   if (!settlement) throw new ApiError(httpStatus.NOT_FOUND, 'Settlement not found');
 
   settlement.status = 'failed';
   settlement.failureReason = failureReason;
   await settlement.save();
+
+  await recordAudit({
+    actor: by,
+    role: 'admin',
+    action: AUDIT_ACTIONS.settlementFailed,
+    targetType: 'Settlement',
+    targetId: settlement._id,
+    chain: settlement.chain,
+    outlet: settlement.store,
+    after: { status: 'failed', failureReason },
+  });
+
   return settlement;
 };
 
-const reverseSettlement = async (settlementId, { reason, approvedBy }) => {
+const reverseSettlement = async (settlementId, { reason, approvedBy }, scope = {}) => {
   const Settlement = mongoose.model('Settlement');
-  const settlement = await Settlement.findById(settlementId);
+  const settlement = await Settlement.findOne(settlementByIdFilter(settlementId, scope));
   if (!settlement) throw new ApiError(httpStatus.NOT_FOUND, 'Settlement not found');
   if (settlement.status !== 'settled') throw new ApiError(httpStatus.CONFLICT, 'Only settled settlements can be reversed');
 
@@ -251,6 +288,19 @@ const reverseSettlement = async (settlementId, { reason, approvedBy }) => {
   settlement.approvedAt = new Date();
 
   await settlement.save();
+
+  await recordAudit({
+    actor: approvedBy,
+    role: 'admin',
+    action: AUDIT_ACTIONS.settlementReversed,
+    targetType: 'Settlement',
+    targetId: settlement._id,
+    chain: settlement.chain,
+    outlet: settlement.store,
+    before: { status: 'settled' },
+    after: { status: 'reversed', reason },
+  });
+
   return settlement;
 };
 

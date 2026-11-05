@@ -165,7 +165,7 @@ async function availability({ query, models }) {
     .select('product sku name measurementMode pricePerUnit priceBasis isActive estimatedAvailability availabilityUnit status packSize')
     .lean();
 
-  const active = variants.filter((v) => v.isActive !== false && v.status !== 'archived');
+  const active = variants.filter((v) => v.isActive !== false && v.status !== false);
   const productIds = [...new Set(active.map((v) => String(v.product)))];
 
   const products = await JhatkaProduct.find({ _id: { $in: productIds }, isActive: { $ne: false } })
@@ -235,7 +235,8 @@ async function outletProducts({ outletId, models, query }) {
 
   const variants = await JhatkaVariant.find({
     product: { $in: products.map((p) => p._id) },
-    status: { $ne: 'archived' },
+    // Boolean on this model, not the 'archived' string.
+    status: { $ne: false },
     isActive: { $ne: false },
   })
     .select('product sku name measurementMode pricePerUnit priceBasis packSize estimatedAvailability availabilityUnit')

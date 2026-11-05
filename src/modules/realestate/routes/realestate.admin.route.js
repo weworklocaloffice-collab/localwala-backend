@@ -92,6 +92,15 @@ router.patch(
   adminController.setPropertyStatus
 );
 
+// Dedicated verify endpoint (plan §10.2 row 3) — convenience wrapper over
+// the status transition, kept for clients that prefer a verb-style URL.
+router.post(
+  '/properties/:id/verify',
+  webAuth('realestate.admin_property_verify'),
+  validate(V.verifyProperty),
+  adminController.verifyProperty
+);
+
 // Hold refunds + dual-control forfeiture (plan §6.2, §6.5).
 router.post('/refunds/:id/complete', webAuth('realestate.admin_hold_refund_manage'), adminController.completeRefund);
 router.post('/holds/:id/forfeit', webAuth('realestate.admin_hold_refund_manage'), validate(V.forfeitHold), adminController.forfeitHold);

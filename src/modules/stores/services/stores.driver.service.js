@@ -25,7 +25,7 @@ const createDriver = async ({ user, outlet, chain, driverCode, vehicle, licenseN
   const existing = await StoreDriver.findOne({ user, outlet });
   if (existing) throw new ApiError(httpStatus.CONFLICT, 'Driver already exists for this user at this outlet');
 
-  return StoreDriver.create({
+  const created = await StoreDriver.create({
     user,
     outlet,
     chain,
@@ -39,6 +39,9 @@ const createDriver = async ({ user, outlet, chain, driverCode, vehicle, licenseN
     payoutMode: payoutMode || 'business_pays',
     status: 'active',
   });
+  const { User } = require('../../../models');
+  await User.findByIdAndUpdate(user, { $set: { role: 'storeDriver' } });
+  return created;
 };
 
 const updateDriver = async (driverId, updates) => {

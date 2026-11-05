@@ -14,6 +14,7 @@
     "verify:support:bot": "node scripts/verify.support.bot.units.js",
     "verify:support:e2e": "node scripts/verify.support.enterprise.integration.js",
     "seed:support": "node scripts/seed.support.enterprise.js",
+    "seed:jhatka": "node scripts/jhatka.seed.js",
     "support:queues": "node scripts/wire.support.queues.js",
     "reconcile:payments": "node scripts/reconcile.stuck.payments.js",
     "dev": "cross-env NODE_ENV=development nodemon src/index.js",

@@ -211,6 +211,16 @@ const jhatkaInventoryItemSchema = mongoose.Schema(
       type: Date,
       required: false,
     },
+    /**
+     * OD-12 companion: when this SKU last triggered a low-stock reorder
+     * reminder. The reminder sweep's COOLDOWN — re-notify only after ~3 days
+     * (or immediately on a deeper drop) — reads and stamps this. Null = never
+     * reminded.
+     */
+    lowStockNotifiedAt: {
+      type: Date,
+      required: false,
+    },
     /** Monotonic per-outlet counter, so a movement can be ordered against a state. */
     movementSeq: {
       type: Number,

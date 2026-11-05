@@ -19,6 +19,8 @@
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
+const { withRequiredTransaction } = require('../../../utils/optionalTransaction');
+const logger = require('../../../config/logger');
 const inventoryService = require('./stores.inventory.service');
 const basketService = require('./stores.basket.service');
 const promotionService = require('./stores.promotion.service');
@@ -32,11 +34,14 @@ const refundService = require('./stores.refund.service');
 const StoreCancellation = mongoose.model('StoreCancellation');
 const StoreCancellationAttempt = mongoose.model('StoreCancellationAttempt');
 
-const ORDER_TRANSITIONS = {
-  created: ['payment_pending', 'cancelled'],
-  payment_pending: ['paid', 'payment_failed', 'cancelled'],
-  paid: ['store_received', 'cancelled'],
-  store_received: ['accepted', 'cancelled'],
+  const ORDER_TRANSITIONS = {
+    // COD orders never enter `payment_pending`, so the store must be able to accept them
+    // from `created`. Paid gateway orders can skip the unused `store_received` milestone;
+    // it remains legal for integrations that emit it explicitly.
+    created: ['payment_pending', 'accepted', 'rejected', 'cancelled'],
+    payment_pending: ['paid', 'payment_failed', 'cancelled'],
+    paid: ['store_received', 'accepted', 'rejected', 'cancelled'],
+    store_received: ['accepted', 'rejected', 'cancelled'],
   accepted: ['picking', 'cancelled'],
   picking: ['packing', 'cancelled'],
   packing: ['ready', 'cancelled'],
@@ -75,6 +80,7 @@ const generateOrderNo = async () => {
 };
 
 const createOrder = async ({ customer, outlet, chain, items, address, addressSnapshot, paymentMode, promo, promoCode, couponCode, instructions }) => {
+  return withRequiredTransaction(async (session) => {
   const StoreOrder = mongoose.model('StoreOrder');
 
   const orderNo = await generateOrderNo();
@@ -94,7 +100,7 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
   });
   const t = basket.totals;
 
-  const order = await StoreOrder.create({
+  const orderDocs = await StoreOrder.create([{
     orderNo,
     customer,
     outlet,
@@ -122,10 +128,6 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
     deliveryTip: t.deliveryTip,
     discountTotal: t.discountTotal,
     grandTotal: t.grandTotal,
-    // COD is cash at the door: the full total stays outstanding until the
-    // driver collects it. Nothing is paid at creation, in any mode — the
-    // gateway callback (or the COD collection) records payment, never the
-    // order write. A born-"paid" order would defeat the refund gate (BR-28).
     codAmount: paymentMode === 'cod' ? t.grandTotal : 0,
     paidAmount: 0,
     paymentMode,
@@ -136,7 +138,8 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
     lifecycle: 'created',
     totalItems: basket.lines.length,
     totalQuantity: t.totalQuantity,
-  });
+  }], { session });
+  const order = orderDocs[0];
 
   // The promo is consumed by the order, not the quote: a summary that fails
   // validation — or an order that fails creation — must not burn usage.
@@ -144,14 +147,14 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
     try {
       await promotionService.applyPromotion(basket.promoDoc._id);
     } catch (applyError) {
-      console.error(`Promo ${basket.promoDoc.code} validated but usage could not be recorded:`, applyError.message);
+      logger.error(`Promo ${basket.promoDoc.code} validated but usage could not be recorded: ${applyError.message}`);
     }
   }
   if (basket.couponDoc) {
     try {
       await couponService.applyCoupon(basket.couponDoc._id);
     } catch (applyError) {
-      console.error(`Coupon ${basket.couponDoc.code} validated but usage could not be recorded:`, applyError.message);
+      logger.error(`Coupon ${basket.couponDoc.code} validated but usage could not be recorded: ${applyError.message}`);
     }
   }
 
@@ -169,13 +172,14 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
         outlet, chain, variant: line.variant, product: line.product,
         order: order._id, quantity: line.quantity,
         expiresAt: new Date(Date.now() + reservationTtlMs),
+        session,
       });
     }
   } catch (reserveError) {
     try {
       await transitionOrder(order._id, 'cancelled');
     } catch (cancelError) {
-      console.error(`Order ${order._id} failed to reserve and then failed to cancel:`, cancelError.message);
+      logger.error(`Order ${order._id} failed to reserve and then failed to cancel: ${cancelError.message}`);
     }
     throw reserveError;
   }
@@ -187,14 +191,21 @@ const createOrder = async ({ customer, outlet, chain, items, address, addressSna
   }
 
   return order;
+  }, 'order creation');
 };
 
-const transitionOrder = async (orderId, to, { actor, notes } = {}) => {
-  const StoreOrder = mongoose.model('StoreOrder');
-  const order = await StoreOrder.findById(orderId);
-  if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+    const transitionOrder = async (orderId, to, { actor, notes, outlet } = {}) => {
+      const StoreOrder = mongoose.model('StoreOrder');
+      const filter = { _id: orderId };
+      if (outlet) filter.outlet = outlet;
+      const order = await StoreOrder.findOne(filter);
+      if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
 
-  assertTransition(order.lifecycle, to);
+      if (to === 'accepted' && order.lifecycle === 'created' && order.paymentMode !== 'cod') {
+        throw new ApiError(httpStatus.CONFLICT, 'ORDER_NOT_PAYABLE: an online order cannot be accepted before payment');
+      }
+
+      assertTransition(order.lifecycle, to);
 
   const from = order.lifecycle;
   order.lifecycle = to;
@@ -217,13 +228,19 @@ const transitionOrder = async (orderId, to, { actor, notes } = {}) => {
     order.paidAmount = order.grandTotal;
     // The COD amount was collected in cash at the door, so it is no longer outstanding.
     order.codAmount = 0;
-    // BR-43: the order becomes billable here, so the invoice number is issued
-    // here — not at creation. `!order.invoiceNo` makes a retried callback
-    // reuse the existing number instead of consuming a second one.
+    // BR-43 / §6.19: the order becomes billable here, so the invoice number and
+    // the legal tax-invoice document are issued here — not at creation. `!order.invoiceNo`
+    // makes a retried callback reuse the existing number instead of consuming a second one.
     if (!order.invoiceNo) {
-      const { invoiceNo } = await invoiceService.issueInvoiceNumber(order.outlet);
-      order.invoiceNo = invoiceNo;
-      order.invoiceStatus = 'issued';
+      try {
+        const invoiceService = require('./stores.invoice.service');
+        const invoice = await invoiceService.issueInvoice(order);
+        order.invoiceNo = invoice.invoiceNo;
+        order.invoice = invoice;
+        order.invoiceStatus = 'issued';
+      } catch (invoiceError) {
+        logger.error(`Invoice issue failed for order ${order._id}: ${invoiceError.message}`);
+      }
     }
   }
   if (to === 'store_received') order.acceptedAt = now;
@@ -261,9 +278,18 @@ const transitionOrder = async (orderId, to, { actor, notes } = {}) => {
     }
   }
 
-  if (to === 'cancelled') {
+  if (to === 'cancelled' || to === 'rejected') {
     for (const item of order.items) {
       await inventoryService.releaseReservation({ order: order._id, variant: item.variant, quantity: item.quantity, reason: 'order_cancelled' });
+    }
+    if (order.invoiceStatus === 'issued') {
+      order.invoiceStatus = 'void';
+      try {
+        const invoiceService = require('./stores.invoice.service');
+        await invoiceService.voidInvoice(order._id);
+      } catch (e) {
+        logger.error(`Invoice void failed for order ${order._id}: ${e.message}`);
+      }
     }
   }
 
@@ -292,10 +318,12 @@ const transitionOrder = async (orderId, to, { actor, notes } = {}) => {
   return order;
 };
 
-const getOrder = async (orderId) => {
-  const StoreOrder = mongoose.model('StoreOrder');
-  const order = await StoreOrder.findById(orderId)
-    .populate('customer', 'name mobile email')
+    const getOrder = async (orderId, { outlet } = {}) => {
+      const StoreOrder = mongoose.model('StoreOrder');
+      const filter = { _id: orderId };
+      if (outlet) filter.outlet = outlet;
+      const order = await StoreOrder.findOne(filter)
+        .populate('customer', 'name mobile email')
     .populate('outlet', 'name outletCode')
     .populate('items.product', 'name slug images')
     .populate('items.variant', 'name sku')
@@ -462,10 +490,21 @@ const refundReasonFor = (cancelledBy, reason) => {
   return { refundReason: refundMapped, cancellationReason: cancellationMapped, note };
 };
 
-const cancelOrder = async (orderId, { reason, cancelledBy, cancelledByUserId }) => {
-  const StoreOrder = mongoose.model('StoreOrder');
-  const order = await StoreOrder.findById(orderId);
-  if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+    const cancelOrder = async (orderId, { reason, cancelledBy, cancelledByUserId, outlet, customer, target = 'cancelled' }) => {
+      const StoreOrder = mongoose.model('StoreOrder');
+      if (!['cancelled', 'rejected'].includes(target)) {
+        throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, 'INVALID_ORDER_CLOSE_TARGET');
+      }
+      const filter = { _id: orderId };
+      if (outlet) filter.outlet = outlet;
+      if (customer) filter.customer = customer;
+      const order = await StoreOrder.findOne(filter);
+      if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+
+  // Refuse an impossible close before touching any line. Without this, a
+  // cancellation of a completed order flagged every line cancelled and then
+  // failed the transition, leaving a terminal order with mutilated lines.
+  assertTransition(order.lifecycle, target);
 
   // Mark every line cancelled BEFORE the transition.
   //
@@ -493,10 +532,11 @@ const cancelOrder = async (orderId, { reason, cancelledBy, cancelledByUserId }) 
     status: 'pending',
   });
 
-  const cancelled = await transitionOrder(orderId, 'cancelled', {
-    actor: cancelledByUserId,
-    notes: reason,
-  });
+      const cancelled = await transitionOrder(orderId, target, {
+        actor: cancelledByUserId,
+        notes: reason,
+        outlet,
+      });
 
   // Update attempt to approved since we're proceeding
   attempt.status = 'approved';
@@ -562,8 +602,104 @@ const cancelOrder = async (orderId, { reason, cancelledBy, cancelledByUserId }) 
   return cancelled;
 };
 
-module.exports = {
-    createOrder,
+  const editOrder = async (orderId, { items, outlet, customer } = {}) => {
+    const StoreOrder = mongoose.model('StoreOrder');
+    const filter = { _id: orderId };
+    if (outlet) filter.outlet = outlet;
+    if (customer) filter.customer = customer;
+    const order = await StoreOrder.findOne(filter);
+    if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+    if (order.lifecycle !== 'created') throw new ApiError(httpStatus.CONFLICT, 'ORDER_NOT_EDITABLE: only created orders can be edited');
+
+    // Release existing reservations first.
+    const existingReservations = await mongoose.model('StoreStockReservation').find({ order: order._id, status: 'held' });
+    for (const res of existingReservations) {
+      await inventoryService.releaseReservation({ order: order._id, variant: res.variant, quantity: res.quantity, reason: 'order_edited' });
+    }
+
+    const basket = await basketService.resolveBasket({
+      outlet: order.outlet,
+      chain: order.chain,
+      items,
+      customerId: order.customer,
+      paymentMode: order.paymentMode,
+    });
+    const t = basket.totals;
+
+    order.items = basket.lines.map((line) => ({
+      ...line,
+      fulfilledQuantity: 0,
+      cancelledQuantity: 0,
+      refundedQuantity: 0,
+      refundedAmount: 0,
+    }));
+    order.itemsSubtotal = t.itemsSubtotal;
+    order.itemDiscountTotal = t.itemDiscountTotal;
+    order.taxTotal = t.taxTotal;
+    order.cgstTotal = basket.taxSummary.cgst;
+    order.sgstTotal = basket.taxSummary.sgst;
+    order.igstTotal = basket.taxSummary.igst;
+    order.placeOfSupply = basket.placeOfSupply;
+    order.deliveryFee = t.deliveryFee;
+    order.deliveryTax = t.deliveryTax;
+    order.packagingFee = t.packagingFee;
+    order.serviceFee = t.serviceFee;
+    order.discountTotal = t.discountTotal;
+    order.grandTotal = t.grandTotal;
+    order.totalItems = basket.lines.length;
+    order.totalQuantity = t.totalQuantity;
+    order.codAmount = order.paymentMode === 'cod' ? t.grandTotal : 0;
+
+    const reservationTtlMs = order.paymentMode === 'cod' ? 60 * 60000 : 30 * 60000;
+    try {
+      for (const line of basket.lines) {
+        await inventoryService.reserveStock({
+          outlet: order.outlet,
+          chain: order.chain,
+          variant: line.variant,
+          product: line.product,
+          order: order._id,
+          quantity: line.quantity,
+          expiresAt: new Date(Date.now() + reservationTtlMs),
+        });
+      }
+    } catch (reserveError) {
+      try { await transitionOrder(order._id, 'cancelled', { notes: 'edit reservation failed' }); } catch (_) {}
+      throw reserveError;
+    }
+
+    await order.save();
+    return order;
+  };
+
+  const listCustomers = async ({ outlet, page = 1, limit = 20 }) => {
+    const StoreOrder = mongoose.model('StoreOrder');
+    const agg = await StoreOrder.aggregate([
+      { $match: { outlet: new mongoose.Types.ObjectId(outlet) } },
+      { $group: { _id: '$customer', orderCount: { $sum: 1 }, lastOrderAt: { $max: '$createdAt' }, totalSpent: { $sum: '$grandTotal' } } },
+      { $sort: { lastOrderAt: -1 } },
+      { $skip: (page - 1) * limit },
+      { $limit: limit },
+    ]);
+    const total = await StoreOrder.distinct('customer', { outlet }).then((a) => a.length);
+    // Populate customer names
+    const User = mongoose.model('User');
+    const ids = agg.map((r) => r._id);
+    const users = await User.find({ _id: { $in: ids } }).select('name mobile email').lean();
+    const userById = new Map(users.map((u) => [String(u._id), u]));
+    const items = agg.map((r) => ({
+      customer: userById.get(String(r._id)) || { _id: r._id },
+      orderCount: r.orderCount,
+      lastOrderAt: r.lastOrderAt,
+      totalSpent: r.totalSpent,
+    }));
+    return { items, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
+  };
+
+  module.exports = {
+    listCustomers,
+  createOrder,
+    editOrder,
     transitionOrder,
     getOrder,
     getOrderTracking,

@@ -115,6 +115,16 @@ const verifyDocument = {
   body: Joi.object().keys({ decision: Joi.string().valid('ACCEPTED', 'REJECTED').required() }),
 };
 
+const verifyProperty = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object().keys({
+    target: Joi.string()
+      .valid('IN_REVIEW', 'APPROVED', 'PUBLISHED', 'CHANGES_REQUIRED', 'REJECTED', 'SUSPENDED')
+      .required(),
+    reason: Joi.string().trim().max(500).allow('').optional(),
+  }),
+};
+
 // ---------------------------------------------------------------- categories
 //
 // Admin CRUD for the property-category catalogue. Categories seed
@@ -660,6 +670,7 @@ module.exports = {
   setSettlementStatus,
   generateSettlement,
   verifyDocument,
+  verifyProperty,
   categoryUpsert,
   categoryIdParam,
   categoryListQuery,

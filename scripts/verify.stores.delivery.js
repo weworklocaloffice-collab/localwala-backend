@@ -55,6 +55,7 @@ require('../src/modules/stores/models/store.order.model');
 
 const StoreDelivery = mongoose.model('StoreDelivery');
 const StoreDriver = mongoose.model('StoreDriver');
+const StoreOrder = mongoose.model('StoreOrder');
 
 let failures = 0;
 const ck = (label, condition, detail) => {
@@ -73,6 +74,19 @@ const STAMP = Date.now();
 
 const KNOWN_OTP = '123456';
 
+const makeOrder = async (overrides = {}) =>
+  StoreOrder.create({
+    orderNo: Math.floor(Math.random() * 1000000),
+    customer: new mongoose.Types.ObjectId(),
+    outlet: OUTLET,
+    chain: CHAIN,
+    items: [],
+    grandTotal: 500,
+    paymentMode: 'cod',
+    lifecycle: 'ready',
+    ...overrides,
+  });
+
 const makeDelivery = async (overrides = {}) =>
   StoreDelivery.create({
     order: new mongoose.Types.ObjectId(),
@@ -84,16 +98,25 @@ const makeDelivery = async (overrides = {}) =>
     otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
     otpAttempts: 0,
     maxOtpAttempts: 3,
-    codAmount: 0,
+    codAmount: 500,
     deliveryFee: 30,
     estimatedMinutes: 30,
     ...overrides,
   });
 
-/** Walk a delivery to `out_for_delivery` through the real transition function. */
-const walkToOutForDelivery = async (delivery) => {
+/** Walk a delivery to `out_for_delivery` through the real transition function.
+ *
+ * `afterOtd` replays what the RECEIVING side would know: since the van-departure
+ * transition mints a FRESH handover code and pushes it to the customer, a caller
+ * that knows a deterministic code re-seeds it here to stand in for the customer's
+ * phone — standing in for the push, not undoing the mint.
+ */
+const walkToOutForDelivery = async (delivery, { afterOtd } = {}) => {
   for (const to of ['accepted', 'picked_up', 'out_for_delivery']) {
     await deliveryService.transitionDelivery(delivery._id, to);
+  }
+  if (afterOtd && Object.keys(afterOtd).length) {
+    await StoreDelivery.updateOne({ _id: delivery._id }, afterOtd);
   }
   return StoreDelivery.findById(delivery._id).lean();
 };
@@ -101,6 +124,7 @@ const walkToOutForDelivery = async (delivery) => {
 const cleanup = async () => {
   await StoreDelivery.deleteMany({ outlet: OUTLET });
   await StoreDriver.deleteMany({ outlet: OUTLET });
+  await StoreOrder.deleteMany({ outlet: OUTLET });
 };
 
 const run = async () => {
@@ -141,32 +165,82 @@ const run = async () => {
 
   console.log('\n=== BR-06: one delivery per order ===\n');
 
-  const order = new mongoose.Types.ObjectId();
+  const orderDoc = await makeOrder();
+  const driverDoc = await StoreDriver.create({
+    _id: DRIVER,
+    user: new mongoose.Types.ObjectId(),
+    outlet: OUTLET,
+    chain: CHAIN,
+    driverCode: 'A-' + STAMP,
+    licenseNumber: 'DL-' + STAMP + '-A',
+    licenseExpiry: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+    status: 'active',
+    isAvailable: true,
+  });
   const assigned = await deliveryService.assignDriver({
-    order, outlet: OUTLET, chain: CHAIN, driver: DRIVER, deliveryFee: 30, estimatedMinutes: 25,
+    order: orderDoc._id,
+    outlet: OUTLET,
+    chain: CHAIN,
+    driver: driverDoc._id,
+    deliveryFee: 30,
+    estimatedMinutes: 25,
+    actor: new mongoose.Types.ObjectId(),
   });
   ck('assigning a driver creates the delivery', !!assigned._id);
   ck('it starts assigned', assigned.status === 'assigned', assigned.status);
   ck('the driver is recorded', String(assigned.driver) === String(DRIVER));
+  ck('COD is taken from the order, not the request body', Number(assigned.codAmount) === 500, assigned.codAmount);
+  ck('the order moves to driver_assigned',
+    (await StoreOrder.findById(orderDoc._id).lean()).lifecycle === 'driver_assigned');
 
   let doubleAssign = false;
   try {
-    await deliveryService.assignDriver({ order, outlet: OUTLET, chain: CHAIN, driver: DRIVER });
+    await deliveryService.assignDriver({ order: orderDoc._id, outlet: OUTLET, chain: CHAIN, driver: DRIVER });
   } catch (e) {
     doubleAssign = e.statusCode === 409;
   }
   ck('a second assignment for the same order is refused', doubleAssign);
 
+  let crossOutlet = false;
+  try {
+    await deliveryService.assignDriver({
+      order: orderDoc._id,
+      outlet: new mongoose.Types.ObjectId(),
+      chain: CHAIN,
+      driver: DRIVER,
+    });
+  } catch (e) {
+    crossOutlet = e.statusCode === 404;
+  }
+  ck('an order cannot be assigned through another outlet', crossOutlet);
+
   console.log('\n=== BR-29: the OTP is issued hashed, never in plaintext ===\n');
 
-  ck('the stored OTP is a sha256 hex digest', /^[0-9a-f]{64}$/.test(assigned.otpHash), assigned.otpHash);
-  ck('it is NOT a 6-digit plaintext', !/^[0-9]{6}$/.test(String(assigned.otpHash)));
+  const assignedHash = assigned.otpHash;
+  ck('the stored OTP is a sha256 hex digest', /^[0-9a-f]{64}$/.test(assignedHash), assignedHash);
+  ck('it is NOT a 6-digit plaintext', !/^[0-9]{6}$/.test(String(assignedHash)));
   ck('the hash function is a real sha256 of the OTP', deliveryService.hashOtp('123456').length === 64);
   ck('different OTPs hash differently', deliveryService.hashOtp('123456') !== deliveryService.hashOtp('654321'));
   ck('the OTP carries an expiry', !!assigned.otpExpiresAt);
   ck('expiry is in the future', assigned.otpExpiresAt > new Date());
   ck('attempt counters are initialised', assigned.otpAttempts === 0 && assigned.maxOtpAttempts === 3,
     `${assigned.otpAttempts}/${assigned.maxOtpAttempts}`);
+
+  console.log('\n=== the delivery drives the order lifecycle ===\n');
+
+  await walkToOutForDelivery(assigned, { afterOtd: { otpHash: deliveryService.hashOtp(KNOWN_OTP) } });
+  const walkedAssign = await StoreDelivery.findById(assigned._id).lean();
+  ck('a fresh code is minted when the van leaves', walkedAssign.otpHash !== assignedHash && /^[0-9a-f]{64}$/.test(walkedAssign.otpHash));
+  ck('the fresh mint resets the attempt counter', walkedAssign.otpAttempts === 0, walkedAssign.otpAttempts);
+  ck('the fresh mint restarts the TTL', walkedAssign.otpExpiresAt > new Date(Date.now() + 9 * 60 * 1000));
+  ck('picked_up and out_for_delivery reach the order',
+    (await StoreOrder.findById(orderDoc._id).lean()).lifecycle === 'out_for_delivery');
+  await deliveryService.verifyDeliveryOtp(assigned._id, KNOWN_OTP);
+  const completedOrder = await StoreOrder.findById(orderDoc._id).lean();
+  ck('an OTP handover completes the order', completedOrder.lifecycle === 'completed', completedOrder.lifecycle);
+  const verifiedDelivery = await StoreDelivery.findById(assigned._id).lean();
+  ck('the handover records that the OTP was verified', verifiedDelivery.otpVerified === true);
+  ck('the handover stamps the OTP verification time', !!verifiedDelivery.otpVerifiedAt);
 
   console.log('\n=== BR-29: OTP gates the handover ===\n');
 
@@ -199,7 +273,7 @@ const run = async () => {
   for (let i = 0; i < 3; i++) {
     try {
       await deliveryService.verifyDeliveryOtp(brute._id, '000000');
-    } catch (e) {
+    } catch {
       /* expected */
     }
   }
@@ -216,7 +290,7 @@ const run = async () => {
   console.log('\n=== BR-29: an expired OTP is refused ===\n');
 
   const stale = await makeDelivery({ otpExpiresAt: new Date(Date.now() - 60 * 1000) });
-  await walkToOutForDelivery(stale);
+  await walkToOutForDelivery(stale, { afterOtd: { otpExpiresAt: new Date(Date.now() - 60 * 1000) } });
   let expired = false;
   try {
     await deliveryService.verifyDeliveryOtp(stale._id, KNOWN_OTP);
@@ -230,7 +304,7 @@ const run = async () => {
   console.log('\n=== BR-29: the correct OTP completes the handover ===\n');
 
   const good = await makeDelivery();
-  await walkToOutForDelivery(good);
+  await walkToOutForDelivery(good, { afterOtd: { otpHash: deliveryService.hashOtp(KNOWN_OTP) } });
   const verified = await deliveryService.verifyDeliveryOtp(good._id, KNOWN_OTP);
   ck('the correct OTP completes the delivery', verified.status === 'delivered', verified.status);
   ck('the delivery timestamp is stamped', !!verified.deliveredAt);
@@ -245,8 +319,16 @@ const run = async () => {
   }
   ck('COD cannot be collected before delivery', collectEarly);
 
-  const collected = await deliveryService.collectCod(verified._id, 502);
-  ck('collecting COD sets the amount', Number(collected.codCollected) === 502, collected.codCollected);
+  let overCollect = false;
+  try {
+    await deliveryService.collectCod(verified._id, 502);
+  } catch (e) {
+    overCollect = e.statusCode === 400 && /EXCEEDS_DUE/.test(e.message);
+  }
+  ck('collecting more than the COD due is refused', overCollect);
+
+  const collected = await deliveryService.collectCod(verified._id, 500);
+  ck('collecting COD sets the amount', Number(collected.codCollected) === 500, collected.codCollected);
   ck('COD moves to collected', collected.codStatus === 'collected', collected.codStatus);
   ck('COD is never "paid" at creation — it starts unset',
     (await StoreDelivery.findById(good._id).lean()).codStatus !== 'paid');
@@ -262,17 +344,25 @@ const run = async () => {
   const reconciled = await deliveryService.reconcileCod(verified._id);
   ck('reconciling moves COD to reconciled', reconciled.codStatus === 'reconciled', reconciled.codStatus);
 
-  let recollect = false;
   try {
-    await deliveryService.collectCod(verified._id, 502);
-  } catch (e) {
-    // already delivered-and-reconciled: collection is gated on delivered, which still passes,
-    // so assert on the state transition instead
-    recollect = true;
+    await deliveryService.collectCod(verified._id, 500);
+  } catch {
+    // already reconciled: collection is one-way and cannot be replayed
   }
   const afterRecollect = await StoreDelivery.findById(verified._id).lean();
-  ck('re-collecting a reconciled COD does not walk it back', afterRecollect.codStatus !== 'pending',
+  ck('re-collecting a reconciled COD does not walk it back', afterRecollect.codStatus === 'reconciled',
     afterRecollect.codStatus);
+
+  console.log('\n=== BR-39: COD cash updates the order ===\n');
+
+  const codDelivery = await deliveryService.collectCod(assigned._id, 500);
+  ck('collecting COD stamps the time', !!codDelivery.codCollectedAt);
+  const collectedOrder = await StoreOrder.findById(orderDoc._id).lean();
+  ck('the order records cash as collected', collectedOrder.paymentStatus === 'collected', collectedOrder.paymentStatus);
+  ck('collected cash is recorded on the order', Number(collectedOrder.paidAmount) === 500, collectedOrder.paidAmount);
+  await deliveryService.reconcileCod(assigned._id);
+  const reconciledOrder = await StoreOrder.findById(orderDoc._id).lean();
+  ck('reconciliation reaches the order', reconciledOrder.paymentStatus === 'reconciled', reconciledOrder.paymentStatus);
 
   console.log('\n=== driver availability (BR-06) ===\n');
 
@@ -309,7 +399,7 @@ run()
   .finally(async () => {
     try {
       await cleanup();
-    } catch (e) {
+    } catch {
       /* the run already failed; cleanup errors must not mask it */
     }
     await mongoose.disconnect();

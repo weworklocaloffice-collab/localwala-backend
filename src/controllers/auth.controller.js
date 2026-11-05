@@ -49,6 +49,7 @@ const { Wallet, ReferralCode } = require('../models');
 const pick = require('../utils/pick');
 const checkArrayNotEmpty = require('../utils/arrayNotEmpty');
 const dairyProfileService = require('../modules/dairy/services/dairy.profile.service');
+const jhatkaProfileService = require('../modules/jhatka/services/jhatka.profile.service');
 
 const getClientIp = (req) => {
   const forwarded = req.headers['x-forwarded-for'];
@@ -1547,6 +1548,51 @@ const dairyLoginWithPhoneOTP = catchAsync(async (req, res) => {
         delete tokens.refresh;
       }
       res.send({ user, tokens, profile });
+    } else {
+      res.status(404).send({ code: 404, message: 'Not found', extra: '' });
+    }
+  } else {
+    res.status(404).send({ code: 404, message: 'Not found', extra: '' });
+  }
+});
+
+const partnerAppLoginWithPhoneOtpVerification = catchAsync(async (req, res) => {
+  const { countryCode, mobileNumber, locale } = req.body;
+  const user = await authService.loginPartnerAppWithPhoneOTP(countryCode, mobileNumber, locale);
+  const toNumber = `+${user.countryCode}${user.mobile}`;
+  const smsProvider = await smsProviderConfigService.sendOTPSMS(
+    user.countryCode,
+    user.mobile,
+    toNumber,
+    locale
+  );
+  res.send(smsProvider);
+});
+
+const partnerAppLoginWithPhoneOTP = catchAsync(async (req, res) => {
+  const { id, locale, remember, userAgent } = req.body;
+  const verification = await otpVerificationService.verifyWithPhoneOTP(id);
+  if (verification && verification !== null && verification.id === id) {
+    const mobileNumber = verification.provider.split(',');
+    if (checkArrayNotEmpty(mobileNumber) && mobileNumber.length === 3) {
+      const user = await authService.loginPartnerAppWithPhoneOTP(
+        mobileNumber[0],
+        mobileNumber[1],
+        locale
+      );
+      const ip = req.connection.remoteAddress;
+      const tokens = await tokenService.generateAuthTokens(user, ip, userAgent);
+      const isJhatka = String(user.role).startsWith('jhatka');
+      const isDairy = String(user.role).startsWith('dairy');
+      const profile = isJhatka
+        ? await jhatkaProfileService.getLoginInfo(user.id)
+        : isDairy
+          ? await dairyProfileService.getDairyLoginInfo(user.id)
+          : null;
+      if (remember === false) {
+        delete tokens.refresh;
+      }
+      res.send({ user, tokens, profile, verticals: (user.verticals || []) });
     } else {
       res.status(404).send({ code: 404, message: 'Not found', extra: '' });
     }
@@ -4082,6 +4128,8 @@ kitchenLoginWithPhoneOtpVerification,
   kitchenLoginWithPhoneOTP,
   dairyLoginWithPhoneOtpVerification,
   dairyLoginWithPhoneOTP,
+  partnerAppLoginWithPhoneOtpVerification,
+  partnerAppLoginWithPhoneOTP,
   verifyKitchenLoginFirebaseOTP,
   kitchenLoginWithGoogleAccount,
   kitchenLoginWithFacebookAccount,

@@ -21,6 +21,8 @@ const authRoute = require('./auth.route');
 const userRoute = require('./user.route');
 const adminRoute = require('./admin.route');
 const fileRoute = require('./file.route');
+const healthRoute = require('./health.route');
+const metricsRoute = require('./metrics.route');
 const driverRoute = require('./driver.route');
 const publicRoute = require('./public.route');
 const vendorRoute = require('./vendor.route');
@@ -46,6 +48,10 @@ const headerBannerAdminRoute = require('../../modules/header-banner/routes/heade
 // jhatka.routes.partner.js and again for jhatka.routes.labels.js — and Express
 // does not complain about a repeated `use()`; the second mount is simply dead for
 // any path the first one answered, which is the §15.1 shadowing trap.
+const jhatkaPublicAuthRoute = require('../../modules/jhatka/routes/jhatka.public.auth.route');
+const lsAuthRoute = require('../../modules/local-services/routes/ls.auth.route');
+const realestateAuthRoute = require('../../modules/realestate/routes/realestate.auth.route');
+const storesAuthRoute = require('../../modules/stores/routes/stores.auth.route');
 const jhatkaPublicRoute = require('../../modules/jhatka/routes/jhatka.public.route');
 const jhatkaCustomerRoute = require('../../modules/jhatka/routes/jhatka.customer.route');
 const jhatkaCatalogueRoute = require('../../modules/jhatka/routes/jhatka.catalogue.route');
@@ -56,6 +62,8 @@ const jhatkaPartnerInventoryRoute = require('../../modules/jhatka/routes/jhatka.
 const jhatkaPartnerMoneyRoute = require('../../modules/jhatka/routes/jhatka.partner.money.route');
 const jhatkaPartnerComplianceRoute = require('../../modules/jhatka/routes/jhatka.partner.compliance.route');
 const jhatkaPartnerLabelsRoute = require('../../modules/jhatka/routes/jhatka.partner.labels.route');
+const jhatkaPartnerSupplyRoute = require('../../modules/jhatka/routes/jhatka.partner.supply.route');
+const jhatkaAdminSupplyRoute = require('../../modules/jhatka/routes/jhatka.admin.supply.route');
 const jhatkaDriverRoute = require('../../modules/jhatka/routes/jhatka.driver.route');
 const jhatkaAdminTaxonomyRoute = require('../../modules/jhatka/routes/jhatka.admin.taxonomy.route');
 const jhatkaAdminOutletsRoute = require('../../modules/jhatka/routes/jhatka.admin.outlets.route');
@@ -78,6 +86,14 @@ const realEstateBankRoute = require('../../modules/realestate/routes/realestate.
 const router = express.Router();
 
 const defaultRoutes = [
+  {
+    path: '/health',
+    route: healthRoute,
+  },
+  {
+    path: '/metrics',
+    route: metricsRoute,
+  },
   {
     path: '/auth',
     route: authRoute,
@@ -176,6 +192,22 @@ const defaultRoutes = [
   // is rewritten against the real schemas; the route carries a banner saying so.
   {
     path: '/jhatka/public',
+    route: jhatkaPublicAuthRoute,
+  },
+  {
+    path: '/local-services/auth',
+    route: lsAuthRoute,
+  },
+  {
+    path: '/realestate/auth',
+    route: realestateAuthRoute,
+  },
+  {
+    path: '/stores/auth',
+    route: storesAuthRoute,
+  },
+  {
+    path: '/jhatka/public',
     route: jhatkaPublicRoute,
   },
   {
@@ -222,6 +254,10 @@ const defaultRoutes = [
   },
   {
     path: '/jhatka/admin',
+    route: jhatkaAdminSupplyRoute,
+  },
+  {
+    path: '/jhatka/admin',
     route: jhatkaAdminOrdersRoute,
   },
   {
@@ -258,6 +294,10 @@ const defaultRoutes = [
   {
     path: '/jhatka/partner/labels',
     route: jhatkaPartnerLabelsRoute,
+  },
+  {
+    path: '/jhatka/partner/supply',
+    route: jhatkaPartnerSupplyRoute,
   },
   {
     path: '/jhatka/driver',

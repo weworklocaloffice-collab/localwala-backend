@@ -39,11 +39,19 @@ const router = express.Router();
 const compAuth = [jhatkaAuth(), requireActiveOutlet, requireComplianceCurrent];
 
 /**
+ * A draft or pending outlet must be able to open its compliance screen and
+ * submit its first FSSAI record, otherwise the compliance gate can never be
+ * satisfied. These setup reads therefore authenticate and resolve the outlet,
+ * but do not require it to be trading or already compliant.
+ */
+const complianceSetupAuth = [jhatkaAuth(), requireRole('compliance_officer', 'manager', 'owner')];
+
+/**
  * GET /jhatka/partner/compliance
  *
  * This outlet's compliance record (already in partner routes, but keeping here for completeness).
  */
-router.get('/', compAuth, requireRole('compliance_officer', 'manager', 'owner'), async (req, res, next) => {
+router.get('/', complianceSetupAuth, async (req, res, next) => {
   try {
     const compliance = await JhatkaCompliance.findOne({ outlet: req.outletId }).lean();
     if (!compliance) {
@@ -94,28 +102,35 @@ router.get('/', compAuth, requireRole('compliance_officer', 'manager', 'owner'),
  * Body: { licenceNumber, expiresAt, documentUrl }
  * Role: compliance_officer, owner
  */
-router.post('/fssai', compAuth, requireRole('compliance_officer', 'owner'), async (req, res, next) => {
+router.post('/fssai', jhatkaAuth(), requireRole('compliance_officer', 'owner'), async (req, res, next) => {
   try {
-    const { licenceNumber, expiresAt, documentUrl } = req.body;
+    const { licenceNumber, expiresAt, documentUrl, category } = req.body;
 
     if (!licenceNumber || !expiresAt) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'licenceNumber and expiresAt required');
     }
 
+    const expires = new Date(expiresAt);
+    if (Number.isNaN(expires.getTime())) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'expiresAt must be a valid date');
+    }
+
     let compliance = await JhatkaCompliance.findOne({ outlet: req.outletId });
     if (!compliance) {
-      compliance = new JhatkaCompliance({ outlet: req.outletId });
+      compliance = new JhatkaCompliance({
+        outlet: req.outletId,
+        business: req.businessId,
+      });
     }
+    if (!compliance.business && req.businessId) compliance.business = req.businessId;
 
     compliance.fssai = {
       licenceNumber,
-      expiresAt: new Date(expiresAt),
+      category: category || 'registration',
+      expiresAt: expires,
       documentUrl,
-      status: 'pending',
-      submittedAt: new Date(),
-      submittedBy: req.user._id,
     };
-    compliance.updatedBy = req.user._id;
+    compliance.status = 'pending';
     await compliance.save();
 
     res.json({
@@ -134,7 +149,7 @@ router.post('/fssai', compAuth, requireRole('compliance_officer', 'owner'), asyn
  *
  * Complaints for this outlet.
  */
-router.get('/complaints', compAuth, requireRole('compliance_officer', 'manager', 'owner'), async (req, res, next) => {
+router.get('/complaints', complianceSetupAuth, requireRole('compliance_officer', 'manager', 'owner'), async (req, res, next) => {
   try {
     const { status, customer, page = 1, limit = 50 } = req.query;
 
@@ -212,7 +227,7 @@ router.post('/complaints/:id/respond', compAuth, requireRole('compliance_officer
  *
  * Reviews for this outlet.
  */
-router.get('/reviews', compAuth, requireRole('compliance_officer', 'manager', 'owner'), async (req, res, next) => {
+router.get('/reviews', complianceSetupAuth, requireRole('compliance_officer', 'manager', 'owner'), async (req, res, next) => {
   try {
     const { rating, page = 1, limit = 50 } = req.query;
 
@@ -300,7 +315,7 @@ router.post('/reviews/:id/respond', compAuth, requireRole('owner'), validate(V.n
  *
  * Promotions available to this outlet.
  */
-router.get('/promotions', compAuth, requireRole('order_staff', 'manager', 'owner'), async (req, res, next) => {
+router.get('/promotions', complianceSetupAuth, requireRole('order_staff', 'manager', 'owner'), async (req, res, next) => {
   try {
     const { status, page = 1, limit = 50 } = req.query;
 

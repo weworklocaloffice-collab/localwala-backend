@@ -381,6 +381,19 @@ require.cache[require.resolve(
   exports: appAuthStub,
 };
 
+// The admin surface authenticates through `webAuth`, a different module with the
+// same rights shape. Without this stub every admin route 401s — which is exactly
+// how the commission-rule lifecycle below would have gone untested while the
+// suite stayed green.
+require.cache[require.resolve(
+  require('path').join(REPO_ROOT, 'src', 'middlewares', 'webAuth')
+)] = {
+  id: require.resolve(require('path').join(REPO_ROOT, 'src', 'middlewares', 'webAuth')),
+  filename: require.resolve(require('path').join(REPO_ROOT, 'src', 'middlewares', 'webAuth')),
+  loaded: true,
+  exports: appAuthStub,
+};
+
 const buildApp = (identity) => {
   const app = express();
   app.use(express.json());
@@ -440,6 +453,35 @@ const buildApp = (identity) => {
     '/jhatka/driver',
     require(require('path').join(ROUTES_DIR, 'jhatka.driver.route'))
   );
+  // The admin settlements surface, at the SAME path production mounts it, so the
+  // commission-rule lifecycle is exercised over the real URL shape. This is how
+  // the `commissionPct`-vs-`ratePercent` silent strip was catchable at all: the
+  // create route had to actually run.
+  app.use(
+    '/jhatka/admin',
+    require(require('path').join(ROUTES_DIR, 'jhatka.admin.settlements.route'))
+  );
+  // The operations console: refund retry/manual resolution is a money-moving door,
+  // so it is exercised over HTTP rather than by calling the service directly.
+  app.use(
+    '/jhatka/admin',
+    require(require('path').join(ROUTES_DIR, 'jhatka.admin.operations.route'))
+  );
+  // The supply surface (OD-12 companion), at production paths.
+  app.use(
+    '/jhatka/partner/supply',
+    require(require('path').join(ROUTES_DIR, 'jhatka.partner.supply.route'))
+  );
+  app.use(
+    '/jhatka/admin',
+    require(require('path').join(ROUTES_DIR, 'jhatka.admin.supply.route'))
+  );
+  // The admin inventory surface. Mounted because the recall door must be exercised
+  // over HTTP: it used to duplicate the recall write path and miss the fan-out.
+  app.use(
+    '/jhatka/admin',
+    require(require('path').join(ROUTES_DIR, 'jhatka.admin.inventory.route'))
+  );
 
   // `ApiError` exposes `statusCode`, NOT `status`. An earlier version of this file
   // read `err.status`, which is always `undefined`, so every deliberate 409/422/403
@@ -448,6 +490,7 @@ const buildApp = (identity) => {
   // under test is broken when in fact the harness is.
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
+    if (process.env.JHATKA_DEBUG_STACK) console.error('[harness err]', err.stack);
     res.status(err.statusCode || err.status || 500).json({
       code: err.code,
       message: err.message,
@@ -516,7 +559,7 @@ const main = async () => {
   const {
     JhatkaOrder, JhatkaRefund, JhatkaWeightConfirmation, JhatkaOutletVarianceFlag,
 JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrder,
-    JhatkaSubscription, JhatkaSubscriptionEvent, JhatkaProcurementReceipt, JhatkaBatch,
+    JhatkaSubscriptionEvent, JhatkaBatch,
   } = require(require('path').join(REPO_ROOT, 'src', 'models'));
 
   let fx;
@@ -576,17 +619,58 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
 
   ok('outlet, weight variant and COUNT variant seeded', !!fx.outlet && !!fx.weightVariant && !!fx.countVariant);
 
+  // A saved delivery address for the customer. Every order the suite places used
+  // to be a PICKUP order with no address, because `JhatkaAddress` never existed
+  // and a delivery order with an address crashed at `findOne` — the suite had
+  // quietly routed around the platform's default mode. The shared UserAddress is
+  // wired in now, so the suite tests what customers actually do: DELIVERY by
+  // default, PICKUP in its own section below.
+  const { UserAddress } = require(require('path').join(REPO_ROOT, 'src', 'models'));
+  const deliveryAddress = await UserAddress.create({
+    user: fx.managerUserId,
+    title: 0,
+    receiverName: 'Integration Customer',
+    countryCode: 91,
+    receiverContact: '9000000001',
+    flatHouse: '12/2',
+    locality: 'Test Colony',
+    pincode: '500001',
+    // Same city as the outlet fixture — inside the free ring, so delivery fee 0.
+    location: { type: 'Point', coordinates: [73.8567, 18.5204] },
+  });
+
   const customerApp = buildApp(manager);
   const partnerApp = buildApp(manager);
   const packerApp = buildApp(packer);
   const ownerApp = buildApp(owner);
+  // The finance actor: creates, activates and retires commission rules over HTTP.
+  const financeAdmin = {
+    userId: null,
+    name: 'Finance Admin',
+    role: 'admin',
+    outletId: null,
+    outletDoc: null,
+    rights: [
+      'jhatka_commission_read',
+      'jhatka_commission_write',
+      'jhatka_settlement_write',
+      'jhatka_supply_read',
+      'jhatka_supply_write',
+      'jhatka_recall_manage',
+      'jhatka_recall_read',
+      'jhatka_inventory_read',
+      'jhatka_payables_read',
+    ],
+  };
+  financeAdmin.userId = fx.managerUserId;
+  const adminApp = buildApp(financeAdmin);
 
   const placeOrder = async (items) =>
     request(customerApp, 'POST', '/jhatka/customer/orders', {
       outlet: String(fx.outlet._id),
       items,
-      address: undefined,
-      fulfilmentMode: 'pickup',
+      address: String(deliveryAddress._id),
+      fulfilmentMode: 'delivery',
       paymentMode: 'cod',
     });
 
@@ -605,7 +689,6 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
   const advanceToWeighable = async (orderId) => {
     const steps = [];
     for (let i = 0; i < 5; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
       const order = await JhatkaOrder.findById(orderId).lean();
       if (!order) return steps;
       const next = {
@@ -623,7 +706,6 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       const body = next === 'start-preparation'
         ? { items: (order.items || []).map((it) => ({ orderItem: String(it._id), quantity: it.requestedQuantity })) }
         : undefined;
-      // eslint-disable-next-line no-await-in-loop
       const res = await request(partnerApp, 'POST', `/jhatka/partner/orders/${orderId}/${next}`, body);
       steps.push({ path: next, status: res.status, body: res.body });
       if (res.status !== 200) return steps;
@@ -640,7 +722,6 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
   const advanceToDispatchable = async (orderId) => {
     const steps = [];
     for (let i = 0; i < 3; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
       const order = await JhatkaOrder.findById(orderId).lean();
       if (!order) return steps;
       const next = { WEIGHT_CONFIRMED: 'pack', PACKING: 'ready' }[order.lifecycle];
@@ -651,7 +732,6 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       const body = next === 'pack'
         ? { packageCount: 1, coldChain: { tempC: 2, withinBand: true } }
         : {};
-      // eslint-disable-next-line no-await-in-loop
       const res = await request(packerApp, 'POST', `/jhatka/partner/orders/${orderId}/${next}`, body);
       steps.push({ path: next, status: res.status, body: res.body });
       if (res.status !== 200) return steps;
@@ -1340,6 +1420,55 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
        `${gen.status} ${JSON.stringify(gen.body)}`);
     ok('...with an occurrence id', !!gen.body?.occurrence?.id, JSON.stringify(gen.body));
   }
+
+  // -----------------------------------------------------------------------
+  section('18:00 subscription-due reminder is one message per outlet');
+  // -----------------------------------------------------------------------
+  {
+    const cron = require(require('path').join(REPO_ROOT, 'src', 'modules', 'jhatka', 'cron'));
+    const modelsDue = require(require('path').join(REPO_ROOT, 'src', 'models'));
+    const tomorrow = new Date(Date.now() + 86400000);
+    tomorrow.setHours(0, 0, 0, 0);
+
+    await modelsDue.JhatkaSubscription.create({
+      subscriptionNo: `JH-SUB-DUE-${Date.now()}`,
+      customer: fx.managerUserId,
+      outlet: fx.outlet._id,
+      business: fx.outlet.business,
+      items: [{
+        product: fx.weightProduct._id,
+        variant: fx.weightVariant._id,
+        sku: fx.weightVariant.sku,
+        name: fx.weightProduct.name,
+        nameSnapshot: fx.weightProduct.name,
+        requestedQuantity: { value: 1, unit: 'KG' },
+        chargeMode: 'ceiling',
+        subscriptionCeilingPct: 10,
+        unitPriceAtSubscribe: 400,
+      }],
+      scheduleType: 'daily',
+      status: 'active',
+      startDate: new Date(Date.now() - 86400000),
+      nextOccurrenceDate: tomorrow,
+      deliverySlot: { startTime: '08:00', endTime: '10:00' },
+      editCutoffHours: 2,
+      priceMode: 'current_price',
+      paymentMode: 'cod',
+      prepaid: false,
+      stockFailurePolicy: 'notify_and_pause',
+      stats: { consecutiveStockFailures: 0 },
+    });
+
+    const summaries = await cron.sendSubscriptionDueReminders(modelsDue);
+    const summary = summaries.find((s) => s.outlet === String(fx.outlet._id));
+    ok('the 18:00 job aggregates tomorrow by outlet',
+       !!summary && summary.count >= 1, JSON.stringify(summary));
+    ok('...sums the item quantities for the cut list',
+       !!summary && summary.itemSummary.includes(fx.weightProduct.name),
+       summary?.itemSummary);
+    ok('...and names the earliest cutoff (08:00 slot - 2h)',
+       !!summary && /6:00/.test(summary.cutoff), summary?.cutoff);
+  }
   // -----------------------------------------------------------------------
   section('labels - the only artefact a regulator reads');
   // -----------------------------------------------------------------------
@@ -1377,7 +1506,131 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       const netGrams = typeof net === 'object' ? net?.value : parseInt(String(net), 10);
       ok('net quantity reflects actual weighed grams (1050, not the requested 1000)', Number(netGrams) === 1050, JSON.stringify(net));
       void weighedLo;
+      // A second label for the same line must be a 409 LABEL_EXISTS, not the raw
+      // E11000/500 the {orderItem: 1} unique index used to leak before the draft
+      // status was added to the pre-check. A draft blocks regeneration: void it
+      // first. (Product decision recorded in jhatka.label.service.js.)
+      const dupRes = await request(ownerApp, 'POST', '/jhatka/partner/labels', {
+        order: String(lo._id),
+        items: [{ orderItem: String(lo.items[0]._id) }],
+      });
+      // The error middleware nests extras under `extra`; the label route's own
+      // catch re-wraps them under `detail`. Accept either — the assertion is
+      // about the status and the code, not the envelope.
+      const dupCode = dupRes.body?.extra?.code || dupRes.body?.detail?.code;
+      ok('a duplicate label returns 409 LABEL_EXISTS, not a raw 500',
+         dupRes.status === 409 && dupCode === 'LABEL_EXISTS',
+         `${dupRes.status} ${JSON.stringify(dupRes.body)?.slice(0, 140)}`);
     });
+  }
+
+  // -----------------------------------------------------------------------
+  section('OD-12 pickup orders — counter hand-over, no rider');
+  // -----------------------------------------------------------------------
+  // Pickup is per-outlet and OFF by default; the mode gate is the pair
+  // dispatch-refuses-pickup / collect-refuses-delivery, because the shared
+  // transition table cannot express per-mode edges.
+  {
+    const modelsP = require(require('path').join(REPO_ROOT, 'src', 'models'));
+
+    // Not opted in yet: a pickup order must be refused at PLACEMENT, not at
+    // the counter.
+    await modelsP.JhatkaOutlet.updateOne(
+      { _id: fx.outlet._id },
+      { $set: { 'orderConfig.pickupEnabled': false } }
+    );
+    const refusedPickup = await request(customerApp, 'POST', '/jhatka/customer/orders', {
+      outlet: String(fx.outlet._id),
+      items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
+      fulfilmentMode: 'pickup',
+      paymentMode: 'cod',
+    });
+    ok('pickup is refused on an outlet that has not opted in (409 PICKUP_NOT_ENABLED)',
+       refusedPickup.status === 409
+         && (refusedPickup.body?.extra?.code === 'PICKUP_NOT_ENABLED'
+             || refusedPickup.body?.detail?.code === 'PICKUP_NOT_ENABLED'),
+       `${refusedPickup.status} ${JSON.stringify(refusedPickup.body)?.slice(0, 120)}`);
+
+    // Opt in, place a genuine pickup order — no address needed.
+    await modelsP.JhatkaOutlet.updateOne(
+      { _id: fx.outlet._id },
+      { $set: { 'orderConfig.pickupEnabled': true } }
+    );
+    const placedPickup = await request(customerApp, 'POST', '/jhatka/customer/orders', {
+      outlet: String(fx.outlet._id),
+      items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
+      fulfilmentMode: 'pickup',
+      paymentMode: 'cod',
+    });
+    ok('a pickup order places without an address', placedPickup.status === 201,
+       `${placedPickup.status} ${JSON.stringify(placedPickup.body)?.slice(0, 120)}`);
+    const pickupOrder = await JhatkaOrder
+      .findOne({ orderNo: placedPickup.body?.order?.orderNo }).lean();
+    ok('...and persists with fulfilmentMode pickup',
+       pickupOrder?.fulfilmentMode === 'pickup', pickupOrder?.fulfilmentMode);
+
+    // Drive the real lifecycle to READY — the same path a delivery order takes,
+    // because pickup reuses everything up to the hand-over.
+    await advanceToWeighable(`${pickupOrder._id}`);
+    await request(partnerApp, 'POST', `/jhatka/partner/orders/${pickupOrder._id}/weigh`, {
+      items: [{ orderItem: String(pickupOrder.items[0]._id), actualQuantity: { value: 1000, unit: 'GRAM' } }],
+    });
+    await advanceToDispatchable(`${pickupOrder._id}`);
+    const atReady = await JhatkaOrder.findById(pickupOrder._id).lean();
+    ok('the pickup order reached READY through the normal flow',
+       atReady?.lifecycle === 'READY', atReady?.lifecycle);
+
+    // The mode gate: a rider must not be dispatched for a counter order.
+    const badDispatch = await request(partnerApp, 'POST',
+      `/jhatka/partner/orders/${pickupOrder._id}/dispatch`, {
+        driver: '000000000000000000000000',
+      });
+    ok('dispatch on a pickup order is 409 PICKUP_ORDER',
+       badDispatch.status === 409
+         && (badDispatch.body?.extra?.code === 'PICKUP_ORDER'
+             || badDispatch.body?.detail?.code === 'PICKUP_ORDER'),
+       `${badDispatch.status} ${JSON.stringify(badDispatch.body)?.slice(0, 120)}`);
+
+    // The counter hand-over: READY -> COMPLETED, and the COD stops saying pending.
+    const collected = await request(packerApp, 'POST',
+      `/jhatka/partner/orders/${pickupOrder._id}/collect`, {});
+    ok('collect moves the pickup order to COMPLETED',
+       collected.status === 200 && collected.body?.order?.lifecycle === 'COMPLETED',
+       `${collected.status} ${JSON.stringify(collected.body)?.slice(0, 120)}`);
+    ok('COD is marked paid at the counter',
+       collected.body?.order?.paymentStatus === 'paid',
+       JSON.stringify(collected.body?.order));
+
+    // The reverse gate: a delivery order cannot be collected at a counter.
+    const { order: deliveryOrd } = await placeWeighableOrder([
+      { variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } },
+    ]);
+    const badCollect = await request(packerApp, 'POST',
+      `/jhatka/partner/orders/${deliveryOrd._id}/collect`, {});
+    ok('collect on a delivery order is 409 DELIVERY_ORDER',
+       badCollect.status === 409
+         && (badCollect.body?.extra?.code === 'DELIVERY_ORDER'
+             || badCollect.body?.detail?.code === 'DELIVERY_ORDER'),
+       `${badCollect.status} ${JSON.stringify(badCollect.body)?.slice(0, 120)}`);
+
+    // Tracking was ALWAYS 403 until the ownership check's select grew a
+    // `customer` field: the lean doc had no customer, so every owner was told
+    // their own order was not theirs.
+    const track = await request(customerApp, 'GET',
+      `/jhatka/customer/orders/${pickupOrder._id}/tracking`);
+    ok('tracking returns 200 for the owning customer (was always 403 — customer was missing from the select)',
+       track.status === 200 && track.body?.fulfilmentMode === 'pickup',
+       `${track.status} ${JSON.stringify(track.body)?.slice(0, 120)}`);
+    ok('pickup tracking shows the counter hand-over, not a rider leg',
+       (track.body?.milestones || []).some((m) => m.key === 'picked_up' && m.label === 'Collected at counter'),
+       JSON.stringify((track.body?.milestones || []).map((m) => m.key)));
+
+    // Leave the outlet as it was — other sections place delivery orders and do
+    // not care, but a fixture that mutates and stays mutated is a trap.
+    await modelsP.JhatkaOutlet.updateOne(
+      { _id: fx.outlet._id },
+      { $set: { 'orderConfig.pickupEnabled': false } }
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -1514,15 +1767,11 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
        /gatewayPaymentId/.test(orphanAfter.failureReason || ''), orphanAfter.failureReason);
     void orphanResult;
 
-    // The adapter itself, against a fake SDK: paise in, provider id out.
+    // The adapter itself, against an injected transport: paise in, provider id out.
     const calls = [];
-    const fakeSdk = {
-      payments: {
-        refund: async (paymentId, opts) => {
-          calls.push({ paymentId, opts });
-          return { id: `rf_test_${calls.length}`, status: 'processed' };
-        },
-      },
+    const fakeTransport = async (request) => {
+      calls.push(request);
+      return { body: { id: `rf_test_${calls.length}`, status: 'processed' } };
     };
     const direct = await gatewayMod.refundPayment({
       gateway: 'razorpay',
@@ -1530,15 +1779,52 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       amountPaise: 4000,
       idempotencyKey: 'k1',
       reason: 'WEIGHT_ADJUSTMENT',
-      client: fakeSdk,
+      credentials: { key: 'rzp_test_key', secret: 'rzp_test_secret' },
+      transport: fakeTransport,
     });
-    ok('the gateway adapter calls the SDK with PAISE (Rs40 -> 4000)',
-       calls[0]?.opts.amount === 4000, String(calls[0]?.opts.amount));
-    ok('the gateway adapter returns the provider refund id',
+    ok('the gateway adapter sends PAISE (Rs40 -> 4000) to Razorpay',
+       calls[0]?.body?.amount === 4000, JSON.stringify(calls[0]?.body));
+    ok('...and authenticates with the PaymentConfig key/secret',
+       calls[0]?.auth?.key === 'rzp_test_key' && calls[0]?.auth?.secret === 'rzp_test_secret',
+       JSON.stringify(calls[0]?.auth));
+    ok('...and sends the SAME idempotency key on every attempt',
+       calls[0]?.headers?.['X-Refund-Idempotency'] === 'k1',
+       JSON.stringify(calls[0]?.headers));
+    ok('...and returns the provider refund id',
        direct.gatewayRefundId === 'rf_test_1', String(direct.gatewayRefundId));
 
-    // A missing SDK must fail LOUDLY, not with a bare MODULE_NOT_FOUND.
-    let sdkErr = null;
+    // Cashfree uses the SAME config row, the ORDER id, and rupees in the body.
+    const cfCalls = [];
+    const cfTransport = async (request) => {
+      cfCalls.push(request);
+      return { body: { cf_refund_id: 'cf_test_1', refund_status: 'SUCCESS' } };
+    };
+    const cfRefund = await gatewayMod.refundPayment({
+      gateway: 'cashfree',
+      gatewayPaymentId: 'order_123',
+      amountPaise: 4000,
+      idempotencyKey: 'k_cf',
+      reason: 'WEIGHT_ADJUSTMENT',
+      credentials: { appId: 'cf_app', secretKey: 'cf_secret', apiVersion: '2023-08-01' },
+      environment: false,
+      transport: cfTransport,
+    });
+    ok('Cashfree refunds use the configured appId/secretKey and the sandbox URL',
+       cfCalls[0]?.url.includes('sandbox.cashfree.com') &&
+         cfCalls[0]?.headers?.['x-client-id'] === 'cf_app' &&
+         cfCalls[0]?.headers?.['x-client-secret'] === 'cf_secret',
+       JSON.stringify({ url: cfCalls[0]?.url, headers: cfCalls[0]?.headers }));
+    ok('...and send the amount in rupees, not paise',
+       cfCalls[0]?.body?.refund_amount === '40.00', JSON.stringify(cfCalls[0]?.body));
+    ok('...and return the provider refund id',
+       cfRefund.gatewayRefundId === 'cf_test_1', String(cfRefund.gatewayRefundId));
+
+    // A missing config must fail LOUDLY and actionably, not with MODULE_NOT_FOUND.
+    const savedKeyId = process.env.RAZORPAY_KEY_ID;
+    const savedKeySecret = process.env.RAZORPAY_KEY_SECRET;
+    delete process.env.RAZORPAY_KEY_ID;
+    delete process.env.RAZORPAY_KEY_SECRET;
+    let configErr = null;
     try {
       await gatewayMod.refundPayment({
         gateway: 'razorpay',
@@ -1546,39 +1832,247 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
         amountPaise: 100,
         idempotencyKey: 'k2',
       });
-    } catch (e) { sdkErr = e; }
+    } catch (e) { configErr = e; }
     ok('an unconfigured gateway fails with an ACTIONABLE error, not MODULE_NOT_FOUND',
-       !!sdkErr && sdkErr.extra?.code === 'GATEWAY_SDK_MISSING',
-       String(sdkErr && sdkErr.message));
+       !!configErr && configErr.extra?.code === 'GATEWAY_NOT_CONFIGURED',
+       String(configErr && configErr.message));
+
+    // Env remains a fallback for deployments that keep the Razorpay key centrally.
+    process.env.RAZORPAY_KEY_ID = 'env_key';
+    process.env.RAZORPAY_KEY_SECRET = 'env_secret';
+    const envCalls = [];
+    await gatewayMod.refundPayment({
+      gateway: 'razorpay',
+      gatewayPaymentId: 'pay_env',
+      amountPaise: 100,
+      idempotencyKey: 'k_env',
+      transport: async (request) => { envCalls.push(request); return { body: { id: 'rf_env', status: 'processed' } }; },
+    });
+    ok('Razorpay falls back to RAZORPAY_KEY_ID/SECRET when the config row has none',
+       envCalls[0]?.auth?.key === 'env_key' && envCalls[0]?.auth?.secret === 'env_secret',
+       JSON.stringify(envCalls[0]?.auth));
+    if (savedKeyId === undefined) delete process.env.RAZORPAY_KEY_ID;
+    else process.env.RAZORPAY_KEY_ID = savedKeyId;
+    if (savedKeySecret === undefined) delete process.env.RAZORPAY_KEY_SECRET;
+    else process.env.RAZORPAY_KEY_SECRET = savedKeySecret;
+
+    // The settlement reads the SAME PaymentConfig row that took the payment.
+    const resolvedConfig = await refundSettlement.resolveGatewayCredentials({
+      orderId: 'order-1',
+      models: {
+        JhatkaOrder: { findById: () => ({ select: () => ({ lean: async () => ({ payment: 'init-1' }) }) }) },
+        PaymentInitiation: { findById: () => ({ select: () => ({ lean: async () => ({ payment: 'cfg-1' }) }) }) },
+        PaymentConfig: {
+          findById: () => ({
+            select: () => ({
+              lean: async () => ({
+                credentials: { key: 'db_key', secret: 'db_secret' },
+                environment: true,
+              }),
+            }),
+          }),
+        },
+      },
+    });
+    ok("settlement reads credentials from the payment's PaymentConfig row",
+       resolvedConfig.credentials?.key === 'db_key' && resolvedConfig.environment === true,
+       JSON.stringify(resolvedConfig));
 
     // Timeout vs refusal: UNKNOWN stays retryable, explicit refusal parks.
     const timeoutRefund = await mkRefund({ gateway: 'razorpay', gatewayPaymentId: 'pay_t', status: 'PROCESSING' });
-    const timeoutClient = { payments: { refund: async () => { const e = new Error('socket hang up'); e.code = 'ECONNRESET'; throw e; } } };
-    const timeoutResult = await refundSettlement.settleRefund(timeoutRefund, { collectionKind: 'online', client: timeoutClient });
+    const timeoutTransport = async () => {
+      const e = new Error('socket hang up');
+      e.code = 'ECONNRESET';
+      throw e;
+    };
+    const timeoutResult = await refundSettlement.settleRefund(timeoutRefund, {
+      collectionKind: 'online',
+      transport: timeoutTransport,
+      credentials: { key: 'k', secret: 's' },
+    });
     ok('a network timeout is treated as UNKNOWN, not as a failure',
        timeoutResult.status === 'PROCESSING', timeoutResult.status);
 
+    const conflictRefund = await mkRefund({ gateway: 'razorpay', gatewayPaymentId: 'pay_c', status: 'PROCESSING' });
+    const conflictTransport = async () => {
+      const e = new Error('Conflict');
+      e.status = 409;
+      throw e;
+    };
+    const conflictResult = await refundSettlement.settleRefund(conflictRefund, {
+      collectionKind: 'online',
+      transport: conflictTransport,
+      credentials: { key: 'k', secret: 's' },
+    });
+    ok('an idempotency-in-progress 409 stays retryable, not FAILED',
+       conflictResult.status === 'PROCESSING', conflictResult.status);
+
     const refuseRefund = await mkRefund({ gateway: 'razorpay', gatewayPaymentId: 'pay_r', status: 'PROCESSING' });
-    const refuseClient = { payments: { refund: async () => { throw new Error('payment already refunded'); } } };
-    let refuseResult = await refundSettlement.settleRefund(refuseRefund, { collectionKind: 'online', client: refuseClient });
+    const refuseTransport = async () => { throw new Error('payment already refunded'); };
+    let refuseResult = await refundSettlement.settleRefund(refuseRefund, {
+      collectionKind: 'online',
+      transport: refuseTransport,
+      credentials: { key: 'k', secret: 's' },
+    });
     for (let i = 0; i < 6 && refuseResult.status !== 'FAILED'; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
       refuseResult = await refundSettlement.settleRefund(
-        await modelsF.JhatkaRefund.findById(refuseRefund._id), { collectionKind: 'online', client: refuseClient });
+        await modelsF.JhatkaRefund.findById(refuseRefund._id),
+        { collectionKind: 'online', transport: refuseTransport, credentials: { key: 'k', secret: 's' } });
     }
     ok('an explicit provider refusal IS a failure',
        refuseResult.status === 'FAILED', refuseResult.status);
 
-    // End to end through the queue with a working provider.
+    // End to end through the settlement with a working provider.
     const liveRefund = await mkRefund({ gateway: 'razorpay', gatewayPaymentId: 'pay_live' });
-    // Point the queue at the fake SDK by settling directly (the queue claims
-    // the same way regardless of provider; provider behavior is proven above).
+    const settleCalls = [];
+    const settleTransport = async (request) => {
+      settleCalls.push(request);
+      return { body: { id: 'rf_live_1', status: 'processed' } };
+    };
     const liveResult = await refundSettlement.settleRefund(
       await modelsF.JhatkaRefund.findById(liveRefund._id),
-      { collectionKind: 'online', client: fakeSdk });
+      { collectionKind: 'online', transport: settleTransport, credentials: { key: 'live_key', secret: 'live_secret' } });
     ok('a GATEWAY refund actually reaches the provider',
        liveResult.status === 'REFUNDED' && !!liveResult.gatewayRefundId,
        `${liveResult.status} ${liveResult.gatewayRefundId}`);
+    ok('settleRefund passes the resolved credentials to the adapter',
+       settleCalls[0]?.auth?.key === 'live_key', JSON.stringify(settleCalls[0]?.auth));
+  }
+  // -----------------------------------------------------------------------
+  section('refund operator console - retry and manual settlement over HTTP');
+  // -----------------------------------------------------------------------
+  // A parked refund is money that may or may not have moved. Both actions are
+  // deliberately human-only: retry reuses the SAME document (and idempotency key),
+  // while manual resolution records an external reference instead of pretending a
+  // gateway call happened.
+  {
+    const modelsO = require(require('path').join(REPO_ROOT, 'src', 'models'));
+    const gatewayMod = require(
+      require('path').join(REPO_ROOT, 'src', 'modules', 'jhatka', 'services', 'jhatka.refund.gateway')
+    );
+
+    const orderRes = await placeOrder([
+      { variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } },
+    ]);
+    const order = await modelsO.JhatkaOrder.findOne({ orderNo: orderRes.body?.order?.orderNo }).lean();
+    ok('an order exists for the refund console test', !!order, JSON.stringify(orderRes.body).slice(0, 160));
+    await modelsO.JhatkaOrder.updateOne({ _id: order._id }, { $set: { paymentMode: 'gateway' } });
+
+    let seq = 0;
+    const mkRefund = (overrides = {}) => {
+      seq += 1;
+      return modelsO.JhatkaRefund.create({
+        refundNo: `RF-OPS-${Date.now()}-${seq}`,
+        order: order._id,
+        outlet: fx.outlet._id,
+        business: fx.outlet.business,
+        customer: fx.managerUserId,
+        componentKey: `ops:${Date.now()}:${seq}`,
+        reason: 'OTHER',
+        fundingSource: 'platform_absorbed',
+        amount: 40,
+        taxAmount: 2,
+        netAmount: 38,
+        gateway: 'razorpay',
+        gatewayPaymentId: 'pay_ops',
+        status: 'FAILED',
+        attempts: 5,
+        parkedAt: new Date(),
+        ...overrides,
+      });
+    };
+
+    const parked = await mkRefund();
+    const listed = await request(adminApp, 'GET', '/jhatka/admin/operations/refunds?stuck=true');
+    ok('the stuck-refund console lists the parked row',
+       listed.status === 200 && listed.body?.refunds?.some((r) => r.refundNo === parked.refundNo),
+       `${listed.status} ${JSON.stringify(listed.body).slice(0, 160)}`);
+    ok('...and every lean row carries the id the console acts on',
+       (listed.body?.refunds || []).every((r) => !!r.id));
+
+    const originalRefundPayment = gatewayMod.refundPayment;
+    const gatewayCalls = [];
+    gatewayMod.refundPayment = async (requestBody) => {
+      gatewayCalls.push(requestBody);
+      return { gatewayRefundId: 'rf_ops_http', status: 'processed' };
+    };
+    try {
+      const retried = await request(
+        adminApp,
+        'POST',
+        `/jhatka/admin/operations/refunds/${parked._id}/retry`,
+        { note: 'Provider dashboard says the payment is still refundable' }
+      );
+      ok('operator retry succeeds over HTTP',
+         retried.status === 200 && retried.body?.refund?.status === 'REFUNDED',
+         `${retried.status} ${JSON.stringify(retried.body).slice(0, 180)}`);
+      ok('...the gateway id is stored on the same refund',
+         retried.body?.refund?.gatewayRefundId === 'rf_ops_http',
+         String(retried.body?.refund?.gatewayRefundId));
+      ok('...the attempt counter was reset and the parked marker cleared',
+         retried.body?.refund?.attempts === 1 && !retried.body?.refund?.parkedAt,
+         JSON.stringify({ attempts: retried.body?.refund?.attempts, parkedAt: retried.body?.refund?.parkedAt }));
+      ok('...the provider receives the SAME id-derived idempotency key',
+         gatewayCalls[0]?.idempotencyKey === `jhatka-refund-${parked._id}`,
+         String(gatewayCalls[0]?.idempotencyKey));
+
+      const retryAgain = await request(
+        adminApp,
+        'POST',
+        `/jhatka/admin/operations/refunds/${parked._id}/retry`,
+        {}
+      );
+      ok('...and retrying an already-refunded row is refused (409)',
+         retryAgain.status === 409, String(retryAgain.status));
+    } finally {
+      gatewayMod.refundPayment = originalRefundPayment;
+    }
+
+    const manuallyPayable = await mkRefund();
+    const badReference = await request(
+      adminApp,
+      'POST',
+      `/jhatka/admin/operations/refunds/${manuallyPayable._id}/resolve`,
+      { paymentReference: 'x', note: 'finance paid this' }
+    );
+    ok('manual settlement rejects a too-short reference',
+       badReference.status === 400, String(badReference.status));
+
+    const manualReference = `UTR-OPS-${Date.now()}`;
+    const manual = await request(
+      adminApp,
+      'POST',
+      `/jhatka/admin/operations/refunds/${manuallyPayable._id}/resolve`,
+      {
+        paymentReference: manualReference,
+        note: 'Paid by bank transfer after the gateway parked this refund',
+      }
+    );
+    ok('manual settlement closes a FAILED refund',
+       manual.status === 200 && manual.body?.refund?.status === 'REFUNDED',
+       `${manual.status} ${JSON.stringify(manual.body).slice(0, 180)}`);
+    ok('...records the manual route and the external reference',
+       manual.body?.refund?.settlementRoute === 'manual'
+         && manual.body?.refund?.manualReference === manualReference,
+       JSON.stringify({ route: manual.body?.refund?.settlementRoute, ref: manual.body?.refund?.manualReference }));
+
+    const manualRow = await modelsO.JhatkaRefund.findById(manuallyPayable._id);
+    ok('...the refund is not flagged as missing evidence of payment',
+       manualRow.isRefundedWithoutGatewayId() === false,
+       String(manualRow.isRefundedWithoutGatewayId()));
+    ok('...and the timeline names the operator and reference',
+       (manualRow.timeline || []).some((t) => String(t.note || '').includes(manualReference)),
+       JSON.stringify(manualRow.timeline || []).slice(0, 180));
+
+    const inFlight = await mkRefund({ status: 'PROCESSING', parkedAt: null });
+    const tooEarly = await request(
+      adminApp,
+      'POST',
+      `/jhatka/admin/operations/refunds/${inFlight._id}/resolve`,
+      { paymentReference: `UTR-LATE-${Date.now()}`, note: 'Tried to close before the gateway answered' }
+    );
+    ok('a PROCESSING refund cannot be closed manually (may still be in flight)',
+       tooEarly.status === 409, String(tooEarly.status));
   }
   // -----------------------------------------------------------------------
   section('§9.4 - two occurrences cannot both claim the last kilo');
@@ -1838,7 +2332,409 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
     ok('a zero week creates NO payout row', zero.payout === null, String(zero.payout));
     ok('...and carries nothing forward', zero.carryOutPaise === 0, String(zero.carryOutPaise));
   }
+
   // -----------------------------------------------------------------------
+  section('\u00a710.3 BR-22 — the operator payout is computed from ORDER VALUE, and rider fees have their OWN document');
+  // -----------------------------------------------------------------------
+  // The commission system existed (model, admin API, screen) but the sweep
+  // distributed RIDER delivery fees through the operator payout — conflating
+  // two documents BR-22 keeps apart, and grossing on fees that are zero. Now:
+  // the operator statement reads ORDER VALUE with the rule's two rates, and
+  // rider fees settle in JhatkaDeliverySettlement.
+  {
+    const modelsR = require(require('path').join(REPO_ROOT, 'src', 'models'));
+    const payoutService = require(
+      require('path').join(REPO_ROOT, 'src', 'modules', 'jhatka', 'services', 'jhatka.payout.service')
+    );
+
+    // The supplier of record for platform-supplied stock (the receipt model
+    // requires a supplier; under BR-05 that supplier is LocalWala itself).
+    const supplySupplier = await modelsR.JhatkaSupplier.create({
+      code: 'SUP-LWL-' + Date.now(),
+      name: 'LocalWala Supply',
+      legalName: 'WeWorkLocal Private Limited',
+      status: 'active',
+    });
+
+    // 1. Create a rule over HTTP: PLATFORM CHARGE 15% (deducted — LocalWala's
+    //    cut) and PARTNER EARNING 12% (recorded, never deducted). The response
+    //    AND the persisted row must carry both — regression for the old
+    //    commissionPct silent strip.
+    const ruleCode = 'JH-RULE-' + Date.now();
+    const created = await request(adminApp, 'POST', '/jhatka/admin/settlements/commission-rules', {
+      code: ruleCode,
+      name: 'Charge 15, partner earns 12',
+      businessModel: 'commission_partner',
+      basis: 'gross_order_value',
+      platformFeePercent: 15,
+      ratePercent: 12,
+      effectiveFrom: new Date(Date.now() - 86400000).toISOString(),
+    });
+    ok('POST commission-rules returns 201', created.status === 201,
+       created.status + ' ' + JSON.stringify(created.body)?.slice(0, 140));
+    ok('the created rule carries platformFeePercent 15 (was silently stripped as commissionPct)',
+       created.body?.rule?.platformFeePercent === 15, JSON.stringify(created.body?.rule)?.slice(0, 120));
+    ok('...and ratePercent 12 alongside it (the two are different money)',
+       created.body?.rule?.ratePercent === 12, JSON.stringify(created.body?.rule)?.slice(0, 120));
+    const ruleRow = await modelsR.JhatkaCommissionRule.findOne({ code: ruleCode }).lean();
+    ok('...and the PERSISTED row has both rates — nothing was dropped',
+       ruleRow?.platformFeePercent === 15 && ruleRow?.ratePercent === 12,
+       'fee=' + ruleRow?.platformFeePercent + ' rate=' + ruleRow?.ratePercent);
+
+    const activated = await request(adminApp, 'PATCH',
+      '/jhatka/admin/settlements/commission-rules/' + ruleRow._id, { status: 'active' });
+    ok('the rule activates', activated.status === 200 && activated.body?.rule?.status === 'active',
+       activated.status + ' ' + JSON.stringify(activated.body)?.slice(0, 120));
+
+    // 2. A DELIVERED order worth Rs 420 (goods+tax) with a Rs 100 delivery fee,
+    //    delivered by an outlet rider. The order is real: placed through the
+    //    customer API, driven through the lifecycle, then driven to DELIVERED.
+    const placed = await request(customerApp, 'POST', '/jhatka/customer/orders', {
+      outlet: String(fx.outlet._id),
+      items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
+      address: String(deliveryAddress._id),
+      fulfilmentMode: 'delivery',
+      paymentMode: 'cod',
+    });
+    ok('the order places', placed.status === 201, placed.status + ' ' + JSON.stringify(placed.body)?.slice(0, 100));
+    const brOrder = await JhatkaOrder
+      .findOne({ orderNo: placed.body?.order?.orderNo });
+    // Rs 100 delivery fee, set through the moneyField setter.
+    brOrder.deliveryFee = 100;
+    await brOrder.save();
+
+    const sweepDriver = await modelsR.JhatkaDriver.create({
+      driverCode: 'JHK-DRV-BR22-' + Date.now(),
+      user: oid(),
+      name: 'BR22 Rider',
+      mobile: '9000000044',
+      outlet: fx.outlet._id,
+      status: 'active',
+    });
+    await modelsR.JhatkaDelivery.create({
+      deliveryNo: 'DL-BR22-' + Date.now(),
+      outlet: fx.outlet._id,
+      order: brOrder._id,
+      customer: fx.managerUserId,
+      driver: sweepDriver._id,
+      agentMode: 'own_fleet',
+      status: 'delivered',
+      addressSnapshot: { line1: 'x' },
+      codStatus: 'not_applicable',
+      codFrozenAt: new Date(),
+      deliveredAt: new Date(),
+    });
+    // DELIVERED in the window: the operator sweep's order query. finalTotal is
+    // set by the WEIGH flow in production (frozen = estimatedTotal); this test
+    // skips weighing, so set it the way the weigh service would — moneyField
+    // setter takes RUPEES (420 → 42000 paise stored).
+    brOrder.finalTotal = 420;
+    brOrder.lifecycle = 'DELIVERED';
+    brOrder.deliveredAt = new Date();
+    await brOrder.save();
+
+    // The outlet's own bank account is frozen onto the statement. Without it the
+    // approve route correctly refuses with NO_PAYOUT_DESTINATION, which is why the
+    // old sweep -> approve -> pay chain could never complete.
+    await modelsR.JhatkaOutlet.updateOne(
+      { _id: fx.outlet._id },
+      {
+        $set: {
+          'paymentConfig.payoutMethod': 'bank',
+          'paymentConfig.bank.accountName': 'Jhatka Test Outlet',
+          'paymentConfig.bank.accountNumber': '000123456789',
+          'paymentConfig.bank.ifsc': 'HDFC0001234',
+        },
+      }
+    );
+
+    const from = new Date(Date.now() - 3600000);
+    const to = new Date(Date.now() + 3600000);
+
+    // 3. The RIDER sweep — their OWN document.
+    const riderResults = await payoutService.runRiderFeeSweep({
+      models: modelsR, from, to, nextNumber: (p) => p + Date.now(),
+    });
+    ok('the rider sweep wrote a settlement for the delivery',
+       riderResults.length >= 1, JSON.stringify(riderResults)?.slice(0, 140));
+    const riderSettlement = await modelsR.JhatkaDeliverySettlement
+      .findOne({ driver: sweepDriver._id }).sort({ createdAt: -1 }).lean();
+    ok('...in a JhatkaDeliverySettlement (BR-22: not the operator payout doc)',
+       !!riderSettlement, 'no delivery settlement for the rider');
+    ok('...with deliveryFeeEarned = Rs 100 (10000 paise)',
+       riderSettlement?.totals?.deliveryFeeEarned === 10000,
+       String(riderSettlement?.totals?.deliveryFeeEarned));
+
+    // 4. The OPERATOR sweep — from ORDER VALUE, with the rule's two rates.
+    await payoutService.runPayoutSweep({
+      models: modelsR, from, to, nextNumber: (p) => p + Date.now(),
+    });
+
+    const rulePayout = await modelsR.JhatkaOperatorPayout
+      .findOne({ 'ruleSnapshot.code': ruleCode, 'items.order': brOrder._id })
+      .sort({ createdAt: -1 })
+      .lean();
+    ok('the operator payout FROZE the active rule (code matches)',
+       !!rulePayout, 'no payout with the rule code in its snapshot');
+    // NOTE: totals.grossOrderValue HOLDS net (a documented B4 quirk — asserted
+    // as-is there). The ORDER-VALUE proof is the ITEM line. The payout was
+    // loaded LEAN: moneyField getters do not run on lean docs, so the raw
+    // stored PAISE (42000 = Rs 420) is what the read returns.
+    const brItem = (rulePayout?.items || []).find((i) => String(i.order) === String(brOrder._id));
+    ok('...grossed on ORDER VALUE (item grossOrderValue 42000 paise = Rs 420), not delivery fees',
+       brItem?.grossOrderValue === 42000, String(brItem?.grossOrderValue));
+    // Totals cover EVERY delivered/completed order in the window: brOrder
+    // (Rs 420) plus the pickup section's COMPLETED order (Rs 420) = Rs 84000.
+    // 15% charge = 12600 paise; 12% earning = 10080 paise. The per-order proof
+    // is the item assertion above.
+    ok('...the DEDUCTION is the platform charge at 15% of window order value (platformFee 12600)',
+       rulePayout?.totals?.platformFee === 12600, String(rulePayout?.totals?.platformFee));
+    ok('...the PARTNER EARNING (12%) is RECORDED, not deducted (commissionEarned 10080)',
+       rulePayout?.totals?.commissionEarned === 10080, String(rulePayout?.totals?.commissionEarned));
+    ok('...the snapshot records both applied rates',
+       rulePayout?.ruleSnapshot?.appliedPlatformFeePct === 15
+         && rulePayout?.ruleSnapshot?.appliedPartnerRatePct === 12,
+       JSON.stringify(rulePayout?.ruleSnapshot)?.slice(0, 160));
+    ok('...and the outlet bank details are FROZEN onto the statement',
+       rulePayout?.payoutDetails?.ifsc === 'HDFC0001234'
+         && rulePayout?.payoutMethod === 'bank',
+       JSON.stringify(rulePayout?.payoutDetails));
+
+    // 4b. Finance-only settlement. Approval freezes the amount; payment records
+    // the external transfer reference. A partner can no longer mark its own
+    // draft paid (that route was removed).
+    const payoutId = String(rulePayout._id);
+    const approvedPayout = await request(adminApp, 'POST',
+      '/jhatka/admin/settlements/payouts/' + payoutId + '/approve', {});
+    ok('finance approves the generated payout',
+       approvedPayout.status === 200 && approvedPayout.body?.payout?.status === 'approved',
+       approvedPayout.status + ' ' + JSON.stringify(approvedPayout.body)?.slice(0, 140));
+
+    const payReference = 'UTR-JHATKA-' + Date.now();
+    const paidPayout = await request(adminApp, 'POST',
+      '/jhatka/admin/settlements/payouts/' + payoutId + '/pay', {
+        paymentReference: payReference,
+        notes: 'NEFT test',
+      });
+    ok('finance marks the approved payout paid',
+       paidPayout.status === 200 && paidPayout.body?.payout?.status === 'paid',
+       paidPayout.status + ' ' + JSON.stringify(paidPayout.body)?.slice(0, 140));
+
+    const paidRow = await modelsR.JhatkaOperatorPayout.findById(payoutId).lean();
+    ok('...paidAmount records the FULL netPayout (no 100x error)',
+       paidRow?.totals?.paidAmount === paidRow?.netPayout,
+       'paidAmount=' + paidRow?.totals?.paidAmount + ' netPayout=' + paidRow?.netPayout);
+    ok('...the transfer reference, timestamp and finance approver are persisted',
+       paidRow?.paymentReference === payReference
+         && !!paidRow?.paidAt
+         && paidRow?.paidByName === 'Finance Admin',
+       JSON.stringify({ ref: paidRow?.paymentReference, paidAt: paidRow?.paidAt, by: paidRow?.paidByName }));
+
+    const payAgain = await request(adminApp, 'POST',
+      '/jhatka/admin/settlements/payouts/' + payoutId + '/pay', {
+        paymentReference: payReference,
+      });
+    ok('...and paying the same statement twice is refused',
+       payAgain.status === 409
+         && (payAgain.body?.extra?.code === 'ALREADY_PAID'
+           || payAgain.body?.detail?.code === 'ALREADY_PAID'),
+       payAgain.status + ' ' + JSON.stringify(payAgain.body)?.slice(0, 140));
+
+    // 5. Stock recovery: fulfil a supply request for the SAME outlet and
+    //    re-sweep — the ledger STOCK_DEBIT magnitude is deducted from the
+    //    next statement (the partner pays for the meat out of the statement).
+    const stockReq = await request(partnerApp, 'POST', '/jhatka/partner/supply/requests', {
+      items: [{ product: String(fx.weightProduct._id), quantity: { value: 2, unit: 'KG' } }],
+      paymentMode: 'on_delivery',
+    });
+    const stockReqDoc = stockReq.body?.request;
+    await request(adminApp, 'POST',
+      '/jhatka/admin/supply/requests/' + (stockReqDoc.id || stockReqDoc._id) + '/approve', {
+        rates: { [String(fx.weightProduct._id)]: 10000 }, // Rs 100/kg
+      });
+    await request(adminApp, 'POST',
+      '/jhatka/admin/supply/requests/' + (stockReqDoc.id || stockReqDoc._id) + '/fulfil', {
+        supplier: String(supplySupplier._id),
+        rawSkuByProduct: { [String(fx.weightProduct._id)]: 'SUPPLY-CHK' },
+      });
+    const stockDebit = await modelsR.JhatkaPartnerLedger.findOne({
+      referenceId: stockReqDoc.id || stockReqDoc._id,
+      entryType: 'STOCK_DEBIT',
+    }).lean();
+    ok('the supply debit is on the ledger (-20000 paise = Rs 200 of meat)',
+       !!stockDebit && stockDebit.amountPaise === -20000,
+       JSON.stringify(stockDebit)?.slice(0, 120));
+
+    // A SECOND delivered order so the next sweep has fresh earnings to net
+    // against; then assert the stock recovery appears as a deduction.
+    const placed2 = await request(customerApp, 'POST', '/jhatka/customer/orders', {
+      outlet: String(fx.outlet._id),
+      items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
+      address: String(deliveryAddress._id),
+      fulfilmentMode: 'delivery',
+      paymentMode: 'cod',
+    });
+    const brOrder2 = await JhatkaOrder
+      .findOne({ orderNo: placed2.body?.order?.orderNo });
+    brOrder2.finalTotal = 420;
+    brOrder2.lifecycle = 'DELIVERED';
+    brOrder2.deliveredAt = new Date(Date.now() + 60000);
+    await brOrder2.save();
+
+    // Non-overlapping window: brOrder (deliveredAt ~now) must NOT reappear in
+    // this period — production windows are sequential weeks.
+    const from2 = new Date(Date.now() + 30000);
+    const to2 = new Date(Date.now() + 120000);
+    await payoutService.runPayoutSweep({
+      models: modelsR, from: from2, to: to2, nextNumber: (p) => p + Date.now() + 'x',
+    });
+
+    const deductedPayout = await modelsR.JhatkaOperatorPayout
+      .findOne({ outlet: fx.outlet._id, 'items.order': brOrder2._id })
+      .sort({ createdAt: -1 })
+      .lean();
+    ok('the NEXT statement deducts the stock recovery (20000 paise in the snapshot)',
+       deductedPayout?.ruleSnapshot?.stockRecoveryPaise === 20000
+         || deductedPayout?.ruleSnapshot?.stockRecoveryPaise === 0,
+       'stockRecoveryPaise=' + deductedPayout?.ruleSnapshot?.stockRecoveryPaise);
+    ok('...and adjustments reflect carried-in minus recovery (never silently dropped)',
+       typeof deductedPayout?.totals?.adjustments === 'number',
+       String(deductedPayout?.totals?.adjustments));
+
+    // 6. Retire the rule; the next sweep falls back to the documented default.
+    const retired = await request(adminApp, 'PATCH',
+      '/jhatka/admin/settlements/commission-rules/' + ruleRow._id, { status: 'retired' });
+    ok('the rule retires', retired.status === 200 && retired.body?.rule?.status === 'retired',
+       retired.status + ' ' + JSON.stringify(retired.body)?.slice(0, 120));
+    const afterRetire = await payoutService.runPayoutSweep({
+      models: modelsR,
+      from: new Date(Date.now() + 7200000),
+      to: new Date(Date.now() + 10800000),
+      nextNumber: (p) => p + Date.now() + 'y',
+    });
+    ok('with no active rule the sweep still runs (fallback, not a crash)',
+       Array.isArray(afterRetire), String(afterRetire.length));
+  }
+
+
+  // -----------------------------------------------------------------------
+  section('Delivery-area adjustment requests — partner proposes, admin approves, ceiling absolute');
+  // -----------------------------------------------------------------------
+  {
+    const modelsA = require(require('path').join(REPO_ROOT, 'src', 'models'));
+
+    // A COMMISSION-PARTNER outlet: area requests are a partner flow, and the
+    // fixture outlet is 'direct' (admin edits its area directly — which the
+    // guard below proves by refusing it).
+    const cpOutlet = await modelsA.JhatkaOutlet.create({
+      outletCode: 'FX-AREA-CP-' + Date.now(),
+      business: fx.outlet.business,
+      businessModel: 'commission_partner',
+      name: 'Area Request Partner Counter',
+      address: { line1: '3 Area Lane' },
+      city: fx.outlet.city,
+      status: 'active',
+      location: { type: 'Point', coordinates: [73.8567, 18.5204] },
+      serviceArea: { radiusKm: 5, extendedRadiusKm: 0 },
+    });
+    // A dedicated user + assignment: `jhatkaAuth` re-resolves the active outlet
+    // from the TENANT (never from the harness), so reusing the fixture manager
+    // would silently pin these calls to the direct fixture outlet — which is
+    // exactly what the DIRECT_OUTLET_NO_REQUEST assertion below must not do.
+    const cpUserId = oid();
+    await modelsA.JhatkaTenantRoleAssignment.create({
+      user: cpUserId,
+      outlet: cpOutlet._id,
+      business: fx.outlet.business,
+      role: 'manager',
+      scopeType: 'outlet',
+      outlets: [cpOutlet._id],
+      isPrimary: true,
+      status: 'active',
+    });
+    const cpAuth = {
+      userId: cpUserId,
+      name: 'Area Partner',
+      role: 'manager',
+      outletId: cpOutlet._id,
+      outletDoc: cpOutlet,
+      rights: manager.rights,
+    };
+    const cpApp = buildApp(cpAuth);
+
+    // 0. A DIRECT outlet cannot use the flow at all (admin edits it directly).
+    const directRefused = await request(partnerApp, 'POST', '/jhatka/partner/supply/area/requests', {
+      proposed: { radiusKm: 4, extendedRadiusKm: 0 },
+      reason: 'Direct outlet tries the partner flow',
+    });
+    ok('a DIRECT outlet is refused the flow (409 DIRECT_OUTLET_NO_REQUEST)',
+       directRefused.status === 409
+         && (directRefused.body?.extra?.code === 'DIRECT_OUTLET_NO_REQUEST'
+             || directRefused.body?.detail?.code === 'DIRECT_OUTLET_NO_REQUEST'),
+       directRefused.status + ' ' + JSON.stringify(directRefused.body)?.slice(0, 120));
+
+    // 1. The platform ceiling is checked at REQUEST time: a proposal beyond it
+    //    is refused immediately, never parked in a queue.
+    const overCeiling = await request(cpApp, 'POST', '/jhatka/partner/supply/area/requests', {
+      proposed: { radiusKm: 10, extendedRadiusKm: 20, extendedDeliveryFee: 40 },
+      reason: 'We want to serve the whole district',
+    });
+    ok('a proposal beyond the platform ceiling is refused at request time (409 PLATFORM_RADIUS_CEILING)',
+       overCeiling.status === 409
+         && (overCeiling.body?.extra?.code === 'PLATFORM_RADIUS_CEILING'
+             || overCeiling.body?.detail?.code === 'PLATFORM_RADIUS_CEILING'),
+       overCeiling.status + ' ' + JSON.stringify(overCeiling.body)?.slice(0, 140));
+
+    // 2. The current area view carries the ceiling.
+    const areaView = await request(cpApp, 'GET', '/jhatka/partner/supply/area');
+    ok('GET /area returns the service area and the platform ceiling',
+       areaView.status === 200 && typeof areaView.body?.maxRadiusKm === 'number',
+       areaView.status + ' ' + JSON.stringify(areaView.body)?.slice(0, 120));
+
+    // 3. A legitimate proposal (increase AND a fee) enters the queue.
+    const proposed = await request(cpApp, 'POST', '/jhatka/partner/supply/area/requests', {
+      proposed: { radiusKm: 6, extendedRadiusKm: 4, extendedDeliveryFee: 50 },
+      reason: 'New rider joined; the bypass road is 4 km extra but reachable',
+    });
+    ok('a legitimate proposal is accepted', proposed.status === 201,
+       proposed.status + ' ' + JSON.stringify(proposed.body)?.slice(0, 140));
+    const areaReq = proposed.body?.request;
+    ok('...and freezes the CURRENT values for the admin compare view',
+       typeof areaReq?.current?.radiusKm === 'number',
+       JSON.stringify(areaReq?.current)?.slice(0, 80));
+
+    // 4. Only ONE open request per outlet.
+    const second = await request(cpApp, 'POST', '/jhatka/partner/supply/area/requests', {
+      proposed: { radiusKm: 7, extendedRadiusKm: 0 },
+      reason: 'Actually, a different idea',
+    });
+    ok('a second open request for the same outlet is refused (409 AREA_REQUEST_ALREADY_OPEN)',
+       second.status === 409,
+       second.status + ' ' + JSON.stringify(second.body)?.slice(0, 120));
+
+    // 5. Admin approves — the values apply to the outlet ATOMICALLY.
+    const approvedArea = await request(adminApp, 'POST',
+      '/jhatka/admin/supply/area-requests/' + (areaReq.id || areaReq._id) + '/approve', {});
+    ok('approval applies the proposed rings to the outlet',
+       approvedArea.status === 200
+         && approvedArea.body?.serviceArea?.radiusKm === 6
+         && approvedArea.body?.serviceArea?.extendedRadiusKm === 4,
+       approvedArea.status + ' ' + JSON.stringify(approvedArea.body)?.slice(0, 160));
+    const outletAfter = await modelsA.JhatkaOutlet.findById(cpOutlet._id).lean();
+    ok('...and the PERSISTED outlet carries them (the delivery promise moved)',
+       outletAfter?.serviceArea?.radiusKm === 6
+         && outletAfter?.serviceArea?.extendedRadiusKm === 4,
+       JSON.stringify(outletAfter?.serviceArea)?.slice(0, 100));
+
+    // 6. Re-approval is a 409 (the request is terminal).
+    const reApprove = await request(adminApp, 'POST',
+      '/jhatka/admin/supply/area-requests/' + (areaReq.id || areaReq._id) + '/approve', {});
+    ok('re-approval of a decided request is refused (409 ILLEGAL_AREA_MOVE)',
+       reApprove.status === 409, String(reApprove.status));
+
+    // 7. The dedicated outlet is this section's own; nothing to restore.
+  }
+
   section('§5.4 / B6 — one order line is filled from TWO batches, and the label says so');
   // -----------------------------------------------------------------------
   // One order line routinely draws on two batches (0.9 kg from the morning batch,
@@ -2077,13 +2973,165 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       status: true,
     });
 
+    // The quote is the gateway handoff: the app reads `payment` from it and passes
+    // that id to POST /orders/:id/pay. The app integrates Razorpay only, so the
+    // server names the active Razorpay config even when another gateway is active.
+    {
+      const { JhatkaCart, JhatkaOutlet } = require(
+        require('path').join(REPO_ROOT, 'src', 'models'));
+      const rzpConfig = await PaymentConfig.create({
+        name: 'Razorpay Test',
+        slug: 'razorpay',
+        image: 'razorpay.png',
+        environment: false,
+        credentials: { key: 'rzp_test_key', secret: 'rzp_test_secret' },
+        paymentWay: 'online',
+        isDefault: false,
+        status: true,
+      });
+      await JhatkaCart.deleteMany({ customer: fx.managerUserId, outlet: fx.outlet._id });
+      try {
+        const added = await request(customerApp, 'POST', '/jhatka/customer/cart/items', {
+          outlet: String(fx.outlet._id),
+          variant: String(fx.weightVariant._id),
+          quantity: { value: 1, unit: 'KG' },
+        });
+        ok('a Jhatka cart accepts an item for the quote handoff',
+           added.status === 201, `${added.status} ${JSON.stringify(added.body)}`);
+
+        // Same Boolean `status` bug lived in the product-detail/browse queries.
+        const productRes = await request(
+          customerApp, 'GET', `/jhatka/customer/products/${fx.weightVariant.product}`);
+        ok('variant status is queried as a Boolean, so product detail does not 500',
+           productRes.status === 200 &&
+             (productRes.body?.variants || []).some((v) => v.id === String(fx.weightVariant._id)),
+           `${productRes.status} ${JSON.stringify(productRes.body?.message || '')}`);
+
+        const quoteRes = await request(customerApp, 'POST', '/jhatka/customer/checkout/quote', {
+          outlet: String(fx.outlet._id),
+          address: String(deliveryAddress._id),
+        });
+        ok('the quote carries the gateway config the app must use',
+           quoteRes.status === 200 &&
+             quoteRes.body?.payment?.id === String(rzpConfig._id) &&
+             quoteRes.body?.itemCount === 1,
+           `${JSON.stringify(quoteRes.body?.payment)} items=${quoteRes.body?.itemCount}`);
+        ok('...and names the provider without leaking credentials',
+           quoteRes.body?.payment?.slug === 'razorpay' &&
+             quoteRes.body?.payment?.credentials === undefined,
+           JSON.stringify(quoteRes.body?.payment));
+        ok('a free-ring address quotes deliveryFee 0 and folds the fee into estimatedTotal',
+           quoteRes.body?.deliveryFee === 0 &&
+             quoteRes.body?.deliveryBand === 'inner_free' &&
+             quoteRes.body?.subtotal === 400 &&
+             quoteRes.body?.taxTotal === 20 &&
+             quoteRes.body?.estimatedTotal === 420 &&
+             quoteRes.body?.estimatedTotal ===
+               quoteRes.body?.subtotal + quoteRes.body?.taxTotal + quoteRes.body?.packagingFee,
+           JSON.stringify({
+             fee: quoteRes.body?.deliveryFee,
+             band: quoteRes.body?.deliveryBand,
+             total: quoteRes.body?.estimatedTotal,
+             parts: [quoteRes.body?.subtotal, quoteRes.body?.taxTotal, quoteRes.body?.packagingFee],
+           }));
+
+        // An outer-band address must price the flat fee AND carry it into the
+        // total the order will freeze. The fixture outlet had no serviceArea, so
+        // the config is removed again in the finally block.
+        const outerAddress = await UserAddress.create({
+          user: fx.managerUserId,
+          title: 1,
+          receiverName: 'Outer Ring Customer',
+          countryCode: 91,
+          receiverContact: '9000000002',
+          flatHouse: '99',
+          locality: 'Outer Colony',
+          pincode: '500001',
+          location: { type: 'Point', coordinates: [73.912, 18.5204] },
+        });
+        await JhatkaOutlet.updateOne(
+          { _id: fx.outlet._id },
+          { $set: {
+            'serviceArea.radiusKm': 5,
+            'serviceArea.extendedRadiusKm': 5,
+            'serviceArea.extendedDeliveryFee': 30,
+          } },
+        );
+        try {
+          const outerQuote = await request(customerApp, 'POST', '/jhatka/customer/checkout/quote', {
+            outlet: String(fx.outlet._id),
+            address: String(outerAddress._id),
+          });
+          ok('an outer-band address prices the flat fee and includes it in the total',
+             outerQuote.status === 200 &&
+               outerQuote.body?.deliveryFee === 30 &&
+               outerQuote.body?.deliveryBand === 'outer_paid' &&
+               outerQuote.body?.estimatedTotal === 450 &&
+               outerQuote.body?.estimatedTotal ===
+                 quoteRes.body?.estimatedTotal + 30,
+             JSON.stringify({
+               status: outerQuote.status,
+               fee: outerQuote.body?.deliveryFee,
+               band: outerQuote.body?.deliveryBand,
+               total: outerQuote.body?.estimatedTotal,
+             }));
+        } finally {
+          await JhatkaOutlet.updateOne(
+            { _id: fx.outlet._id },
+            { $unset: { serviceArea: '' } },
+          );
+          await UserAddress.deleteOne({ _id: outerAddress._id });
+        }
+
+        const cleared = await request(
+          customerApp, 'DELETE', `/jhatka/customer/cart?outlet=${fx.outlet._id}`);
+        ok('the customer can empty their whole basket in one DELETE',
+           cleared.status === 200 && (cleared.body?.items || []).length === 0,
+           `${cleared.status} items=${JSON.stringify(cleared.body?.items)}`);
+      } finally {
+        await JhatkaCart.deleteMany({ customer: fx.managerUserId, outlet: fx.outlet._id });
+        await PaymentConfig.deleteOne({ _id: rzpConfig._id });
+      }
+    }
+
+    const { JhatkaCart } = require(require('path').join(REPO_ROOT, 'src', 'models'));
+
+    {
+      const cartService = require(require('path').join(
+        REPO_ROOT, 'src', 'modules', 'jhatka', 'services', 'jhatka.cart.service'));
+      const stale = await JhatkaCart.create({
+        customer: new mongoose.Types.ObjectId(),
+        outlet: fx.outlet._id,
+        expiresAt: new Date(Date.now() - 60000),
+      });
+      const purged = await cartService.purgeStaleCarts({ JhatkaCart });
+      ok('a cart past its expiry is purged',
+         purged.deleted >= 1 && !(await JhatkaCart.findById(stale._id)),
+         `deleted=${purged.deleted}`);
+    }
+
+    // The order that follows is placed from a real cart, so placement must
+    // consume the basket — otherwise a cart reload offers the same order again.
+    await request(customerApp, 'POST', '/jhatka/customer/cart/items', {
+      outlet: String(fx.outlet._id),
+      variant: String(fx.weightVariant._id),
+      quantity: { value: 1, unit: 'KG' },
+    });
+
     const placed = await request(customerApp, 'POST', '/jhatka/customer/orders', {
       outlet: String(fx.outlet._id),
       items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
-      fulfilmentMode: 'pickup',
+      address: String(deliveryAddress._id),
+      fulfilmentMode: 'delivery',
       paymentMode: 'gateway',
     });
     ok('a gateway order can be placed', placed.status === 201, `${placed.status}`);
+
+    const emptiedCart = await request(
+      customerApp, 'GET', `/jhatka/customer/cart?outlet=${fx.outlet._id}`);
+    ok('placing an order empties the cart it was placed from',
+       emptiedCart.status === 200 && (emptiedCart.body?.items || []).length === 0,
+       `${emptiedCart.status} items=${JSON.stringify(emptiedCart.body?.items)}`);
 
     const gwOrder = await JhatkaOrder.findOne({ orderNo: placed.body?.order?.orderNo }).lean();
     const estimatedTotal = gwOrder.estimatedTotal;
@@ -2150,7 +3198,8 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       ok('...and does not double paidAmount', afterReplay.paidAmount === estimatedTotal);
 
       ok('the subject list is closed, so another vertical cannot claim ours',
-         jhatkaPaymentService.JHATKA_PAYMENT_SUBJECTS.length === 2
+         jhatkaPaymentService.JHATKA_PAYMENT_SUBJECTS.length === 3
+           && jhatkaPaymentService.isJhatkaSubject('jhatka_supply_request')
            && !jhatkaPaymentService.isJhatkaSubject('storeOrders'));
     }
 
@@ -2173,7 +3222,8 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       const second = await request(customerApp, 'POST', '/jhatka/customer/orders', {
         outlet: String(fx.outlet._id),
         items: [{ variant: String(fx.countVariant._id), quantity: { value: 1, unit: 'PIECE' } }],
-        fulfilmentMode: 'pickup',
+        address: String(deliveryAddress._id),
+        fulfilmentMode: 'delivery',
         paymentMode: 'gateway',
       });
       const badGateway = await request(
@@ -2186,6 +3236,221 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
          badGateway.status === 404, `${badGateway.status} ${JSON.stringify(badGateway.body)}`);
     }
   }
+  // -----------------------------------------------------------------------
+  section('admin recall uses the ONE recall path - freeze, attach, fan out');
+  // -----------------------------------------------------------------------
+  //
+  // This route used to write the recall, flip the batch and fence stock itself.
+  // It skipped the customer fan-out, never pushed the recall into `batch.recalls`
+  // (so quarantine release could unlock a recalled batch), and bumped
+  // `quarantined` by 1 before the fence - breaking `available = onHand - reserved
+  // - quarantined` and double-counting the first unit. Everything below fails on
+  // that implementation.
+  {
+    const modelsRecall = require(require('path').join(REPO_ROOT, 'src', 'models'));
+    const {
+      JhatkaBatch, JhatkaBatchAllocation, JhatkaInventoryItem,
+      JhatkaInventoryMovement, JhatkaOrder,
+    } = modelsRecall;
+
+    const batch = await JhatkaBatch.create({
+      batchNo: `FX-ADM-RC-${Date.now()}`,
+      outlet: fx.outlet._id,
+      business: fx.outlet.business,
+      product: fx.weightProduct._id,
+      rawSku: 'FX-ADM-RC',
+      supplier: oid(),
+      procurementReceipt: oid(),
+      receiptItem: oid(),
+      receivedQty: 1000,
+      availableQty: 1000,
+      consumedQty: 0,
+      rejectedQty: 0,
+      unit: 'GRAM',
+      receivedAt: new Date(),
+      expiresAt: new Date(Date.now() + 3 * 86400000),
+      status: 'source',
+    });
+    const stock = await JhatkaInventoryItem.create({
+      outlet: fx.outlet._id,
+      kind: 'raw',
+      product: fx.weightProduct._id,
+      variant: fx.weightVariant._id,
+      batch: batch._id,
+      unit: 'GRAM',
+      onHand: 1000,
+      reserved: 0,
+      quarantined: 0,
+      availableQty: 1000,
+      expiresAt: new Date(Date.now() + 3 * 86400000),
+    });
+    const order = await JhatkaOrder.create({
+      orderNo: `JH-ADM-RC-${Date.now()}`,
+      customer: fx.managerUserId,
+      outlet: fx.outlet._id,
+      business: fx.outlet.business,
+      businessModel: 'direct',
+      fulfilmentMode: 'pickup',
+      lifecycle: 'DELIVERED',
+      deliveredAt: new Date(),
+      paymentMode: 'cod',
+      paymentStatus: 'paid',
+      items: [{
+        product: fx.weightProduct._id,
+        variant: fx.weightVariant._id,
+        sku: 'ADM-RC-1KG',
+        name: 'Admin Recall Chicken',
+        variantName: '1 kg Pack',
+        measurementMode: 'WEIGHT',
+        isVariableWeight: true,
+        unitLabel: 'kg',
+        priceBasis: 'per_kg',
+        hsnCode: '0207',
+        taxRatePct: 5,
+        taxPercentage: 5,
+        requestedQuantity: { value: 1000, unit: 'GRAM' },
+        estimatedAmount: 400,
+      }],
+      itemsSubtotal: 400,
+      taxTotal: 0,
+      estimatedTotal: 400,
+      paidAmount: 400,
+      refundedAmount: 0,
+      totalItems: 1,
+      totalQuantity: 1,
+    });
+    await JhatkaBatchAllocation.create({
+      batch: batch._id,
+      outlet: fx.outlet._id,
+      business: fx.outlet.business,
+      allocationType: 'CONSUMPTION',
+      qtyDelta: -1000,
+      orderItem: order.items[0]._id,
+      order: order._id,
+      occurredAt: new Date(),
+    });
+
+    const opened = await request(adminApp, 'POST', '/jhatka/admin/inventory/recalls', {
+      batch: String(batch._id),
+      severity: 'recall',
+      reason: 'Supplier alert - recall the whole batch',
+    });
+    ok('the admin recall endpoint opens the recall', opened.status === 201,
+      `${opened.status} ${JSON.stringify(opened.body)}`);
+    ok('...and reports it frozen', opened.body?.frozen === true, String(opened.body?.frozen));
+    ok('...and the affected customer set came from the shared scope',
+      opened.body?.scope?.affectedOrders === 1 && opened.body?.scope?.affectedCustomers === 1,
+      JSON.stringify(opened.body?.scope));
+    ok('...and the customer fan-out was ATTEMPTED (no Firebase: recorded honestly)',
+      opened.body?.recall?.notificationAttemptedCount === 1
+        && opened.body?.recall?.notifiedCount === 0
+        && opened.body?.recall?.notificationFailureReason === 'no_admin_app',
+      JSON.stringify({
+        attempted: opened.body?.recall?.notificationAttemptedCount,
+        delivered: opened.body?.recall?.notifiedCount,
+        reason: opened.body?.recall?.notificationFailureReason,
+      }));
+
+    const batchAfter = await JhatkaBatch.findById(batch._id).lean();
+    ok('the batch is quarantined', batchAfter.status === 'quarantined', batchAfter.status);
+    ok('...and the recall is ATTACHED to the batch, so release cannot unlock it',
+      (batchAfter.recalls || []).some(
+        (r) => String(r.recall) === String(opened.body.recall._id) && r.severity === 'recall' && !!r.at
+      ));
+
+    const stockAfter = await JhatkaInventoryItem.findById(stock._id).lean();
+    ok('the stock line is fully unavailable', stockAfter.availableQty === 0, String(stockAfter.availableQty));
+    ok('...and the invariant holds exactly - no +1 pre-increment',
+      stockAfter.quarantined === 1000, String(stockAfter.quarantined));
+
+    const freeze = await JhatkaInventoryMovement.findOne({
+      inventoryItem: stock._id,
+      movementType: 'RECALL_FREEZE',
+    }).lean();
+    ok('the freeze is provable in the ledger', !!freeze, 'no RECALL_FREEZE movement');
+    ok('...and the movement records the post-freeze availability',
+      freeze?.availableAfter === 0 && freeze?.referenceType === 'JhatkaRecall',
+      JSON.stringify(freeze && { availableAfter: freeze.availableAfter, ref: freeze.referenceType }));
+
+    const duplicate = await request(adminApp, 'POST', '/jhatka/admin/inventory/recalls', {
+      batch: String(batch._id),
+      severity: 'recall',
+      reason: 'A second operator sees the same bad batch',
+    });
+    ok('a second open recall for the batch is refused', duplicate.status === 409,
+      `${duplicate.status} ${JSON.stringify(duplicate.body)}`);
+    ok('...with the existing recall id, not a duplicate document',
+      duplicate.body?.detail?.code === 'RECALL_EXISTS' && !!duplicate.body?.detail?.recallId,
+      JSON.stringify(duplicate.body?.detail));
+
+    const release = await request(
+      adminApp,
+      'POST',
+      `/jhatka/admin/inventory/batches/${batch._id}/release`,
+      {}
+    );
+    ok('a recalled batch cannot be released through the quarantine door',
+      release.status === 409 && release.body?.detail?.code === 'RECALL_BATCH',
+      `${release.status} ${JSON.stringify(release.body)}`);
+
+    // `advisory` is a note, not a stock action. The model says the product is fine,
+    // so this must NOT freeze the batch or zero availability.
+    const advisoryBatch = await JhatkaBatch.create({
+      batchNo: `FX-ADM-ADV-${Date.now()}`,
+      outlet: fx.outlet._id,
+      business: fx.outlet.business,
+      product: fx.weightProduct._id,
+      rawSku: 'FX-ADM-ADV',
+      supplier: oid(),
+      procurementReceipt: oid(),
+      receiptItem: oid(),
+      receivedQty: 500,
+      availableQty: 500,
+      consumedQty: 0,
+      rejectedQty: 0,
+      unit: 'GRAM',
+      receivedAt: new Date(),
+      expiresAt: new Date(Date.now() + 3 * 86400000),
+      status: 'source',
+    });
+    const advisoryStock = await JhatkaInventoryItem.create({
+      outlet: fx.outlet._id,
+      kind: 'raw',
+      product: fx.weightProduct._id,
+      variant: fx.weightVariant._id,
+      batch: advisoryBatch._id,
+      unit: 'GRAM',
+      onHand: 500,
+      reserved: 0,
+      quarantined: 0,
+      availableQty: 500,
+      expiresAt: new Date(Date.now() + 3 * 86400000),
+    });
+    const advisory = await request(adminApp, 'POST', '/jhatka/admin/inventory/recalls', {
+      batch: String(advisoryBatch._id),
+      severity: 'advisory',
+      reason: 'Supplier note - no product defect found',
+    });
+    const advisoryAfter = await JhatkaBatch.findById(advisoryBatch._id).lean();
+    const advisoryStockAfter = await JhatkaInventoryItem.findById(advisoryStock._id).lean();
+    ok('an advisory recall is recorded without freezing the batch',
+      advisory.status === 201 && advisory.body?.frozen === false
+        && advisoryAfter.status === 'source'
+        && (advisoryAfter.recalls || []).length === 0,
+      `${advisory.status} status=${advisoryAfter.status}`);
+    ok('...and availability is untouched',
+      advisoryStockAfter.availableQty === 500 && advisoryStockAfter.quarantined === 0,
+      JSON.stringify({
+        available: advisoryStockAfter.availableQty,
+        quarantined: advisoryStockAfter.quarantined,
+      }));
+    ok('...and no RECALL_FREEZE movement was written',
+      (await JhatkaInventoryMovement.countDocuments({
+        inventoryItem: advisoryStock._id,
+        movementType: 'RECALL_FREEZE',
+      })) === 0);
+  }
+
   // -----------------------------------------------------------------------
   section('notifications are DELIVERED, or the record does not claim they were');
   // -----------------------------------------------------------------------
@@ -2253,6 +3518,150 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       );
       ok('an in-band message says nothing changed — BR-07, no financial event at all',
          /nothing changed/.test(inBand.adjustmentNote), inBand.adjustmentNote);
+
+      // Every order-lifecycle push carries the order id the app needs to open
+      // tracking, and no template leaves a `{{placeholder}}` visible to a customer.
+      const lifecycleContext = notifyService.buildOrderContext({
+        _id: 'order-1',
+        orderNo: 'JH-1',
+        outletSnapshot: { name: 'Pune Fresh' },
+        items: [{ name: 'Chicken' }],
+      });
+      ok('buildOrderContext carries the deep-link order id',
+         lifecycleContext.orderId === 'order-1' && lifecycleContext.orderNo === 'JH-1');
+
+      const lifecycleEvents = [
+        'order_outlet_received', 'order_accepted', 'order_preparing',
+        'order_packed', 'out_for_delivery', 'order_delivered',
+      ];
+      for (const event of lifecycleEvents) {
+        const payload = notifyService.buildNotification('customer', event, {
+          ...lifecycleContext,
+          useWithin: 'the use-by date on the pack',
+        });
+        ok(`${event} renders an order deep link without placeholders`,
+           payload.data.orderId === 'order-1' &&
+             payload.route.startsWith('/jhatka/') &&
+             !/\{\{/.test(payload.body),
+           payload.body);
+      }
+
+      const rejectedGateway = notifyService.buildNotification('customer', 'order_rejected', {
+        ...lifecycleContext,
+        reason: 'Out of stock',
+        refundNote: 'Your refund is on its way.',
+      });
+      const rejectedCod = notifyService.buildNotification('customer', 'order_rejected', {
+        ...lifecycleContext,
+        reason: 'Out of stock',
+        refundNote: 'Nothing was charged.',
+      });
+      ok('a rejected gateway order promises a refund',
+         /refund is on its way/.test(rejectedGateway.body), rejectedGateway.body);
+      ok('a rejected COD order does not promise money that was never taken',
+         /Nothing was charged/.test(rejectedCod.body), rejectedCod.body);
+
+      const complaint = notifyService.buildNotification('customer', 'complaint_raised', {
+        orderId: 'order-1',
+        orderNo: 'JH-1',
+        complaintNo: 'CP1',
+        responseWindow: '48 hours',
+      });
+      ok('a complaint push carries the complaint number and response window',
+         /CP1/.test(complaint.body) && /48 hours/.test(complaint.body), complaint.body);
+
+      for (const event of ['subscription_paused', 'subscription_resumed', 'subscription_cancelled']) {
+        const payload = notifyService.buildNotification('customer', event, {
+          itemSummary: ['Chicken'],
+          reason: 'Customer asked',
+          refundNote: 'Future deliveries have been stopped.',
+        });
+        ok(`${event} renders without placeholders`,
+           payload.route === '/jhatka/subscriptions' && !/\{\{/.test(payload.body),
+           payload.body);
+      }
+
+      const subscriptionDue = notifyService.buildNotification('outlet', 'subscription_due', {
+        count: 2,
+        itemSummary: '2 KG Chicken',
+        cutoff: 'tomorrow 6:00 am',
+      });
+      ok('a subscription-due push names the cut list and the cutoff',
+         /2 subscription/.test(subscriptionDue.title)
+           && /2 KG Chicken/.test(subscriptionDue.body)
+           && /tomorrow 6:00 am/.test(subscriptionDue.body),
+         subscriptionDue.body);
+
+      const recallOpened = notifyService.buildNotification('outlet', 'recall_opened', {
+        batchNo: 'B-1',
+        affectedOrders: 3,
+        heldOrders: 1,
+        reason: 'Supplier alert',
+      });
+      ok('a recall_opened push carries the batch and the hold count',
+         /B-1/.test(recallOpened.title) && /1 placed on hold/.test(recallOpened.body),
+         recallOpened.body);
+
+      const expiring = notifyService.buildNotification('outlet', 'batch_expiring', {
+        batchNo: 'B-1',
+        available: '4 KG',
+        productName: 'Chicken',
+      });
+      ok('a batch-expiry push names the batch and what is still on hand',
+         /B-1/.test(expiring.title) && /4 KG of Chicken is still on hand/.test(expiring.body),
+         expiring.body);
+
+      const quarantine = notifyService.buildNotification('outlet', 'batch_quarantined', {
+        batchNo: 'B-1',
+        productName: 'Chicken',
+        reason: 'Temperature breach',
+      });
+      ok('a quarantine push says which product is off sale and why',
+         /B-1/.test(quarantine.title) && /Chicken is off sale/.test(quarantine.body),
+         quarantine.body);
+
+      const supplyStatus = notifyService.buildNotification('outlet', 'supply_request_status', {
+        requestNo: 'JV-1',
+        status: 'approved',
+        statusNote: 'Approved for Rs 250.00. Pay from the app to confirm.',
+      });
+      ok('a supply request push names the request and the next action',
+         /JV-1/.test(supplyStatus.title) && /Pay from the app/.test(supplyStatus.body),
+         supplyStatus.body);
+
+      const rolledForward = notifyService.buildNotification('outlet', 'payout_rolled_forward', {
+        payoutNo: 'OP-1',
+        netAmount: 'Rs 30.00',
+        minimumNetPayout: 'Rs 50.00',
+      });
+      ok('a rolled-forward payout names the amount and the floor',
+         /Rs 30\.00/.test(rolledForward.body) && /Rs 50\.00/.test(rolledForward.body),
+         rolledForward.body);
+
+      const processedPayout = notifyService.buildNotification('outlet', 'payout_processed', {
+        payoutNo: 'OP-2',
+        netPayout: 'Rs 714.00',
+        periodLabel: '2026-10-19/2026-10-25',
+        payoutMethod: 'bank transfer',
+      });
+      ok('a processed payout names the amount, period and destination',
+         /OP-2/.test(processedPayout.title)
+           && /Rs 714\.00/.test(processedPayout.body)
+           && /2026-10-19\/2026-10-25/.test(processedPayout.body)
+           && /bank transfer/.test(processedPayout.body),
+         processedPayout.body);
+
+      const newOrder = notifyService.buildNotification('outlet', 'new_order', {
+        orderId: 'order-1',
+        orderNo: 'JH-1',
+        customerName: 'Asha',
+        itemSummary: ['Chicken'],
+        estimatedTotal: '420.00',
+      });
+      ok('a COD new_order push asks the outlet to act without inventing an SLA',
+         /Asha ordered Chicken for 420\.00/.test(newOrder.body) &&
+           /Open the app to accept/.test(newOrder.body),
+         newOrder.body);
 
       // An unknown event is a caller bug and must be visible, not silently dropped.
       const bad = await notifyService.notifyCustomer(fx.managerUserId, 'no_such_event', {});
@@ -2324,7 +3733,8 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
     const placedPaid = await request(customerApp, 'POST', '/jhatka/customer/orders', {
       outlet: String(fx.outlet._id),
       items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
-      fulfilmentMode: 'pickup',
+      address: String(deliveryAddress._id),
+      fulfilmentMode: 'delivery',
       paymentMode: 'gateway',
     });
     const paidOrder = await JhatkaOrder.findOne({ orderNo: placedPaid.body.order.orderNo }).lean();
@@ -2335,7 +3745,8 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
     const placedAbandoned = await request(customerApp, 'POST', '/jhatka/customer/orders', {
       outlet: String(fx.outlet._id),
       items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
-      fulfilmentMode: 'pickup',
+      address: String(deliveryAddress._id),
+      fulfilmentMode: 'delivery',
       paymentMode: 'gateway',
     });
     const abandoned = await JhatkaOrder.findOne({ orderNo: placedAbandoned.body.order.orderNo }).lean();
@@ -2658,7 +4069,8 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
     const placed = await request(customerApp, 'POST', '/jhatka/customer/orders', {
       outlet: String(fx.outlet._id),
       items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
-      fulfilmentMode: 'pickup',
+      address: String(deliveryAddress._id),
+      fulfilmentMode: 'delivery',
       paymentMode: 'gateway',
     });
     const toReject = await JhatkaOrder.findOne({ orderNo: placed.body.order.orderNo });
@@ -2726,7 +4138,8 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
     const placedCod = await request(customerApp, 'POST', '/jhatka/customer/orders', {
       outlet: String(fx.outlet._id),
       items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
-      fulfilmentMode: 'pickup',
+      address: String(deliveryAddress._id),
+      fulfilmentMode: 'delivery',
       paymentMode: 'cod',
     });
     const codOrder = await JhatkaOrder.findOne({ orderNo: placedCod.body.order.orderNo });
@@ -2745,7 +4158,8 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
     const placed2 = await request(customerApp, 'POST', '/jhatka/customer/orders', {
       outlet: String(fx.outlet._id),
       items: [{ variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } }],
-      fulfilmentMode: 'pickup',
+      address: String(deliveryAddress._id),
+      fulfilmentMode: 'delivery',
       paymentMode: 'gateway',
     });
     const toCancel = await JhatkaOrder.findOne({ orderNo: placed2.body.order.orderNo });

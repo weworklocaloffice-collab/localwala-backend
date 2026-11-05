@@ -72,6 +72,17 @@ const adminGetProvider = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ provider: doc });
 });
 
+const adminUpdateProvider = catchAsync(async (req, res) => {
+  const doc = await Provider.findById(req.params.id);
+  if (!doc) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
+  const allowed = ['fundAccountId'];
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) doc[key] = req.body[key];
+  }
+  await doc.save();
+  res.status(httpStatus.OK).send({ provider: doc });
+});
+
 const adminListOfferings = catchAsync(async (req, res) => {
   const filter = { ...pick(req.query, ['status', 'provider', 'service']) };
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
@@ -527,8 +538,11 @@ const myEarnings = catchAsync(async (req, res) => {
   const { fromPaise } = require('../../../utils/money');
   const or = [{ provider: provider._id }];
   if (provider.business) or.push({ provider: provider.business });
-  const bookings = await Booking.find({ $or: or }).select('_id').lean();
+  const bookings = await Booking.find({ $or: or }).select('_id status').lean();
   const ids = bookings.map((b) => String(b._id));
+  const totalBookings = bookings.length;
+  const completedBookings = bookings.filter((b) => b.status === 'COMPLETED').length;
+  const cancelledBookings = bookings.filter((b) => b.status === 'CANCELLED').length;
   const entries = ids.length ? await Entry.find({ bookingId: { $in: ids } }).lean() : [];
   let fees = 0, commission = 0, payable = 0, reversals = 0, reversalPayable = 0, customer = 0;
   for (const e of entries) {
@@ -552,6 +566,10 @@ const myEarnings = catchAsync(async (req, res) => {
     providerReversals: r2(reversalPayable),
     netPayable: r2(payable - reversalPayable),
     count: entries.length,
+    totalBookings,
+    completedBookings,
+    cancelledBookings,
+    conversionRate: totalBookings > 0 ? Number(((completedBookings / totalBookings) * 100).toFixed(2)) : 0,
   });
 });
 
@@ -566,4 +584,4 @@ const adminListAssignments = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(result);
 });
 
-module.exports = { registerProvider, myProvider, updateMyProvider, adminListProviders, adminGetProvider, adminListOfferings, adminListDocuments, adminListAssignments, submitProvider, transitionProvider, createOffering, updateOffering, listMyOfferings, submitOffering, transitionOffering, listOpenBookings, claimBooking, partnerTransitionBooking, listMyBookings, getBookingDetail, assignBooking, releaseAssignment, uploadDocument, listMyDocuments, verifyDocument, myEarnings, PROVIDER_TRANSITIONS, OFFERING_TRANSITIONS };
+module.exports = { registerProvider, myProvider, updateMyProvider, adminListProviders, adminGetProvider, adminUpdateProvider, adminListOfferings, adminListDocuments, adminListAssignments, submitProvider, transitionProvider, createOffering, updateOffering, listMyOfferings, submitOffering, transitionOffering, listOpenBookings, claimBooking, partnerTransitionBooking, listMyBookings, getBookingDetail, assignBooking, releaseAssignment, uploadDocument, listMyDocuments, verifyDocument, myEarnings, PROVIDER_TRANSITIONS, OFFERING_TRANSITIONS };

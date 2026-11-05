@@ -68,7 +68,11 @@ const {
   JhatkaVariant,
   JhatkaProduct,
   JhatkaPriceOverride,
-  JhatkaAddress,
+  // The shared platform address model. There has never been a JhatkaAddress —
+  // destructuring that name silently yielded `undefined`, so a delivery order
+  // with an address crashed at `findOne` with a 500. Address is shared
+  // platform per the plan's reuse list; Jhatka must not invent its own.
+  UserAddress,
   JhatkaCompliance,
   JhatkaRefund,
   JhatkaCart,
@@ -90,8 +94,10 @@ const { codCollectablePaise } = require('../utils/weight.arithmetic');
 const { fromGrams } = require('../utils/quantity');
 const paymentService = require('../services/jhatka.payment.service');
 const orderCreationService = require('../services/jhatka.order-creation.service');
+const deliveryFeeArithmetic = require('../utils/delivery.fee.arithmetic');
 const subscriptionLifecycle = require('../services/jhatka.subscription-lifecycle.service');
 const refundSettlement = require('../services/jhatka.refund.settlement');
+const notifyService = require('../services/jhatka.notify.service');
 
 /**
  * `dayKey` and `nextOccurrence` come from the PARTNER subscriptions router.
@@ -283,7 +289,7 @@ router.get('/outlets/:outlet', appAuth('jhatka_customer_order_list'), validate(V
       _id: req.params.outlet,
       status: 'active',
     })
-      .select('name outletCode address locality location serviceArea businessModel minDeliveryMinutes')
+      .select('name outletCode address locality location serviceArea businessModel minDeliveryMinutes orderConfig.pickupEnabled')
       .lean();
 
     if (!outlet) throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
@@ -296,6 +302,8 @@ router.get('/outlets/:outlet', appAuth('jhatka_customer_order_list'), validate(V
       locality: outlet.locality,
       serviceRadiusKm: outlet.serviceArea?.radiusKm ?? 5,
       minDeliveryMinutes: outlet.minDeliveryMinutes ?? outlet.orderConfig?.minDeliveryMinutes,
+      // OD-12: whether checkout may offer "pick up at the counter".
+      pickupEnabled: outlet.orderConfig?.pickupEnabled === true,
     });
   } catch (error) {
     return next(error);
@@ -340,7 +348,8 @@ router.get('/products/:product', appAuth('jhatka_customer_order_list'), validate
 
     const variants = await JhatkaVariant.find({
       product: product._id,
-      status: { $ne: 'archived' },
+      // Boolean on this model (see jhatka.variant.model.js), not 'archived'.
+      status: { $ne: false },
       isActive: { $ne: false },
     })
       .select('sku name measurementMode pricePerUnit priceBasis packSize isActive estimatedAvailability availabilityUnit status subscriptionEligible')
@@ -489,6 +498,13 @@ router.post('/complaints', appAuth('jhatka_customer_complaint_create'), validate
           note: subject,
         },
       ],
+    });
+
+    await notifyService.notifyCustomer(req.user._id, 'complaint_raised', {
+      orderId: String(order._id),
+      orderNo: order.orderNo,
+      complaintNo: complaint.complaintNo,
+      responseWindow: `${complaint.windowHours} hours`,
     });
 
     return res.status(201).json({
@@ -1010,6 +1026,30 @@ router.get('/cart', appAuth('jhatka_customer_order_create'), async (req, res, ne
 });
 
 /**
+ * DELETE /v1/jhatka/customer/cart?outlet=
+ *
+ * Empties the customer's basket for one outlet. Kept as a DELETE on the cart
+ * itself rather than a "remove every line" loop: a loop has no atomic answer to
+ * "the first removed, the third failed".
+ */
+router.delete('/cart', appAuth('jhatka_customer_order_create'), async (req, res, next) => {
+  try {
+    const outletId = req.query.outlet;
+    if (!outletId) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'outlet is required (a cart is per-outlet)');
+    }
+
+    const cart = await loadOrCreateCart(req.user._id, outletId);
+    cartService.clearCart(cart);
+    await cart.save();
+
+    return res.json(cartResponse(cart));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
  * POST /v1/jhatka/customer/cart/items
  *
  * Body: `{ outlet, variant, quantity: { value, unit } }`
@@ -1087,10 +1127,67 @@ router.post('/checkout/quote', appAuth('jhatka_customer_order_create'), validate
       throw new ApiError(httpStatus.NOT_FOUND, 'No cart for this outlet');
     }
 
-    const quote = await cartService.quoteCart(cart, { JhatkaVariant, JhatkaProduct });
+    // JhatkaOutlet rides along for quoteCart's pickupEnabled read — the
+    // pickup work added the read but never passed the model, so every quote
+    // with a non-empty cart 500'd. Caught by the two-band test's cart.
+    const quote = await cartService.quoteCart(cart, { JhatkaVariant, JhatkaProduct, JhatkaOutlet });
+
+    // Two-band delivery fee preview (OD-12 companion): priced when the customer
+    // names a saved address; absent otherwise. The ORDER's fee is computed
+    // again at creation from the same arithmetic — the quote promises, the
+    // order binds, and both read the same config.
+    const addressId = req.body?.address;
+    let delivery = { feePaise: 0, distanceKm: null, band: 'no_address', serviceable: true };
+    if (addressId) {
+      const outlet = await JhatkaOutlet.findById(outletId).lean();
+      const address = await UserAddress.findOne({ _id: addressId, user: req.user._id }).lean();
+      if (outlet && address) {
+        delivery = deliveryFeeArithmetic.resolveDeliveryFee({
+          outlet,
+          addressLocation: address.location,
+        });
+        // The cart carries the fee so the order it becomes inherits it.
+        cart.deliveryFee = delivery.feePaise / 100;
+      }
+    } else {
+      // A quote without an address is a pickup/no-address preview. Zeroing here
+      // stops the fee from a previous address outliving the selection.
+      cart.deliveryFee = 0;
+    }
+
+    // quoteCart priced BEFORE the address fee existed, so estimatedTotal was the
+    // fee-less total. Reprice once the fee is known; the customer must see the
+    // same number the order will freeze.
+    await cartService.repriceCart(cart, { JhatkaVariant, JhatkaProduct, JhatkaOutlet });
     await cart.save();
 
-    return res.json(quote);
+    quote.subtotal = cart.subtotal;
+    quote.taxTotal = cart.taxTotal;
+    quote.estimatedTotal = cart.estimatedTotal;
+    quote.deliveryFee = cart.deliveryFee;
+    quote.packagingFee = cart.packagingFee;
+
+    if (addressId && !delivery.serviceable) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        "This address is outside the outlet's delivery area",
+        true, '',
+        { code: delivery.reason || 'OUT_OF_SERVICE_AREA', distanceKm: delivery.distanceKm }
+      );
+    }
+
+    // Carry the gateway config back with the prices: the app passes this id to
+    // `POST /orders/:id/pay`, so the quote is the handoff. `null` means no gateway
+    // is configured; the app says so rather than guessing a provider.
+    const payment = await paymentService.resolveCheckoutPaymentConfig();
+
+    return res.json({
+      ...quote,
+      payment,
+      deliveryFee: delivery.feePaise / 100,
+      deliveryBand: delivery.band,
+      deliveryDistanceKm: delivery.distanceKm,
+    });
   } catch (error) {
     return next(error);
   }
@@ -1137,13 +1234,45 @@ router.post('/orders', appAuth('jhatka_customer_order_create'), validate(V.order
         JhatkaVariant,
         JhatkaProduct,
         JhatkaPriceOverride,
-        JhatkaAddress,
+        UserAddress,
         JhatkaOrder,
       },
       // From the TOKEN, never from the body. 0.0.
       customerId: req.user._id,
       body: req.body,
     });
+
+    // A COD order is actionable NOW: the outlet has no payment callback coming, so
+    // this is the only signal it will get. Gateway orders are announced by
+    // `order_paid` in the payment service, after the money is actually captured.
+    if (order.paymentMode === 'cod') {
+      await notifyService.notifyOutlet(order.outlet, 'new_order', {
+        orderId: String(order._id),
+        orderNo: order.orderNo,
+        customerName: req.user.name,
+        itemSummary: order.items.map((item) => item.name),
+        estimatedTotal: order.estimatedTotal.toFixed(2),
+      });
+    }
+
+    // The basket is consumed once its order exists. Clearing here, server-side,
+    // is what stops a reloaded cart screen from offering the same items again.
+    // Best-effort: the order is already committed, so a failed clear must NOT
+    // become an error the client retries (which would place a duplicate order).
+    try {
+      const cartFilter = { customer: req.user._id, outlet: req.body.outlet };
+      if (req.body.cart) cartFilter._id = req.body.cart;
+      const cart = await JhatkaCart.findOne(cartFilter);
+      if (cart) {
+        cartService.clearCart(cart);
+        await cart.save();
+      }
+    } catch (error) {
+      console.error(
+        `[jhatka.customer] could not clear cart after order ${order._id}:`,
+        error.message
+      );
+    }
 
     return res.status(httpStatus.CREATED).json({
       order: orderCreationService.toCustomerView(order),
@@ -1289,7 +1418,7 @@ router.get('/orders/:id', appAuth('jhatka_customer_order_list'), validate(V.orde
 router.get('/orders/:id/tracking', appAuth('jhatka_customer_order_track'), validate(V.orderIdParam), async (req, res, next) => {
   try {
     const order = await JhatkaOrder.findById(req.params.id)
-      .select('orderNo lifecycle delivery acceptedAt weightConfirmedAt readyAt pickedUpAt deliveredAt completedAt promisedDeliveryAt')
+      .select('customer orderNo lifecycle fulfilmentMode delivery placedAt acceptedAt weightConfirmedAt readyAt pickedUpAt deliveredAt completedAt promisedDeliveryAt')
       .lean();
     if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
     if (String(order.customer) !== String(req.user._id)) {
@@ -1301,14 +1430,19 @@ router.get('/orders/:id/tracking', appAuth('jhatka_customer_order_track'), valid
       { key: 'accepted', at: order.acceptedAt, label: 'Accepted by outlet' },
       { key: 'weight_confirmed', at: order.weightConfirmedAt, label: 'Weight confirmed' },
       { key: 'ready', at: order.readyAt, label: 'Packed and ready' },
-      { key: 'picked_up', at: order.pickedUpAt, label: 'Picked up' },
-      { key: 'delivered', at: order.deliveredAt, label: 'Delivered' },
+      // A pickup order never reaches these two — the counter hand-over moves
+      // READY straight to COMPLETED — so the app drops them by mode, not by
+      // waiting for timestamps that will never arrive.
+      { key: 'picked_up', at: order.fulfilmentMode === 'pickup' ? order.completedAt : order.pickedUpAt, label: order.fulfilmentMode === 'pickup' ? 'Collected at counter' : 'Picked up' },
+      { key: 'delivered', at: order.fulfilmentMode === 'pickup' ? order.completedAt : order.deliveredAt, label: order.fulfilmentMode === 'pickup' ? 'Collected at counter' : 'Delivered' },
       { key: 'completed', at: order.completedAt, label: 'Completed' },
     ];
 
     return res.json({
       orderNo: order.orderNo,
       lifecycle: order.lifecycle,
+      // OD-12: the app shows "pick up at the counter" and hides rider states.
+      fulfilmentMode: order.fulfilmentMode || 'delivery',
       hasDriver: !!order.delivery,
       promisedDeliveryAt: order.promisedDeliveryAt,
       milestones: milestones.map((m) => ({

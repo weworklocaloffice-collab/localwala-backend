@@ -210,6 +210,20 @@ const storeChainSchema = mongoose.Schema(
         required: false,
         default: 25,
       },
+      prorationPolicy: {
+        mode: {
+          type: String,
+          required: false,
+          default: 'none',
+          enum: ['none', 'daily', 'weekly'],
+        },
+        onCancellation: {
+          type: String,
+          required: false,
+          default: 'credit_remaining',
+          enum: ['credit_remaining', 'refund_remaining', 'none'],
+        },
+      },
     },
 
     rating: {

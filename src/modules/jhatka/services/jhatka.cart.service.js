@@ -50,7 +50,10 @@ async function loadPricing(models, items) {
 
   const variants = await JhatkaVariant.find({
     _id: { $in: variantIds },
-    status: { $ne: 'archived' },
+    // `JhatkaVariant.status` is a Boolean, not the 'archived' string the
+    // promotion/outlet models use. Casting the old literal throws on every
+    // real cart read (unit tests used plain objects, so they never cast).
+    status: { $ne: false },
   })
     .select('product measurementMode pricePerUnit priceBasis isActive')
     .lean();
@@ -106,7 +109,7 @@ async function repriceCart(cart, models) {
 
     // The LIVE price, in rupees. `variant` is a lean read, so `pricePerUnit` is raw
     // paise here — this is the read that must not be confused with a moneyField getter.
-    const liveUnitPriceRupees = toPaiseAmount(variant.pricePerUnit) / 100;
+    const liveUnitPriceRupees = variant.pricePerUnit / 100;
 
     item.unitPrice = liveUnitPriceRupees;
     item.lineTotal = liveUnitPriceRupees;
@@ -114,7 +117,7 @@ async function repriceCart(cart, models) {
     // Identical arithmetic to the order path, so basket and order agree.
     const linePaise = linePricePaise(
       item.quantity,
-      toPaiseAmount(variant.pricePerUnit),
+      variant.pricePerUnit,
       variant.priceBasis
     );
     const lineRupees = linePaise / 100;
@@ -132,9 +135,9 @@ async function repriceCart(cart, models) {
     taxPaise += lineTaxPaise;
 
     // What checkout would freeze, and whether it moved since the customer added it.
-    item.unitPriceAtAddPaise = toPaiseAmount(item.unitPriceAtAdd || 0);
+    const unitPriceAtAddPaise = toPaiseAmount(item.unitPriceAtAdd || 0);
     item.priceChanged =
-      item.unitPriceAtAddPaise > 0 && item.unitPriceAtAddPaise !== toPaiseAmount(variant.pricePerUnit);
+      unitPriceAtAddPaise > 0 && unitPriceAtAddPaise !== Number(variant.pricePerUnit);
   }
 
   cart.subtotal = asMoney(subtotalPaise);
@@ -170,7 +173,7 @@ async function addToCart(cart, { variant, quantity }, models) {
 
   const v = await JhatkaVariant.findById(variant).lean();
   if (!v) throw new ApiError(httpStatus.NOT_FOUND, 'Variant not found');
-  if (v.status === 'archived' || v.isActive === false) {
+  if (v.status === false || v.isActive === false) {
     throw new ApiError(httpStatus.CONFLICT, 'This product is no longer available', true, '', {
       code: 'VARIANT_UNAVAILABLE',
     });
@@ -216,7 +219,7 @@ async function addToCart(cart, { variant, quantity }, models) {
       quantity: { value: quantity.value, unit: quantity.unit, approximate: false },
       measurementMode,
       // Captured so the app can report a price move. Not used to charge.
-      unitPriceAtAdd: asMoney(toPaiseAmount(v.pricePerUnit) / 100),
+      unitPriceAtAdd: asMoney(v.pricePerUnit),
       addedAt: new Date(),
     });
   }
@@ -269,6 +272,49 @@ async function removeCartItem(cart, itemId, models) {
 }
 
 /**
+ * Empty a cart after its basket becomes an order (or on request).
+ *
+ * MUTATES and returns the cart; the caller saves it. The document is KEPT rather
+ * than deleted because `{ customer, outlet }` is unique — deleting it would only
+ * make the next visit create the same row again. Clearing is therefore idempotent.
+ *
+ * This is what stops a reloaded cart screen from offering the basket that was
+ * just ordered. The order is already committed when this runs; a failure to clear
+ * is logged by the caller and never turns a placed order into a retryable 500.
+ */
+function clearCart(cart) {
+  cart.items = [];
+  cart.subtotal = 0;
+  cart.taxTotal = 0;
+  cart.estimatedTotal = 0;
+  cart.deliveryFee = 0;
+  cart.packagingFee = 0;
+  cart.fulfilmentMode = 'delivery';
+  cart.address = undefined;
+  cart.instructions = { customerNote: undefined };
+  cart.lastActivityAt = new Date();
+  cart.expiresAt = new Date(Date.now() + 7 * 86400000);
+  // A fresh basket is not the converted cart of the previous checkout.
+  cart.convertedToOrder = undefined;
+  cart.convertedAt = undefined;
+  return cart;
+}
+
+/**
+ * Delete carts whose seven-day expiry has passed.
+ *
+ * The `{ expiresAt: 1 }` index makes this a range delete rather than a collection
+ * scan. An abandoned basket is not an order, a reservation or a liability.
+ */
+async function purgeStaleCarts({ JhatkaCart, now = new Date() } = {}) {
+  if (!JhatkaCart) {
+    throw new Error('purgeStaleCarts requires the JhatkaCart model');
+  }
+  const result = await JhatkaCart.deleteMany({ expiresAt: { $lt: now } });
+  return { deleted: result.deletedCount || 0 };
+}
+
+/**
  * A checkout quote: what this basket costs right now, and whether it can be placed.
  *
  * Deliberately NOT the order. It re-prices from the catalogue and reports blockers,
@@ -277,6 +323,13 @@ async function removeCartItem(cart, itemId, models) {
  */
 async function quoteCart(cart, models) {
   await repriceCart(cart, models);
+
+  // OD-12: the checkout needs to know whether to offer the pickup toggle. One
+  // indexed read on the cart's own outlet — the quote is where checkout reads
+  // everything else, so the flag belongs here rather than a second round trip.
+  const outletDoc = await models.JhatkaOutlet.findById(cart.outlet)
+    .select('orderConfig.pickupEnabled')
+    .lean();
 
   const blockers = [];
 
@@ -311,6 +364,8 @@ async function quoteCart(cart, models) {
     deliveryFee: cart.deliveryFee,
     packagingFee: cart.packagingFee,
     itemCount: (cart.items || []).length,
+    // Whether this outlet allows the customer to collect at the counter.
+    pickupEnabled: outletDoc?.orderConfig?.pickupEnabled === true,
     blockers,
     canCheckout: blockers.length === 0,
     // Expires with the cart, so a stale quote cannot be checked out days later.
@@ -323,6 +378,8 @@ module.exports = {
   addToCart,
   updateCartItem,
   removeCartItem,
+  clearCart,
+  purgeStaleCarts,
   quoteCart,
   loadPricing,
 };

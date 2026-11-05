@@ -186,6 +186,13 @@ const run = async () => {
   ck('an unavailable line records zero fulfilled', lineB.fulfilledQuantity === 0);
   ck('an unavailable line is marked unavailable', lineB.fulfilment === 'unavailable', lineB.fulfilment);
 
+  const refreshed = await pickingService.getPickList(order._id, { outlet: OUTLET });
+  const refreshA = refreshed.find((r) => String(r.variant) === String(VARIANT_A));
+  const refreshB = refreshed.find((r) => String(r.variant) === String(VARIANT_B));
+  ck('a reloaded pick list reflects the picked line', refreshA.status === 'picked', refreshA.status);
+  ck('a reloaded pick list shows the picked quantity', refreshA.pickedQuantity === 3, refreshA.pickedQuantity);
+  ck('a reloaded pick list reflects the unavailable line', refreshB.status === 'unavailable', refreshB.status);
+
   console.log('\n=== the guards ===\n');
 
   let tooMany = false;
@@ -211,6 +218,26 @@ const run = async () => {
     crossPick = e.statusCode === 404;
   }
   ck('picking through another outlet is a 404', crossPick);
+
+  const unaccepted = await makeOrder({ lifecycle: 'created' });
+  let notPickable = false;
+  try {
+    await pickingService.pickItem({
+      orderId: unaccepted._id, outlet: OUTLET, variant: VARIANT_A, pickedQuantity: 1, status: 'picked',
+    });
+  } catch (e) {
+    notPickable = e.statusCode === 422 && /ORDER_NOT_PICKABLE/.test(e.message);
+  }
+  ck('a created order cannot be picked before acceptance', notPickable);
+
+  const unpacked = await makeOrder({});
+  let notPackable = false;
+  try {
+    await pickingService.completePacking({ orderId: unpacked._id, outlet: OUTLET, packageCount: 1 });
+  } catch (e) {
+    notPackable = e.statusCode === 422 && /ORDER_NOT_PACKABLE/.test(e.message);
+  }
+  ck('packing a not-yet-picking order is refused', notPackable);
 
   console.log('\n=== BR-31: substitution is recorded or refused ===\n');
 
@@ -253,6 +280,7 @@ const run = async () => {
   ck('packing records the weight', packed.packing.totalWeightGrams === 1500);
   ck('packing records fragility', packed.packing.fragile === true);
   ck('packing is timestamped', !!packed.packing.completedAt);
+  ck('packing advances the order to packing', packed.lifecycle === 'packing', packed.lifecycle);
 
   console.log('\n=== partial fulfilment economics ===\n');
 
@@ -291,7 +319,7 @@ run()
   .finally(async () => {
     try {
       await cleanup();
-    } catch (e) {
+    } catch {
       /* the run already failed; cleanup errors must not mask it */
     }
     await mongoose.disconnect();

@@ -344,13 +344,51 @@ async function quarantineBatch({
     batchDoc.quarantineReason = reason;
     await batchDoc.save({ session });
 
-    // Quarantine is a movement, not a state change in isolation: the ledger has to
-    // show the stock left saleable stock, or the FEFO sweep keeps offering it.
-    await models.JhatkaInventoryItem.updateMany(
-      { batch: batchDoc._id, outlet: outletId },
-      { $inc: { quarantined: 0 } },
-      { session }
-    );
+    // Quarantine fences EVERYTHING currently available on the batch: the stock
+    // moves out of `availableQty` into the `quarantined` counter, so
+    // `availableQty = onHand - reserved - quarantined` keeps holding and the
+    // FEFO sweep cannot offer fenced stock. The old version wrote
+    // `$inc: { quarantined: 0 }` — a no-op that left a "quarantined" batch's
+    // stock fully sellable.
+    const items = await models.JhatkaInventoryItem.find({
+      batch: batchDoc._id, outlet: outletId,
+    }).session(session);
+
+    for (const item of items) {
+      const fence = Math.max(0, Number(item.availableQty || 0));
+      if (fence > 0) {
+        item.quarantined = Number(item.quarantined || 0) + fence;
+        item.availableQty = 0;
+      }
+      const movementSeq = await receiptService.nextSeq(
+        { JhatkaInventoryMovement: models.JhatkaInventoryMovement },
+        session,
+        item._id
+      );
+      await models.JhatkaInventoryMovement.create(
+        [
+          {
+            outlet: outletId,
+            inventoryItem: item._id,
+            kind: item.kind,
+            movementType: 'RECALL_FREEZE',
+            qtyDelta: 0,
+            reservedDelta: 0,
+            onHandAfter: item.onHand,
+            reservedAfter: item.reserved,
+            availableAfter: item.availableQty,
+            reason: `Quarantine: ${reason}`,
+            referenceType: 'JhatkaBatch',
+            referenceId: batchDoc._id,
+            movementSeq,
+            performedBy: actor._id,
+            performedByName: actor.name,
+          },
+        ],
+        { session }
+      );
+      await item.save({ session });
+    }
 
     return {
       batch: {
@@ -359,6 +397,7 @@ async function quarantineBatch({
         status: batchDoc.status,
         quarantinedAt: batchDoc.quarantinedAt,
         quarantineReason: batchDoc.quarantineReason,
+        fencedItems: items.length,
       },
     };
   });
@@ -396,6 +435,32 @@ async function releaseBatch({
       { status: batchDoc.status }
     );
   }
+  // A batch with a recall against it is frozen by the recall, not by an
+  // operational quarantine. Releasing it here would be a partner lifting a
+  // food-safety hold on their own stock — the recall process (admin, compliance
+  // officer) owns that batch. Write it off if it is genuinely dead stock.
+  if ((batchDoc.recalls || []).length > 0) {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      `Batch ${batchDoc.batchNo} has a recall against it and is released through the recall process, not the quarantine release route`,
+      true,
+      '',
+      { code: 'RECALL_BATCH' }
+    );
+  }
+  // The expiry sweep only flips `source`/`opened` batches, so stock that expired
+  // WHILE fenced is still sitting in the `quarantined` counter with the batch
+  // looking merely quarantined. Releasing it would recompute availability from
+  // the invariant and put expired meat back on sale. It must be written off.
+  if (batchDoc.expiresAt && new Date(batchDoc.expiresAt).getTime() <= Date.now()) {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      `Batch ${batchDoc.batchNo} expired while quarantined — write it off, do not release it back on sale`,
+      true,
+      '',
+      { code: 'EXPIRED_BATCH' }
+    );
+  }
 
   return inTransaction(models, async (session) => {
     batchDoc.status = batchDoc.consumedQty > 0 ? 'opened' : 'source';
@@ -403,12 +468,59 @@ async function releaseBatch({
     batchDoc.quarantineReason = undefined;
     await batchDoc.save({ session });
 
+    // Unfence: everything still in the `quarantined` counter goes back on sale,
+    // recomputed from the invariant rather than added back, so stock that was
+    // written off while fenced cannot resurrect.
+    const items = await models.JhatkaInventoryItem.find({
+      batch: batchDoc._id, outlet: outletId,
+    }).session(session);
+
+    for (const item of items) {
+      const fenced = Number(item.quarantined || 0);
+      if (fenced > 0) {
+        item.quarantined = 0;
+        item.availableQty = Math.max(
+          0,
+          Number(item.onHand || 0) - Number(item.reserved || 0)
+        );
+      }
+      const movementSeq = await receiptService.nextSeq(
+        { JhatkaInventoryMovement: models.JhatkaInventoryMovement },
+        session,
+        item._id
+      );
+      await models.JhatkaInventoryMovement.create(
+        [
+          {
+            outlet: outletId,
+            inventoryItem: item._id,
+            kind: item.kind,
+            movementType: 'QUARANTINE_RELEASE',
+            qtyDelta: 0,
+            reservedDelta: 0,
+            onHandAfter: item.onHand,
+            reservedAfter: item.reserved,
+            availableAfter: item.availableQty,
+            reason: `Release: ${reason}`,
+            referenceType: 'JhatkaBatch',
+            referenceId: batchDoc._id,
+            movementSeq,
+            performedBy: actor._id,
+            performedByName: actor.name,
+          },
+        ],
+        { session }
+      );
+      await item.save({ session });
+    }
+
     return {
       batch: {
         id: String(batchDoc._id),
         batchNo: batchDoc.batchNo,
         status: batchDoc.status,
         releasedAt: batchDoc.releasedAt,
+        releasedItems: items.length,
       },
     };
   });

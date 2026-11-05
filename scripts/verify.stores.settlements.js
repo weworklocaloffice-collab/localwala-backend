@@ -153,6 +153,30 @@ const run = async () => {
   const countForWindow = await Settlement.countDocuments({ counterparty: BUSINESS, store: OUTLET, period: 'custom', from: FROM, to: TO });
   ck('and does not create a second row', countForWindow === 1, `count=${countForWindow}`);
 
+  console.log('\n=== BR-38: the active outlet scopes the statement ===\n');
+
+  const otherOutlet = new mongoose.Types.ObjectId();
+  const own = await settlementService.getSettlement(first._id, { outlet: OUTLET });
+  ck('the owning outlet can read its settlement', String(own._id) === String(first._id));
+
+  let leaked = null;
+  try {
+    await settlementService.getSettlement(first._id, { outlet: otherOutlet });
+  } catch (error) {
+    leaked = error;
+  }
+  ck('another outlet gets 404, not the statement', leaked && leaked.statusCode === 404);
+
+  let writeLeaked = null;
+  try {
+    await settlementService.markFailed(first._id, { failureReason: 'scope probe' }, { outlet: otherOutlet });
+  } catch (error) {
+    writeLeaked = error;
+  }
+  ck('another outlet cannot mutate the settlement', writeLeaked && writeLeaked.statusCode === 404);
+  const unchanged = await Settlement.findById(first._id).select('status').lean();
+  ck('the rejected write left the status untouched', unchanged.status === 'pending', unchanged.status);
+
   console.log('\n=== BR-14: no mandatory commission ===\n');
 
   ck('totals.platformFees is zero', Number(first.totals.platformFees) === 0, first.totals.platformFees);

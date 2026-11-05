@@ -42,7 +42,8 @@ function getExtensionFromMime(mimeType) {
     'image/png': '.png',
     'image/webp': '.webp',
     'image/gif': '.gif',
-    'image/svg+xml': '.svg',
+        'image/svg+xml': '.svg',
+        'application/pdf': '.pdf',
   };
   return mimeMap[mimeType] || '';
 }
@@ -98,7 +99,7 @@ const uploadImage = catchAsync(async (req, res) => {
         }
         // Enterprise attachment policy: magic-byte + active-content check on
         // the stored bytes, not the client header. Rejects delete the file.
-        uploadMiddleware.verifyUploadedImage(req.file);
+        uploadMiddleware.verifyUploadedFile(req.file);
         let uploadedPath = '';
         if (storageType === 'gcs') {
           // GCS Upload

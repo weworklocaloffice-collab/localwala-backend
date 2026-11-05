@@ -460,6 +460,31 @@ router.post('/:order/dispatch', ...partnerAuth, validate(V.orderParam), async (r
   }
 });
 
+// ---------------------------------------------------------------------------
+// POST /jhatka/partner/orders/:order/collect
+//
+// OD-12: the counter hand-over for a PICKUP order — READY → COMPLETED, no
+// rider, no delivery document. The mirror of /dispatch, and mutually exclusive
+// with it: each refuses the other's fulfilment mode. The handover OTP is
+// optional and is the same code the rider flow verifies.
+// ---------------------------------------------------------------------------
+router.post('/:order/collect', ...partnerAuth, validate(V.orderParam), validate(V.collectBody), async (req, res, next) => {
+  try {
+    profileService.assertCan(req.role, 'packing.complete');
+
+    const order = await loadOwnOrder(req.params.order, req.outletId);
+
+    const result = await fulfilmentService.collectOrder({
+      order,
+      body: req.body || {},
+      actor: { _id: req.user._id, name: req.user.name },
+    });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
 /**
  * Exported for the vertical verifier, which asserts the transition table is
  * derived from the model enum rather than hand-maintained beside it.

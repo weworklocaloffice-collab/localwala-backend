@@ -117,6 +117,22 @@ const storeBrandSchema = mongoose.Schema(
     certifications: [
       {
         _id: false,
+        // The chain that submitted the letter. Admin-created certifications leave this
+        // empty and apply platform-wide; partner submissions are scoped to their chain.
+        chain: {
+          type: mongoose.SchemaTypes.ObjectId,
+          ref: 'StoreChain',
+          required: false,
+        },
+        requestedBy: {
+          type: mongoose.SchemaTypes.ObjectId,
+          ref: 'User',
+          required: false,
+        },
+        submittedAt: {
+          type: Date,
+          required: false,
+        },
         type: {
           type: String,
           required: false,
@@ -151,6 +167,15 @@ const storeBrandSchema = mongoose.Schema(
           required: false,
         },
         verifiedAt: {
+          type: Date,
+          required: false,
+        },
+        rejectionReason: {
+          type: String,
+          required: false,
+          trim: true,
+        },
+        expiredAt: {
           type: Date,
           required: false,
         },
@@ -200,6 +225,28 @@ const storeBrandSchema = mongoose.Schema(
         required: false,
       },
     },
+    // A duplicate brand is archived and points at the canonical row. Nothing is
+    // hard-deleted (BR-25), so historic references stay resolvable while every live
+    // product is moved to `mergedInto`.
+    mergedInto: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'StoreBrand',
+      required: false,
+    },
+    mergedAt: {
+      type: Date,
+      required: false,
+    },
+    mergedBy: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'User',
+      required: false,
+    },
+    mergeNote: {
+      type: String,
+      required: false,
+      trim: true,
+    },
     rating: {
       type: Number,
       required: false,
@@ -229,13 +276,30 @@ storeBrandSchema.index({ aliases: 1 });
 storeBrandSchema.index({ name: 1 });
 storeBrandSchema.index({ status: 1, categories: 1 });
 storeBrandSchema.index({ 'certifications.validTo': 1 });
+storeBrandSchema.index({ mergedInto: 1 });
 
-/** A certification is valid only while approved and unexpired. */
+/** A certification is valid only while approved and inside its validity window. */
 storeBrandSchema.statics.isCertified = function isCertified(brand) {
   if (!brand || !Array.isArray(brand.certifications)) return false;
   const now = new Date();
   return brand.certifications.some(
-    (c) => c.status === 'approved' && (!c.validTo || c.validTo > now)
+    (c) =>
+      c.status === 'approved' &&
+      (!c.validFrom || c.validFrom <= now) &&
+      (!c.validTo || c.validTo > now)
+  );
+};
+
+/** Chain-scoped certification check. */
+storeBrandSchema.statics.hasChainCertification = function hasChainCertification(brand, chainId) {
+  if (!brand || !Array.isArray(brand.certifications)) return false;
+  const now = new Date();
+  return brand.certifications.some(
+    (c) =>
+      (!chainId || !c.chain || String(c.chain) === String(chainId)) &&
+      c.status === 'approved' &&
+      (!c.validFrom || c.validFrom <= now) &&
+      (!c.validTo || c.validTo > now)
   );
 };
 

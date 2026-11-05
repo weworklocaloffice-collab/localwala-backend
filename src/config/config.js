@@ -55,7 +55,7 @@ const envVarsSchema = Joi.object()
     MAX_UPLOAD_FILE_SIZE: Joi.number().default(1048576),
     PREPEND_UPLOAD_FILE_NAME_METHOD: Joi.string().default('millisecond'),
     PREPEND_UPLOAD_FILE_NAME_RANDOM_STRING_LENGTH: Joi.number().default(10),
-    ALLOW_UPLOAD_FILE_TYPE: Joi.string().allow('').default(''),
+    ALLOW_UPLOAD_FILE_TYPE: Joi.string().allow('').default('image/webp,image/png,image/jpeg,image/jpg,image/gif,image/svg+xml,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv'),
     REALESTATE_HOLD_DEFAULT_PRINCIPAL: Joi.number().default(50000),
     REALESTATE_HOLD_SERVICE_FEE_PERCENT: Joi.number().default(5.0),
     REALESTATE_HOLD_DURATION_DAYS: Joi.number().default(15),
@@ -88,6 +88,18 @@ if (error) {
   throw new Error(`Config validation error: ${error.message}`);
 }
 
+// Signing every access token with the public default is an auth bypass once the API
+// is reachable. Development keeps the convenience default; production must supply a
+// real secret, and a short one is not a secret.
+if (
+  envVars.NODE_ENV === 'production'
+  && (!envVars.JWT_SECRET || envVars.JWT_SECRET === 'change-this-secret' || envVars.JWT_SECRET.length < 32)
+) {
+  throw new Error(
+    'Config validation error: JWT_SECRET must be set to a non-default value of at least 32 characters in production'
+  );
+}
+
 const jwtExpiresIn = envVars.JWT_EXPIRES_IN || `${envVars.JWT_ACCESS_EXPIRATION_MINUTES}m`;
 const jwtCookieMaxAgeMs =
   envVars.JWT_COOKIE_MAX_AGE_MS || envVars.JWT_ACCESS_EXPIRATION_MINUTES * 60 * 1000;
@@ -97,7 +109,12 @@ module.exports = {
   port: envVars.PORT,
   mongoose: {
     url: envVars.MONGODB_URL + (envVars.NODE_ENV === 'test' ? '-test' : ''),
-    options: {},
+    options: {
+      maxPoolSize: Number(envVars.MONGO_MAX_POOL_SIZE) || 10,
+      minPoolSize: Number(envVars.MONGO_MIN_POOL_SIZE) || 2,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    },
   },
   jwt: {
     secret: envVars.JWT_SECRET,

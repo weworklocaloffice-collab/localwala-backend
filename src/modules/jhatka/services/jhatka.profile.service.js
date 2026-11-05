@@ -19,7 +19,7 @@
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
-const { Business } = require('../../../models');
+const { User, Business, JhatkaPartner } = require('../../../models');
 const JhatkaOutlet = require('../models/jhatka.outlet.model');
 const JhatkaDriver = require('../models/jhatka.driver.model');
 const JhatkaTenantRoleAssignment = require('../models/jhatka.tenant.role.assignment.model');
@@ -121,6 +121,7 @@ const ROLE_PERMISSIONS = {
     'staff.write',
     'subscriptions.read',
     'subscriptions.manage',
+    'supply.request',
     'delivery.read',
     'delivery.dispatch',
     'compliance.read',
@@ -143,6 +144,7 @@ const ROLE_PERMISSIONS = {
   inventory_staff: [
     'inventory.*',
     'procurement.*',
+    'supply.request',
     'suppliers.read',
     'batches.read',
     'batches.quarantine',
@@ -559,10 +561,114 @@ function assertCan(role, capability) {
   return true;
 }
 
+/**
+ * Jhatka's own role payload. This is the vertical-native answer for the app's
+ * cold-start role gate; it does not borrow the dairy profile service.
+ *
+ * `User.role` is still a single value, so availability is derived from the
+ * partner/driver records that actually exist.
+ */
+async function getAvailableRoles(uid) {
+  const userId = new mongoose.Types.ObjectId(uid);
+  const user = await User.findById(userId).select(
+    'role firstName lastName email mobile countryCode cover status'
+  );
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Not found');
+  }
+  if (user.status !== true) {
+    throw new ApiError(httpStatus.UNAUTHORIZED, 'Account Blocked');
+  }
+
+  const [partner, driver] = await Promise.all([
+    JhatkaPartner.findOne({ owner: userId, status: { $ne: 'terminated' } })
+      .select('_id business name partnerCode status')
+      .lean(),
+    JhatkaDriver.findOne({
+      user: userId,
+      status: { $in: ['active', 'inactive', 'suspended'] },
+    })
+      .select('_id outlet business status')
+      .lean(),
+  ]);
+
+  const available = [];
+  if (partner) available.push('jhatkaPartner');
+  if (driver) available.push('jhatkaDriver');
+  if (available.length === 0) {
+    if (user.role === 'jhatkaPartner' || user.role === 'jhatkaDriver') {
+      available.push(user.role);
+    }
+  }
+
+  return {
+    id: user._id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    email: user.email,
+    mobile: user.mobile,
+    countryCode: user.countryCode,
+    cover: user.cover,
+    role: user.role,
+    availableVerticals: ['jhatka'],
+    activeVertical: 'jhatka',
+    roles: {
+      available,
+      active: available.includes(user.role) ? user.role : available[0] || null,
+      business: partner ? partner.business : driver ? driver.business : null,
+      jhatkaPartner: partner ? partner._id : null,
+      jhatkaDriver: driver ? driver._id : null,
+      outlet: driver ? driver.outlet : null,
+      ownDeliveryPartner: false,
+      driverPayoutMode: null,
+    },
+  };
+}
+
+async function switchRole(uid, role) {
+  const payload = await getAvailableRoles(uid);
+  if (!payload.roles.available.includes(role)) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'Forbidden');
+  }
+
+  return {
+    success: true,
+    message: 'Role switched',
+    roles: { ...payload.roles, active: role },
+  };
+}
+
+async function getLoginInfo(uid) {
+  const payload = await getAvailableRoles(uid);
+  return {
+    id: payload.id,
+    firstName: payload.firstName,
+    lastName: payload.lastName,
+    email: payload.email,
+    mobile: payload.mobile,
+    countryCode: payload.countryCode,
+    cover: payload.cover,
+    role: payload.role,
+    availableRoles: payload.roles.available,
+    activeRole: payload.roles.active,
+    availableVerticals: payload.availableVerticals,
+    activeVertical: payload.activeVertical,
+    business: payload.roles.business,
+    jhatkaPartner: payload.roles.jhatkaPartner,
+    jhatkaDriver: payload.roles.jhatkaDriver,
+    outlet: payload.roles.outlet,
+    ownDeliveryPartner: false,
+    driverPayoutMode: null,
+  };
+}
+
 module.exports = {
   OUTLET_ROLES,
   ROLE_PERMISSIONS,
   OWNER_ONLY,
+  getAvailableRoles,
+  switchRole,
+  getLoginInfo,
   sameId,
   containsId,
   resolveDriver,

@@ -114,10 +114,88 @@ const brandUpdate = Joi.object({
   logo: Joi.string().trim(),
   banner: Joi.string().trim(),
   status: Joi.string().valid('pending', 'approved', 'rejected', 'archived'),
-  isVerified: Joi.boolean(),
 }).min(1);
 
 const brandId = Joi.object({ brand: objectId.required() });
+
+const brandMerge = {
+  params: brandId,
+  body: Joi.object({
+    targetBrand: objectId.required(),
+    note: Joi.string().trim().max(1000).allow(''),
+  }),
+};
+
+const BRAND_CERTIFICATION_TYPES = [
+  'authorization_letter',
+  'dealership',
+  'distributorship',
+  'registration',
+];
+
+const brandCertificationCreate = {
+  params: brandId,
+  body: Joi.object({
+    type: Joi.string().valid(...BRAND_CERTIFICATION_TYPES).required(),
+    number: Joi.string().trim().max(64).allow(''),
+    validFrom: Joi.date().allow(null),
+    validTo: Joi.date().allow(null),
+    document: Joi.string().trim().max(1000).allow('', null),
+  })
+    .custom((value, helpers) => {
+      if (value.validFrom && value.validTo && new Date(value.validFrom) > new Date(value.validTo)) {
+        return helpers.error('any.invalid');
+      }
+      return value;
+    })
+    .messages({ 'any.invalid': 'validFrom must be on or before validTo' }),
+};
+
+const brandCertificationReview = {
+  params: Joi.object({
+    brand: objectId.required(),
+    index: Joi.number().integer().min(0).required(),
+  }),
+  body: Joi.object({
+    status: Joi.string().valid('approved', 'rejected').required(),
+    rejectionReason: Joi.string().trim().max(500).allow(''),
+  }),
+};
+
+const brandRequestList = Joi.object({
+  status: Joi.string()
+    .valid('pending', 'approved', 'rejected', 'all')
+    .default('pending'),
+  search: Joi.string().trim().allow(''),
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(200).default(20),
+});
+
+const brandRequestReview = {
+  params: Joi.object({ request: objectId.required() }),
+  body: Joi.object({
+    status: Joi.string().valid('approved', 'rejected').required(),
+    note: Joi.string().trim().max(1000).allow(''),
+  }),
+};
+
+/**
+ * The import collection is a fixed enum, not a free path segment. Without this a
+ * caller can probe model names through the error message, and a future collection
+ * cannot be imported until its parser exists.
+ */
+const taxonomyCollection = Joi.object({
+  collection: Joi.string()
+    .valid('store_category', 'store_subcategory', 'store_brand')
+    .required(),
+});
+
+const taxonomyExport = {
+  params: taxonomyCollection,
+  query: Joi.object({
+    type: Joi.string().valid('csv', 'excel', 'raw').default('csv'),
+  }),
+};
 
 const attributeTemplateCreate = Joi.object({
   name: Joi.string().trim().min(2).max(100).required(),
@@ -229,7 +307,9 @@ const orderTransition = Joi.object({
 const driverId = Joi.object({ driver: objectId.required() });
 
 const driverReason = Joi.object({
-  driver: objectId.required(),
+  // The driver id is the path parameter; accepting it here too would give a client
+  // two sources of truth for the same mutation.
+  driver: objectId,
   reason: Joi.string().trim().max(500),
 });
 
@@ -278,18 +358,18 @@ const promotionList = recordList.keys({
  * success.
  */
 const promotionModeration = Joi.object({
-  promotion: objectId.required(),
+  promotion: objectId,
   status: Joi.string().valid('not_required', 'pending', 'approved', 'rejected').required(),
   note: Joi.string().trim().max(1000),
 });
 
 const reviewList = recordList;
 const reviewModeration = Joi.object({
-  review: objectId.required(),
+  review: objectId,
   status: Joi.string().valid('pending', 'approved', 'rejected', 'archived').required(),
   reply: Joi.object({
     text: Joi.string().trim().max(1000).required(),
-    repliedBy: objectId.required(),
+    repliedBy: objectId,
   }),
 });
 
@@ -306,7 +386,7 @@ const complaintList = recordList.keys({
  * everywhere else.
  */
 const complaintModeration = Joi.object({
-  complaint: objectId.required(),
+  complaint: objectId,
   status: Joi.string().valid('open', 'in_progress', 'resolved', 'closed', 'escalated').required(),
   resolution: Joi.string()
     .valid('refunded', 'replaced', 'apology', 'no_action', 'pending')
@@ -327,7 +407,7 @@ const settlementList = recordList.keys({
 const settlementId = Joi.object({ settlement: objectId.required() });
 
 const settlementSettle = Joi.object({
-  settlement: objectId.required(),
+  settlement: objectId,
   payoutMethod: Joi.string().valid('bank', 'wallet'),
   payoutDetails: Joi.object({
     accountName: Joi.string(),
@@ -339,12 +419,12 @@ const settlementSettle = Joi.object({
 });
 
 const settlementFail = Joi.object({
-  settlement: objectId.required(),
+  settlement: objectId,
   failureReason: Joi.string().trim().max(500).required(),
 });
 
 const settlementReverse = Joi.object({
-  settlement: objectId.required(),
+  settlement: objectId,
   reason: Joi.string().trim().max(500).required(),
 });
 
@@ -355,12 +435,12 @@ const subscriptionList = recordList.keys({ business: objectId });
 const subscriptionPaymentList = recordList.keys({ subscription: objectId });
 
 const organicModeration = Joi.object({
-  verification: objectId.required(),
+  verification: objectId,
   status: Joi.string().valid('pending', 'approved', 'rejected', 'expired').required(),
   note: Joi.string().trim().max(1000),
 });
 
-module.exports = {
+const schemas = {
   adminList,
   categoryCreate,
   categoryUpdate,
@@ -373,6 +453,13 @@ module.exports = {
   brandCreate,
   brandUpdate,
   brandId,
+  brandMerge,
+  brandCertificationCreate,
+  brandCertificationReview,
+  brandRequestList,
+  brandRequestReview,
+  taxonomyCollection,
+  taxonomyExport,
   attributeTemplateCreate,
   attributeTemplateUpdate,
   attributeTemplateId,
@@ -404,3 +491,71 @@ module.exports = {
   subscriptionPaymentList,
   organicModeration,
 };
+
+/**
+ * `validate()` only reads `params`, `query` and `body`; a bare `Joi.object()` is skipped
+ * entirely. These lists were added after the admin routes were found to be in the same
+ * state as the partner routes - every schema below was accepting anything.
+ *
+ * Path ids stay in `params`; moderation/payout writes take only the decision in `body`.
+ * The optional id in those body schemas is compatibility, not authority: the controller
+ * always uses `req.params`.
+ */
+const BODY_SCHEMAS = [
+  'categoryCreate',
+  'categoryUpdate',
+  'subcategoryCreate',
+  'subcategoryUpdate',
+  'brandCreate',
+  'brandUpdate',
+  'attributeTemplateCreate',
+  'attributeTemplateUpdate',
+  'driverReason',
+  'promotionModeration',
+  'reviewModeration',
+  'complaintModeration',
+  'settlementSettle',
+  'settlementFail',
+  'settlementReverse',
+  'organicModeration',
+];
+
+const QUERY_SCHEMAS = [
+  'adminList',
+  'subcategoryList',
+  'brandList',
+  'brandRequestList',
+  'recordList',
+  'orderList',
+  'deliveryList',
+  'postOrderList',
+  'promotionList',
+  'reviewList',
+  'complaintList',
+  'settlementList',
+  'refundList',
+  'subscriptionList',
+  'subscriptionPaymentList',
+];
+
+const PARAMS_SCHEMAS = [
+  'categoryId',
+  'subcategoryId',
+  'brandId',
+  'taxonomyCollection',
+  'attributeTemplateId',
+  'orderId',
+  'orderTransition',
+  'driverId',
+  'deliveryId',
+  'returnTransition',
+  'exchangeTransition',
+  'warrantyTransition',
+  'settlementId',
+];
+
+for (const key of BODY_SCHEMAS) schemas[key] = { body: schemas[key] };
+for (const key of QUERY_SCHEMAS) schemas[key] = { query: schemas[key] };
+for (const key of PARAMS_SCHEMAS) schemas[key] = { params: schemas[key] };
+
+module.exports = schemas;

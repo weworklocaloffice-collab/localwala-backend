@@ -28,6 +28,7 @@ const settlementService = require('../services/stores.settlement.service');
 const returnService = require('../services/stores.return.service');
 const driverService = require('../services/stores.driver.service');
 const organicService = require('../services/stores.organic.service');
+const customerSubscriptionService = require('../services/stores.customer.subscription.service');
 
 /**
  * Admin CRUD over partner-side records: orders, drivers, returns, promotions, reviews,
@@ -169,7 +170,9 @@ const listReviews = catchAsync(async (req, res) => {
 const moderateReview = catchAsync(async (req, res) => {
   const review = await reviewService.moderateReview(req.params.review, {
     status: req.body.status,
-    reply: req.body.reply,
+    reply: req.body.reply
+      ? { ...req.body.reply, repliedBy: req.user._id }
+      : undefined,
   });
   res.status(httpStatus.OK).send({ review });
 });
@@ -259,6 +262,25 @@ const moderateOrganic = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ verification });
 });
 
+const listCustomerSubscriptions = catchAsync(async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 20;
+  const result = await customerSubscriptionService.listCustomerSubscriptions({
+    status: req.query.status,
+    page,
+    limit,
+  });
+  res.status(httpStatus.OK).send(result);
+});
+
+const transitionCustomerSubscription = catchAsync(async (req, res) => {
+  const subscription = await customerSubscriptionService.transitionSubscription(req.params.subscription, req.params.status, {
+    actor: req.user._id,
+    notes: req.body && req.body.notes,
+  });
+  res.status(httpStatus.OK).send({ subscription });
+});
+
 module.exports = {
   listOrders,
   getOrder,
@@ -286,4 +308,6 @@ module.exports = {
   listSubscriptions,
   listSubscriptionPayments,
   moderateOrganic,
+  listCustomerSubscriptions,
+  transitionCustomerSubscription,
 };

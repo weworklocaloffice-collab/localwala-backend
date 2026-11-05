@@ -17,6 +17,7 @@
  */
 
 const mongoose = require('mongoose');
+const { computeOpenStatus } = require('../../../utils/openStatus');
 
 const getOutletDashboard = async (outletId, { from, to } = {}) => {
   const StoreOrder = mongoose.model('StoreOrder');
@@ -95,11 +96,18 @@ const getOutletDashboard = async (outletId, { from, to } = {}) => {
     ]),
   ]);
 
+  const StoreOutlet = mongoose.model('StoreOutlet');
+  const outlet = await StoreOutlet.findById(outletId).select('operatingHours').lean();
+  const openStatus = outlet
+    ? computeOpenStatus(outlet, new Date())
+    : { isOpenNow: null, openReason: null, nextOpensAt: null };
+
   return {
     orders: orderStats[0] || { totalOrders: 0, totalRevenue: 0, totalRefunds: 0, avgOrderValue: 0 },
     inventory: stockStats[0] || { totalSkus: 0, lowStock: 0, outOfStock: 0, totalValue: 0 },
     reviews: reviewStats[0] || { avgRating: 0, totalReviews: 0 },
     topProducts,
+    ...openStatus,
   };
 };
 

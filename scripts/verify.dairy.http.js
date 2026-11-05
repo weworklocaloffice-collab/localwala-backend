@@ -131,12 +131,20 @@ orderIds: [],
   invites: [],
   };
 
+  // Phones must be unique per run *and* per user inside a run: `phoneHash` is
+  // unique. A two-digit random suffix gave 90 slots for 10 users, so reruns
+  // intermittently died on E11000 before any assertion ran. A counter makes
+  // the suite deterministic.
+  let mobileSeq = 0;
+  const nextMobile = (prefix) =>
+    Number(`${prefix}${stamp}${String(++mobileSeq).padStart(2, '0')}`);
+
   const makeUser = async (role, firstName) => {
     const user = await User.create({
       firstName,
       lastName: 'Http',
       countryCode: '+91',
-      mobile: Number(`9${stamp}${Math.floor(Math.random() * 90 + 10)}`),
+      mobile: nextMobile(9),
       email: `h${stamp}${Math.random().toString(36).slice(2, 7)}@http.local`,
       password: 'Test@12345',
       role,
@@ -754,7 +762,7 @@ orderIds: [],
     // a partner who can pay another outlet's rider can drain their own wallet.
     console.log('\n12. Partner fleet management');
 
-    const invitedMobile = Number(`8${stamp}${Math.floor(Math.random() * 90 + 10)}`);
+    const invitedMobile = nextMobile(8);
     const invite = await request('POST', '/v1/dairy/partner/drivers/invite', {
       token: partner.token,
       body: { mobile: invitedMobile, countryCode: '+91' },
@@ -832,7 +840,7 @@ orderIds: [],
         firstName: 'Sneaky',
         lastName: 'Rider',
         countryCode: '+91',
-        mobile: Number(`7${stamp}${Math.floor(Math.random() * 90 + 10)}`),
+        mobile: nextMobile(7),
         email: `sneaky${stamp}@http.local`,
         password: 'Sneaky@12345',
         role: 'dairyDriver',

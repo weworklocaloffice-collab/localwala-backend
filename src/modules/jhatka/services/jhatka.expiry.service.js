@@ -104,7 +104,7 @@ async function writeOffBatch({ batch, models, actor, occurredAt = new Date() }) 
     const updated = await JhatkaInventoryItem.findOneAndUpdate(
       { _id: item._id, availableQty: { $gte: toWriteOff } },
       { $inc: { onHand: -toWriteOff, availableQty: -toWriteOff }, $set: { movementSeq: (item.movementSeq || 0) + 1 } },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     // Null means someone consumed it between the read and this write. That is a
@@ -178,7 +178,7 @@ async function writeOffBatch({ batch, models, actor, occurredAt = new Date() }) 
   const flipped = await JhatkaBatch.findOneAndUpdate(
     { _id: batch._id, status: { $in: ['source', 'opened'] } },
     { $set: { status: 'expired' } },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   return { writtenOff: writtenOff > 0 || !!flipped, qty: writtenOff, reservedCarriedOver };

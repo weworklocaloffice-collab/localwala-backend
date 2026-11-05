@@ -174,6 +174,12 @@ const catalogHealth = catchAsync(async (req, res) => {
   res.send({ health });
 });
 
+/** Public outlet profile for the customer app's outlet screen. */
+const businessProfile = catchAsync(async (req, res) => {
+  const business = await dairyCatalogService.getBusinessProfile(req.params.id);
+  res.send(business);
+});
+
 module.exports = {
   categoryCreate,
   categoryList,
@@ -200,4 +206,5 @@ module.exports = {
   categoryTree,
   importProducts,
   catalogHealth,
+  businessProfile,
 };

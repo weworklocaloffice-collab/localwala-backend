@@ -128,11 +128,33 @@ const getUpcoming = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ upcoming });
 });
 
+const getDemand = catchAsync(async (req, res) => {
+  const result = await subscriptionService.getDemandForOutlet(req.outletId, { days: parseInt(req.query.days) || 7 });
+  res.status(httpStatus.OK).send(result);
+});
+
+const acceptPriceChange = catchAsync(async (req, res) => {
+  const result = await subscriptionService.acceptOccurrencePriceChange(
+    req.params.subscription,
+    req.body.occurrence,
+    req.user._id
+  );
+  res.status(httpStatus.OK).send(result);
+});
+
+const listAwaitingPriceChanges = catchAsync(async (req, res) => {
+  const rows = await subscriptionService.listAwaitingPriceChanges(req.user._id);
+  res.status(httpStatus.OK).send({ items: rows });
+});
+
 module.exports = {
   createSubscription,
   getSubscription,
   listSubscriptions,
+  getDemand,
   listCustomerSubscriptions,
+  listAwaitingPriceChanges,
+  acceptPriceChange,
   transitionSubscription,
   skipNext,
   pauseSubscription,

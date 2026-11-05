@@ -23,12 +23,15 @@ const {
   DairyFranchise,
   Business,
   User,
+  City,
+  Locality,
   DairyOrder,
   DairySubscription,
   DairyDriver,
   DairySettlement,
 } = require('../../../models');
 const ApiError = require('../../../utils/ApiError');
+const { withOptionalTransaction } = require('../../../utils/optionalTransaction');
 
 /**
  * Partner and franchise agreements.
@@ -90,7 +93,15 @@ const listPartners = async (options) => {
     DairyPartner.countDocuments(query),
   ]);
 
-  return { partners, totalResults, page, limit };
+  // The panel addresses a partner by `_id`, while the model's toJSON transform
+  // replaces it with `id`. Converting here keeps both the id the dialogs need and
+  // the getters that turn the stored basis points back into a percentage.
+  return {
+    partners: partners.map((partner) => partner.toObject({ getters: true })),
+    totalResults,
+    page,
+    limit,
+  };
 };
 
 /**
@@ -216,6 +227,383 @@ const createFranchise = async (param) => {
   return franchise;
 };
 
+/**
+ * Admin-created dairy outlet: owner login + outlet (+ agreement) in one call.
+ *
+ * Mirrors the restaurant "Add Restaurant" flow. The owner is created as a
+ * `dairyPartner` user so they can log in immediately; the outlet is trusted
+ * (verified) because an admin created it. A commission-partner or franchise
+ * agreement is attached when `businessModel` asks for one, reusing the same
+ * agreement shape as the standalone create endpoints.
+ *
+ * @param {Object} param
+ * @returns {Promise<{user, business, agreement}>}
+ */
+const createAdminOutlet = async (param) => {
+  const existingByEmail = await User.findOne({ email: param.email });
+  if (existingByEmail) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Email already taken');
+  }
+  const existingByPhone = await User.findOne({
+    countryCode: param.countryCode,
+    mobile: param.mobile,
+  });
+  if (existingByPhone) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Phone already registered');
+  }
+
+  // Location pairing is enforced here, not just in validation: a valid city id
+  // and a valid locality id that belong to different cities must not create an
+  // outlet that can never be dispatched to.
+  const [city, locality] = await Promise.all([
+    City ? City.findOne({ _id: param.city, status: true }).select('_id') : null,
+    Locality ? Locality.findOne({ _id: param.locality, status: true }).select('_id city') : null,
+  ]);
+  if (!city) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'That city is not one we serve');
+  }
+  if (!locality) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'That locality is not one we serve');
+  }
+  if (String(locality.city) !== String(param.city)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'That locality does not belong to the selected city');
+  }
+
+  const model = param.businessModel || 'direct';
+  if (!['direct', 'commission_partner', 'franchise'].includes(model)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid business model');
+  }
+
+  try {
+    const created = await withOptionalTransaction(async (session) => {
+      const user = await User.create(
+        [
+          {
+            firstName: param.firstName,
+            lastName: param.lastName,
+            countryCode: param.countryCode,
+            mobile: param.mobile,
+            email: param.email,
+            password: param.password,
+            role: 'dairyPartner',
+            locale: param.locale,
+            isMobileVerified: true,
+            status: true,
+          },
+        ],
+        { session }
+      );
+
+      const business = await Business.create(
+        [
+          {
+            vertical: 'dairy',
+            businessModel: model,
+            name: param.businessName,
+            description: param.shortDescription || undefined,
+            logo: param.logo || undefined,
+            cover: param.cover || undefined,
+            city: param.city ? new mongoose.Types.ObjectId(param.city) : null,
+            locality: param.locality ? new mongoose.Types.ObjectId(param.locality) : null,
+            location: param.coordinates
+              ? { type: 'Point', coordinates: param.coordinates }
+              : undefined,
+            owner: user[0]._id,
+            contact: {
+              name: `${param.firstName} ${param.lastName}`,
+              mobile: param.mobile,
+              countryCode: param.countryCode,
+              email: param.email,
+            },
+            ownDeliveryPartner: true,
+            driverPayoutMode: 'business_pays',
+            verified: true,
+            status: true,
+          },
+        ],
+        { session }
+      );
+
+      let agreement = null;
+
+      if (model === 'commission_partner') {
+        let partnerCode = param.partnerCode && String(param.partnerCode).trim();
+        if (!partnerCode) {
+          for (let i = 0; i < 5; i++) {
+            partnerCode = 'DP-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+            const clash = await DairyPartner.findOne({ partnerCode }).session(session);
+            if (!clash) break;
+            partnerCode = null;
+          }
+          if (!partnerCode) {
+            throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Could not generate a unique partner code');
+          }
+        } else {
+          const existing = await DairyPartner.findOne({ partnerCode }).session(session);
+          if (existing) {
+            throw new ApiError(httpStatus.BAD_REQUEST, 'That partner code is already taken');
+          }
+        }
+        if (param.commissionPercentage === null || param.commissionPercentage === undefined || param.commissionPercentage === '') {
+          throw new ApiError(httpStatus.BAD_REQUEST, 'commissionPercentage is required');
+        }
+        agreement = await DairyPartner.create(
+          [
+            {
+              business: business[0]._id,
+              user: user[0]._id,
+              partnerCode: partnerCode,
+              name: param.name || param.businessName,
+              commissionPercentage: param.commissionPercentage,
+              commissionBasis: param.commissionBasis || 'product_only',
+              payoutMethod: param.payoutMethod || 'wallet',
+              payoutDetails: param.payoutDetails,
+              agreement: {
+                startDate: param.agreement && param.agreement.startDate ? param.agreement.startDate : new Date(),
+                endDate: param.agreement && param.agreement.endDate ? param.agreement.endDate : undefined,
+                minimumGuarantee: param.agreement && param.agreement.minimumGuarantee !== undefined ? param.agreement.minimumGuarantee : 0,
+                documentUrl: param.agreement && param.agreement.documentUrl ? param.agreement.documentUrl : undefined,
+                notes: param.agreement && param.agreement.notes ? param.agreement.notes : undefined,
+              },
+              status: 'active',
+            },
+          ],
+          { session }
+        );
+        agreement = agreement[0];
+      }
+
+      if (model === 'franchise') {
+        let franchiseCode = param.franchiseCode && String(param.franchiseCode).trim();
+        if (!franchiseCode) {
+          for (let i = 0; i < 5; i++) {
+            franchiseCode = 'DF-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+            const clash = await DairyFranchise.findOne({ franchiseCode }).session(session);
+            if (!clash) break;
+            franchiseCode = null;
+          }
+          if (!franchiseCode) {
+            throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Could not generate a unique franchise code');
+          }
+        } else {
+          const existing = await DairyFranchise.findOne({ franchiseCode }).session(session);
+          if (existing) {
+            throw new ApiError(httpStatus.BAD_REQUEST, 'That franchise code is already taken');
+          }
+        }
+        if (param.revenueSharePercentage === null || param.revenueSharePercentage === undefined || param.revenueSharePercentage === '') {
+          throw new ApiError(httpStatus.BAD_REQUEST, 'revenueSharePercentage is required');
+        }
+        const operatorId = param.operator || user[0]._id;
+        const operator = await User.findById(operatorId).session(session);
+        if (!operator) {
+          throw new ApiError(httpStatus.NOT_FOUND, 'Operator not found');
+        }
+        // Territory overlap check.
+        if (param.territory && Array.isArray(param.territory.localities) && param.territory.localities.length > 0) {
+          const clash = await DairyFranchise.findOne({
+            status: 'active',
+            'territory.localities': { $in: param.territory.localities },
+          }).session(session);
+          if (clash) {
+            throw new ApiError(httpStatus.CONFLICT, `Territory overlaps active franchise ${clash.franchiseCode}`);
+          }
+        }
+        agreement = await DairyFranchise.create(
+          [
+            {
+              business: business[0]._id,
+              operator: operatorId,
+              franchiseCode: franchiseCode,
+              name: param.name || param.businessName,
+              revenueSharePercentage: param.revenueSharePercentage,
+              revenueShareBasis: param.revenueShareBasis || 'product_only',
+              joiningFee: param.joiningFee || 0,
+              royalty: param.royalty || 0,
+              royaltyFrequency: param.royaltyFrequency || 'monthly',
+              supplyModel: param.supplyModel || 'platform_supplied',
+              procurementEnabled:
+                param.procurementEnabled === true || param.supplyModel === 'local_procurement',
+              territory: param.territory,
+              agreement: {
+                startDate: param.agreement && param.agreement.startDate ? param.agreement.startDate : new Date(),
+                endDate: param.agreement && param.agreement.endDate ? param.agreement.endDate : undefined,
+                documentUrl: param.agreement && param.agreement.documentUrl ? param.agreement.documentUrl : undefined,
+                notes: param.agreement && param.agreement.notes ? param.agreement.notes : undefined,
+              },
+              status: 'active',
+            },
+          ],
+          { session }
+        );
+        agreement = agreement[0];
+      }
+
+      return { user: user[0], business: business[0], agreement };
+    });
+
+    return created;
+  } catch (error) {
+    throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, error.message);
+  }
+};
+
+/**
+ * Every dairy outlet, not just the ones with an agreement.
+ *
+ * The old admin "Outlets" screen listed `DairyPartner` documents, so a direct
+ * outlet or a franchise never appeared there. That made it look as though the
+ * panel had no way to see, let alone onboard, a commission partner: the only
+ * outlets on screen were the ones that already had a partner agreement. This is
+ * the directory the create dialogs and the governance screen both read.
+ *
+ * `availableFor` is for the create pickers. It returns verified, trading, direct
+ * outlets with no agreement of either kind, so the UI cannot offer an outlet that
+ * the API would reject and cannot accidentally stack a franchise on top of a
+ * commission agreement.
+ *
+ * @param {Object} options search, model, status, city, availableFor, limit, page
+ * @returns {Promise<Object>} outlets, totalResults, page, limit, summary
+ */
+const listAdminOutlets = async (options = {}) => {
+  const limit = options.limit && parseInt(options.limit, 10) > 0
+    ? Math.min(parseInt(options.limit, 10), 100)
+    : 20;
+  const page = options.page && parseInt(options.page, 10) > 0 ? parseInt(options.page, 10) : 1;
+  const skip = (page - 1) * limit;
+
+  const query = { vertical: 'dairy' };
+
+  if (options.model) query.businessModel = options.model;
+  if (options.city) query.city = options.city;
+
+  // Derived from the fields that actually decide whether an outlet can trade, not
+  // from `Business.status` alone: an out-of-date verification is what a direct
+  // applicant is waiting on, and showing that as `active` hides the queue.
+  if (options.status === 'active') {
+    query.verified = true;
+    query.status = true;
+  } else if (options.status === 'pending') {
+    query.verified = false;
+  } else if (options.status === 'suspended') {
+    query.verified = true;
+    query.status = false;
+  }
+
+  if (options.search) {
+    // Escaped because the search term is operator input and goes into a RegExp.
+    const term = new RegExp(
+      String(options.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+      'i'
+    );
+    query.$or = [{ name: term }, { code: term }];
+  }
+
+  if (options.availableFor) {
+    query.businessModel = 'direct';
+    query.verified = true;
+    query.status = true;
+
+    const [partnerBusinesses, franchiseBusinesses] = await Promise.all([
+      DairyPartner.distinct('business'),
+      DairyFranchise.distinct('business'),
+    ]);
+    query._id = { $nin: [...partnerBusinesses, ...franchiseBusinesses] };
+  }
+
+  const [outlets, totalResults, summaryRows] = await Promise.all([
+    Business.find(query)
+      .populate('city', 'name')
+      .populate('locality', 'name')
+      .populate('owner', 'firstName lastName mobile countryCode')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      // `lean` keeps `_id` on the outlet, owner, city and locality. The panel's
+      // create dialogs post the owner id back, and the model transform would rename
+      // it to `id` on the way out.
+      .lean(),
+    Business.countDocuments(query),
+    // One pass over the whole dairy book, independent of the filters, so the KPI
+    // cards do not change when an operator narrows the table.
+    Business.aggregate([
+      { $match: { vertical: 'dairy' } },
+      {
+        $group: {
+          _id: { model: '$businessModel', verified: '$verified', status: '$status' },
+          count: { $sum: 1 },
+        },
+      },
+    ]),
+  ]);
+
+  const ids = outlets.map((outlet) => outlet._id);
+  const [partnerDocs, franchiseDocs] = await Promise.all([
+    DairyPartner.find({ business: { $in: ids } }),
+    DairyFranchise.find({ business: { $in: ids } }).populate(
+      'operator',
+      'firstName lastName mobile'
+    ),
+  ]);
+
+  // Same reason as `listPartners`: keep `_id` for the edit/status dialogs, and
+  // apply the commission getter so the row shows 10% rather than the stored 1000.
+  const partners = partnerDocs.map((partner) => partner.toObject({ getters: true }));
+  const franchises = franchiseDocs.map((franchise) => franchise.toObject({ getters: true }));
+
+  const partnerByBusiness = new Map(
+    partners.map((partner) => [String(partner.business), partner])
+  );
+  const franchiseByBusiness = new Map(
+    franchises.map((franchise) => [String(franchise.business), franchise])
+  );
+
+  const summary = {
+    total: 0,
+    active: 0,
+    pending: 0,
+    suspended: 0,
+    direct: 0,
+    franchise: 0,
+    commissionPartner: 0,
+  };
+
+  for (const row of summaryRows) {
+    summary.total += row.count;
+    if (row._id.verified) {
+      if (row._id.status) summary.active += row.count;
+      else summary.suspended += row.count;
+    } else {
+      summary.pending += row.count;
+    }
+
+    if (row._id.model === 'commission_partner') summary.commissionPartner += row.count;
+    else if (row._id.model === 'franchise') summary.franchise += row.count;
+    else summary.direct += row.count;
+  }
+
+  return {
+    outlets: outlets.map((outlet) => ({
+      _id: outlet._id,
+      name: outlet.name,
+      code: outlet.code,
+      businessModel: outlet.businessModel,
+      verified: outlet.verified,
+      status: outlet.status,
+      city: outlet.city,
+      locality: outlet.locality,
+      owner: outlet.owner,
+      createdAt: outlet.createdAt,
+      partner: partnerByBusiness.get(String(outlet._id)) || null,
+      franchise: franchiseByBusiness.get(String(outlet._id)) || null,
+    })),
+    totalResults,
+    page,
+    limit,
+    summary,
+  };
+};
+
 const listFranchises = async (options) => {
   const limit = options.limit && parseInt(options.limit, 10) > 0 ? parseInt(options.limit, 10) : 10;
   const page = options.page && parseInt(options.page, 10) > 0 ? parseInt(options.page, 10) : 1;
@@ -237,7 +625,13 @@ const listFranchises = async (options) => {
     DairyFranchise.countDocuments(query),
   ]);
 
-  return { franchises, totalResults, page, limit };
+  // The franchise status dialog addresses the agreement by `_id`.
+  return {
+    franchises: franchises.map((franchise) => franchise.toObject({ getters: true })),
+    totalResults,
+    page,
+    limit,
+  };
 };
 
 const setFranchiseStatus = async (franchiseId, status, param) => {
@@ -628,11 +1022,13 @@ const listFranchiseOperators = async (options = {}) => {
 
 module.exports = {
   createPartner,
+  createAdminOutlet,
   listPartners,
   updatePartnerTerms,
   setPartnerStatus,
   createFranchise,
   listFranchises,
+  listAdminOutlets,
   setFranchiseStatus,
   listFranchiseOperators,
   findTerritoryOwner,

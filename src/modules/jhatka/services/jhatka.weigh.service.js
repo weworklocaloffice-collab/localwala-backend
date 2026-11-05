@@ -230,7 +230,7 @@ async function consumeLineStock({ models, order, item, actualGrams, actor }) {
         $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
       },
       { $inc: { onHand: -take, reserved: -rel, availableQty: -plain } },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!updated) continue;
 
@@ -259,7 +259,7 @@ async function consumeLineStock({ models, order, item, actualGrams, actor }) {
     const batch = await JhatkaBatch.findOneAndUpdate(
       { _id: cand.batch },
       { $inc: { availableQty: -take, consumedQty: take } },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     await JhatkaBatchAllocation.create({

@@ -327,12 +327,38 @@ io = socketIo(server, {
       });
 
       // --- Live Location Logic ---
-      // The driver app joins its own user-id room for its in-app map. Order tracking
-      // uses a per-order room instead: the customer proves ownership once, then receives
-      // only the deliveries assigned to that order.
-      socket.on('joinLiveLocation', ({ driverId }) => {
+      // The driver app joins its own user-id room for its in-app map. Customers may
+      // join that room only through an active order assigned to the same driver; store
+      // order tracking uses a per-order room instead, so it never exposes a driver id.
+      socket.on('joinLiveLocation', async ({ driverId }) => {
         if (!socket.data.authenticated || !driverId) return;
-        socket.join(driverId);
+        if (!mongoose.Types.ObjectId.isValid(driverId)) return;
+
+        const userId = socket.data.user.id;
+        const room = String(driverId);
+
+        // A driver always joins their own room. A customer may join a driver's room
+        // only while they have an order assigned to that driver — without this check
+        // any signed-in account could watch any rider by guessing a user id.
+        if (String(userId) === room) {
+          socket.join(room);
+          return;
+        }
+        if (socket.data.user.role !== 'user') return;
+
+        try {
+          const { Orders } = require('./models');
+          const owns = await Orders.exists({
+            user: userId,
+            driver: driverId,
+            status: {
+              $nin: ['delivered', 'cancelled', 'rejected', 'refunded', 'partially_refunded'],
+            },
+          });
+          if (owns) socket.join(room);
+        } catch (e) {
+          logger.warn(`Socket ${socket.id} live-location join failed: ${e.message}`);
+        }
       });
 
       socket.on('joinOrderTracking', async ({ orderId }) => {
@@ -436,6 +462,18 @@ server.listen(config.port, () => {
 mongoose.connection.on('disconnected', () => {
   mongoConnectionStatus.status = false;
   mongoConnectionStatus.error = 'MongoDB disconnected';
+  logger.warn('MongoDB disconnected - attempting reconnect in 5s');
+  setTimeout(() => {
+    mongoose.connect(config.mongoose.url, config.mongoose.options).catch((err) => {
+      logger.error(`MongoDB reconnect failed: ${err.message}`);
+    });
+  }, 5000);
+});
+
+mongoose.connection.on('reconnected', () => {
+  mongoConnectionStatus.status = true;
+  mongoConnectionStatus.error = null;
+  logger.info('MongoDB reconnected');
 });
 
 mongoose.connection.on('error', (error) => {
@@ -468,7 +506,25 @@ process.on('unhandledRejection', (error) => {
 process.on('SIGTERM', () => {
   logger.info('SIGTERM received');
   if (server) {
-    server.close();
+    server.close(async () => {
+      logger.info('Server closed');
+      try { await mongoose.connection.close(); } catch (e) { logger.error(e); }
+      process.exit(0);
+    });
+  } else {
+    process.exit(0);
+  }
+});
+
+process.on('SIGINT', () => {
+  logger.info('SIGINT received');
+  if (server) {
+    server.close(() => {
+      logger.info('Server closed');
+      process.exit(0);
+    });
+  } else {
+    process.exit(0);
   }
 });
 

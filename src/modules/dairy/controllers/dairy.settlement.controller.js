@@ -33,6 +33,24 @@ const partnerList = catchAsync(async (req, res) => {
   res.send(pick(result, ['partners', 'totalResults', 'page', 'limit']));
 });
 
+/**
+ * The all-outlets directory, plus the picker used by the agreement create
+ * dialogs. Lives beside the partner endpoints because agreements are what turn
+ * an outlet into a partner or a franchise.
+ */
+const outletList = catchAsync(async (req, res) => {
+  const result = await partnerService.listAdminOutlets(req.query);
+  res.send(pick(result, ['outlets', 'totalResults', 'page', 'limit', 'summary']));
+});
+
+const adminOutletCreate = catchAsync(async (req, res) => {
+  const created = await partnerService.createAdminOutlet({
+    ...req.body,
+    adminId: req.user && req.user._id,
+  });
+  res.status(201).send(created);
+});
+
 const partnerUpdate = catchAsync(async (req, res) => {
   const partner = await partnerService.updatePartnerTerms(req.params.partner, req.body);
   res.send({ partner });
@@ -138,7 +156,9 @@ const settlementSummary = catchAsync(async (req, res) => {
 
 module.exports = {
   partnerCreate,
+  adminOutletCreate,
   partnerList,
+  outletList,
   partnerUpdate,
   partnerStatus,
   franchiseCreate,

@@ -91,6 +91,22 @@ const getMaxTransitMinutes = async () => {
 };
 
 /**
+ * Platform credit cap for supply-request "deduct from payout" mode, in PAISE.
+ *
+ * Reads the RAW stored value directly (lean): moneyField stores paise and its
+ * rupees getter does NOT run on lean docs. `getSettings()` cannot be reused
+ * here because its not-persisted fallback path applies getters (rupees) while
+ * its persisted path does not — mixing them is the F-9 100× bug class, and a
+ * credit cap that inflates 100× would lock every partner out of deduct mode.
+ * Default Rs 50,000 = 5,000,000 paise.
+ */
+const getSupplyCreditCapPaise = async () => {
+  const settings = await JhatkaSettings.findOne().select('supplyCreditCap').lean();
+  const raw = Number(settings?.supplyCreditCap);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5000000;
+};
+
+/**
  * Creates the settings document. Only ever one.
  *
  * @param {Object} param
@@ -130,6 +146,7 @@ module.exports = {
   getEditCutoffHours,
   getCodTolerancePct,
   getMaxTransitMinutes,
+  getSupplyCreditCapPaise,
   createSettings,
   updateSettings,
 };

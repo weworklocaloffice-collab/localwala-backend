@@ -330,6 +330,17 @@ const createBooking = catchAsync(async (req, res) => {
       throw e;
     }
   }
+  try {
+    const outbox = require('../services/localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'booking',
+      aggregateId: String(booking._id),
+      eventType: 'booking.created',
+      payload: { bookingId: String(booking._id), bookingCode: booking.bookingCode },
+    });
+  } catch (e) {
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
   res.status(httpStatus.CREATED).send({ booking });
 });
 
@@ -339,6 +350,19 @@ const transitionBooking = catchAsync(async (req, res) => {
     req.params.status,
     { reason: req.body.reason, actorType: 'customer', actorId: req.user._id }
   );
+  // Best-effort outbox enqueue for downstream consumers (notifications, webhooks).
+  try {
+    const outbox = require('../services/localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'booking',
+      aggregateId: String(booking._id || req.params.id),
+      eventType: `booking.${req.params.status.toLowerCase()}`,
+      payload: { bookingId: String(booking._id || req.params.id), status: req.params.status },
+    });
+  } catch (e) {
+    // Outbox failure must not fail the transition.
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
   res.status(httpStatus.OK).send({ booking, revenue: revenue ? { deduped: revenue.deduped } : null });
 });
 
@@ -390,6 +414,17 @@ const submitQuote = catchAsync(async (req, res) => {
     expiresAt,
     status: 'SUBMITTED',
   });
+  try {
+    const outbox = require('../services/localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'quote',
+      aggregateId: String(quote._id),
+      eventType: 'quote.submitted',
+      payload: { quoteId: String(quote._id), bookingId: String(booking._id) },
+    });
+  } catch (e) {
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
   res.status(httpStatus.CREATED).send({ quote });
 });
 
@@ -583,6 +618,17 @@ const rescheduleBooking = catchAsync(async (req, res) => {
   booking.endAt = newEnd;
   booking.rescheduleCount = rescheduleCount + 1;
   await booking.save();
+  try {
+    const outbox = require('../services/localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'booking',
+      aggregateId: String(booking._id),
+      eventType: 'booking.rescheduled',
+      payload: { bookingId: String(booking._id), newStart: newStart.toISOString() },
+    });
+  } catch (e) {
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
   res.status(httpStatus.OK).send({ booking });
 });
 
@@ -597,7 +643,32 @@ const disputeBooking = catchAsync(async (req, res) => {
     { reason: req.body.reason || 'disputed', actorType: 'customer', actorId: req.user._id },
     { revenueHook: false }
   );
+  try {
+    const outbox = require('../services/localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'booking',
+      aggregateId: String(booking._id || req.params.id),
+      eventType: 'booking.disputed',
+      payload: { bookingId: String(booking._id || req.params.id), reason: req.body.reason },
+    });
+  } catch (e) {
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
   res.status(httpStatus.OK).send({ booking });
+});
+
+const confirmCompletion = catchAsync(async (req, res) => {
+  const existing = await Booking.findById(req.params.id);
+  if (!existing) throw new ApiError(httpStatus.NOT_FOUND, 'Booking not found');
+  if (String(existing.customer) !== String(req.user._id)) throw new ApiError(httpStatus.FORBIDDEN, 'Not your booking');
+  if (existing.status !== 'IN_PROGRESS') throw new ApiError(httpStatus.CONFLICT, 'Booking is not in progress');
+  const { booking, revenue } = await bookingService.transitionBooking(
+    req.params.id,
+    'COMPLETED',
+    { reason: req.body.reason || 'customer confirmed completion', actorType: 'system', actorId: req.user._id },
+    {}
+  );
+  res.status(httpStatus.OK).send({ booking, revenue });
 });
 
 const submitReview = catchAsync(async (req, res) => {
@@ -613,6 +684,17 @@ const submitReview = catchAsync(async (req, res) => {
     { booking: booking._id, provider: booking.provider, customer: req.user._id, rating, comment: req.body.comment || undefined },
     { upsert: true, new: true }
   );
+  try {
+    const outbox = require('../services/localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'review',
+      aggregateId: String(review._id),
+      eventType: 'review.submitted',
+      payload: { reviewId: String(review._id), bookingId: String(booking._id), rating },
+    });
+  } catch (e) {
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
   res.status(httpStatus.OK).send({ review });
 });
 
@@ -643,6 +725,17 @@ const listReviews = catchAsync(async (req, res) => {
 const createComplaint = catchAsync(async (req, res) => {
   const { LocalServiceComplaint } = require('../models/localservice.fulfilment.model');
   const doc = await LocalServiceComplaint.create({ raisedBy: req.user._id, ...pick(req.body, ['booking', 'reason']) });
+  try {
+    const outbox = require('../services/localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'complaint',
+      aggregateId: String(doc._id),
+      eventType: 'complaint.created',
+      payload: { complaintId: String(doc._id), booking: req.body.booking },
+    });
+  } catch (e) {
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
   res.status(httpStatus.CREATED).send({ complaint: doc });
 });
 
@@ -672,6 +765,15 @@ const listMyBookings = catchAsync(async (req, res) => {
   const filter = { customer: req.user._id, ...pick(req.query, ['status']) };
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
   res.status(httpStatus.OK).send(await Booking.paginate(filter, options));
+});
+
+const listPartnerQuotes = catchAsync(async (req, res) => {
+  const Quote = require('../models/localservice.quote.model');
+  const myBookings = await Booking.find({ provider: req.user._id }).select('_id').lean();
+  const ids = myBookings.map((b) => b._id);
+  const filter = { booking: { $in: ids }, ...pick(req.query, ['status']) };
+  const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  res.status(httpStatus.OK).send(await Quote.paginate(filter, options));
 });
 
 const getMyBooking = catchAsync(async (req, res) => {
@@ -809,6 +911,17 @@ const decideRefund = catchAsync(async (req, res) => {
       content: `₹${result.amount} refunded for booking ${result.booking.bookingCode}`,
       payload: { bookingId: String(result.booking._id), kind: 'local_service_refund' },
     });
+    try {
+      const outbox = require('../services/localservice.outbox.service');
+      await outbox.enqueue({
+        aggregateType: 'refund',
+        aggregateId: String(doc._id),
+        eventType: 'refund.completed',
+        payload: { refundId: String(doc._id), bookingId: String(result.booking._id), amount: result.amount },
+      });
+    } catch (e) {
+      console.error('LocalServices outbox enqueue failed:', e && e.message);
+    }
     return res.status(httpStatus.OK).send({ refund: result.refund, booking: result.booking });
   } catch (e) {
     await recordAudit(req, {
@@ -866,4 +979,4 @@ const adminListReviews = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(await LocalServiceReview.paginate(filter, options));
 });
 
-module.exports = { createBooking, transitionBooking, submitQuote, acceptQuote, reviseQuote, rescheduleBooking, disputeBooking, submitReview, listReviews, getInvoice, voidInvoice, createComplaint, listMyComplaints, listAllComplaints, resolveComplaint, listMyBookings, getMyBooking, initiatePayment, getBookingPayment, adminListBookings, adminGetBooking, adminListRefunds, adminListInvoices, adminListReviews, decideRefund, retryRefund };
+module.exports = { createBooking, transitionBooking, submitQuote, acceptQuote, reviseQuote, rescheduleBooking, disputeBooking, confirmCompletion, submitReview, listReviews, getInvoice, voidInvoice, createComplaint, listMyComplaints, listAllComplaints, resolveComplaint, listMyBookings, listPartnerQuotes, getMyBooking, initiatePayment, getBookingPayment, adminListBookings, adminGetBooking, adminListRefunds, adminListInvoices, adminListReviews, decideRefund, retryRefund };

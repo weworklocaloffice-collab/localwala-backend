@@ -39,6 +39,7 @@
 
 const { payoutDecision } = require('../utils/commercial.arithmetic');
 const { asMoney } = require('../utils/money');
+const notifyService = require('./jhatka.notify.service');
 
 /** Default floor. Overridable per partner via `ruleSnapshot.minimumNetPayoutPaise`. */
 const DEFAULT_MINIMUM_PAYOUT_PAISE = 5000; // Rs 50
@@ -51,6 +52,8 @@ const DEFAULT_MINIMUM_PAYOUT_PAISE = 5000; // Rs 50
  * @param {object} p.partner `{ _id, partner?, franchise?, outlet, business, businessModel }`
  * @param {number} p.grossPaise  earnings before platform fee
  * @param {number} p.carryInPaise balance carried in from a previous roll-forward
+ * @param {object} p.payoutDetails bank/UPI destination frozen onto the statement
+ * @param {string} p.payoutMethod `bank` | `wallet`
  * @returns {{payout: object|null, decision: object, carryOutPaise: number}}
  */
 async function buildPayout({
@@ -58,8 +61,11 @@ async function buildPayout({
   partner,
   grossPaise,
   carryInPaise = 0,
+  deductPaise = 0,
   partnerFeePct = 10,
   minimumNetPayoutPaise = DEFAULT_MINIMUM_PAYOUT_PAISE,
+  payoutDetails = {},
+  payoutMethod = 'bank',
   models,
   nextNumber,
   items = [],
@@ -69,10 +75,14 @@ async function buildPayout({
 
 const gross = Number(grossPaise) || 0;
   const carryIn = Number(carryInPaise) || 0;
+  // BR-22: stock the partner received this period (ledger STOCK_DEBIT
+  // magnitude) is a DEDUCTION — the partner pays for the meat out of the
+  // statement.
+  const deduct = Math.max(0, Number(deductPaise) || 0);
 
   // Real money field names. See the note at the top of this file.
   const platformFeePaise = Math.round((gross * partnerFeePct) / 100);
-  const netAmountPaise = gross - platformFeePaise + carryIn;
+  const netAmountPaise = gross - platformFeePaise + carryIn - deduct;
 
   // The decision is about the TOTAL payable this period, carry-in included. Deciding on
   // the period's earnings alone and then adding a carried balance would pay out exactly
@@ -89,12 +99,44 @@ const gross = Number(grossPaise) || 0;
     refundDeduction: 0,
     absorbedOvercharge: 0,
     platformFee: asMoney(platformFeePaise),
-    commissionEarned: 0,
+    // What the OPERATOR earned per the statement, summed from the item lines in
+    // JavaScript (never an aggregation): the items carry rupee figures written
+    // through moneyField semantics, so the sum is scaled back to paise first.
+    commissionEarned: asMoney(
+      items.reduce((s, i) => s + Math.round(Number(i.commissionEarned || 0) * 100), 0)
+    ),
     royalty: 0,
-    adjustments: asMoney(carryInPaise),      // the carried-in balance
+    adjustments: asMoney(carryIn - deduct),  // carried-in minus stock recovery (detail in ruleSnapshot)
     netAmount: asMoney(netAmountPaise),
     paidAmount: 0,
   };
+
+  // BR-22: with stock deductions in play a period can net NEGATIVE — the
+  // partner owes LocalWala more than they earned. The balance is not lost: it
+  // carries as a negative carry-in, surfacing in the next period's statement
+  // and on the ledger via the sweep's PAYOUT_NETTING entry.
+  if (!decision.shouldPay && decision.reason === 'negative_net_amount') {
+    const payout = new JhatkaOperatorPayout({
+      payoutNo: nextNumber('OP'),
+      partner: partner.partner,
+      franchise: partner.franchise,
+      outlet: partner.outlet,
+      business: partner.business,
+      businessModel: partner.businessModel,
+      period,
+      ruleSnapshot: { ...ruleSnapshot, minimumNetPayoutPaise },
+      totals,
+      items,
+      status: 'draft',
+      statusReason: 'negative_net_carried_forward',
+      rolledForwardReason:
+        `Rs ${(netAmountPaise / 100).toFixed(2)} owed to LocalWala — carried against future earnings`,
+      payoutMethod,
+      payoutDetails,
+    });
+    await payout.save();
+    return { payout, decision, carryOutPaise: netAmountPaise };
+  }
 
   if (!decision.shouldPay && decision.reason === 'below_minimum_payout_rolled_forward') {
     // Below the floor: the money is NOT lost, it is deferred. The row still exists so
@@ -120,9 +162,18 @@ const gross = Number(grossPaise) || 0;
           minimumNetPayoutPaise / 100
         ).toFixed(2)} minimum; carried to the next period`,
       netPayout: 0,
+      payoutMethod,
+      payoutDetails,
     });
 
     await payout.save();
+
+    await notifyService.notifyOutlet(partner.outlet, 'payout_rolled_forward', {
+      payoutNo: payout.payoutNo,
+      netAmount: `Rs ${(netAmountPaise / 100).toFixed(2)}`,
+      minimumNetPayout: `Rs ${(minimumNetPayoutPaise / 100).toFixed(2)}`,
+    });
+
     return { payout, decision, carryOutPaise: netAmountPaise };
   }
 
@@ -153,6 +204,8 @@ const gross = Number(grossPaise) || 0;
     // payout zeros. `asMoney` is used rather than a bare `/ 100` so the direction is
     // visible at the call site.
     netPayout: asMoney(netAmountPaise),
+    payoutMethod,
+    payoutDetails,
   });
 
   await payout.save();
@@ -160,13 +213,248 @@ const gross = Number(grossPaise) || 0;
 }
 
 /**
+ * Pick the rule in force for `businessModel` at `at`, from an already-fetched
+ * list. Pure, so the unit suite can cover selection without a database.
+ *
+ * Rules: only `active` ones apply; only ones that have TAKEN EFFECT
+ * (`effectiveFrom <= at` — an active rule dated for next month must not govern
+ * this week's payouts); the latest effectiveFrom wins. The partial-unique index
+ * guarantees at most one active rule per business model, so the tie-break is
+ * defensive rather than load-bearing.
+ *
+ * @param {Array<object>} rules
+ * @param {string} businessModel
+ * @param {Date|number|string} at
+ * @returns {object|null}
+ */
+function pickActiveRule(rules, businessModel, at) {
+  const atMs = new Date(at).getTime();
+  return (rules || [])
+    .filter((r) => r.businessModel === businessModel
+      && r.status === 'active'
+      && new Date(r.effectiveFrom).getTime() <= atMs)
+    .sort((a, b) => new Date(b.effectiveFrom) - new Date(a.effectiveFrom))[0] || null;
+}
+
+/**
  * Run the weekly payout sweep for every partner with deliveries in the window.
  *
  * Carries balances forward: a partner whose payout rolled last week starts this week
  * with that balance included, so the accumulation is real rather than nominal.
+ *
+ * The fee percentage is RESOLVED, not assumed: the active `JhatkaCommissionRule`
+ * for the outlet's business model governs when one exists and carries a
+ * `ratePercent`. The caller's `partnerFeePct` (the cron's 10) is only the
+ * FALLBACK for outlets with no effective rule — so a rule the admin activates
+ * genuinely changes what partners are paid, and each payout freezes the rule it
+ * actually used, not a hand-written echo of a default.
  */
-async function runPayoutSweep({ models, from, to, nextNumber, partnerFeePct }) {
-  const { JhatkaDriver, JhatkaDelivery, JhatkaOperatorPayout } = models;
+/**
+ * Run the BR-22 payout sweep: ONE operator payout per OUTLET per period,
+ * computed from ORDER VALUE.
+ *
+ * ## What changed and why (BR-22, the five-document rule)
+ *
+ * The first version of this sweep distributed RIDER delivery fees through
+ * `JhatkaOperatorPayout` - conflating the rider's settlement with the
+ * operator's, and grossing on delivery fees that are (today) zero, so no
+ * payout ever existed and the commission rules had nothing to govern. Now:
+ *
+ *   - THIS sweep writes the OPERATOR statement: gross = the order value the
+ *     outlet's counters actually delivered (finalTotal of DELIVERED/COMPLETED
+ *     orders in the window), platform fee = the active commission rule's
+ *     `platformFeePercent` on that value, the partner's earning = `ratePercent`
+ *     (recorded, never deducted), and stock recovery = the period's ledger
+ *     STOCK_DEBIT magnitude (the partner pays for the meat out of the
+ *     statement - Design B).
+ *   - RIDER fees go to their own document: `runRiderFeeSweep` below writes
+ *     `JhatkaDeliverySettlement` rows. Never the same doc (BR-22).
+ *
+ * A period can net NEGATIVE (fees + stock > sales). `buildPayout` carries that
+ * as a negative roll-forward (statusReason `negative_net_carried_forward`), and
+ * the carry-in reader below picks up both roll-forward reasons, so the balance
+ * survives until earnings cover it.
+ *
+ * ## Units, stated once
+ *
+ * Orders are read LEAN: every moneyField is the RAW stored paise. All sums are
+ * paise in and paise out; `buildPayout` converts at its moneyField boundary.
+ * No x100, no /100 in this function - the classic F-9 trap lives exactly here.
+ */
+async function runPayoutSweep({ models, from, to, nextNumber, partnerFeePct = 10 }) {
+  const {
+    JhatkaOutlet, JhatkaOrder, JhatkaOperatorPayout,
+    JhatkaCommissionRule, JhatkaPartnerLedger, JhatkaPartner,
+  } = models;
+
+  const activeRules = await JhatkaCommissionRule.find({ status: 'active' }).lean();
+  const outlets = await JhatkaOutlet.find({ status: 'active' })
+    .select('_id business businessModel partner franchise paymentConfig')
+    .lean();
+
+  // Freeze the destination ONTO the statement at generation time. Without this
+  // the approve route always refused with NO_PAYOUT_DESTINATION, so a sweep
+  // payout could never reach `paid`. The outlet's own account wins (a payout is
+  // per outlet); the partner account is the fallback for outlets that have not
+  // set one.
+  const partnerIds = [...new Set(outlets.map((o) => o.partner).filter(Boolean).map(String))];
+  const partners = partnerIds.length
+    ? await JhatkaPartner.find({ _id: { $in: partnerIds } })
+      .select('bank payoutMethod')
+      .lean()
+    : [];
+  const partnerById = new Map(partners.map((p) => [String(p._id), p]));
+
+  const results = [];
+
+  for (const outlet of outlets) {
+    const orders = await JhatkaOrder.find({
+      outlet: outlet._id,
+      lifecycle: { $in: ['DELIVERED', 'COMPLETED'] },
+      deliveredAt: { $gte: from, $lt: to },
+    })
+      .select('finalTotal orderNo deliveredAt')
+      .lean();
+
+    if (!orders.length) continue;
+
+    const grossPaise = orders.reduce(
+      (s, o) => s + Math.max(0, Number(o.finalTotal || 0)),
+      0
+    );
+
+    // Whatever this partner failed to collect last period (either roll-forward
+    // reason - the balance is the same fact in both clothes).
+    const priorCarries = await JhatkaOperatorPayout.find({
+      outlet: outlet._id,
+      status: 'draft',
+      statusReason: { $in: ['below_minimum_payout_rolled_forward', 'negative_net_carried_forward'] },
+      'period.to': { $lt: from },
+    })
+      .select('totals.netAmount')
+      .lean();
+
+    // Lean read: netAmount is the RAW stored paise. Take it at face value (the
+    // x100 version of this line was a real 100x carry bug - see Addendum 7).
+    const carryInPaise = priorCarries.reduce(
+      (s, p) => s + Math.round(p.totals?.netAmount || 0),
+      0
+    );
+
+    // Stock recovery: the outlet's ledger STOCK_DEBIT magnitude inside the
+    // window. The debit is stored NEGATIVE (partner's perspective); the
+    // deduction is its absolute value.
+    const stockDebits = await JhatkaPartnerLedger.find({
+      outlet: outlet._id,
+      entryType: 'STOCK_DEBIT',
+      createdAt: { $gte: from, $lt: to },
+    })
+      .select('amountPaise')
+      .lean();
+    const stockDebitPaise = stockDebits.reduce(
+      (s, e) => s + Math.abs(Number(e.amountPaise) || 0),
+      0
+    );
+
+    const payoutBusinessModel = outlet.businessModel === 'franchise'
+      ? 'franchise'
+      : 'commission_partner';
+    const rule = pickActiveRule(activeRules, payoutBusinessModel, to);
+    const appliedFeePct = rule?.platformFeePercent ?? partnerFeePct;
+    const partnerRatePct = rule?.ratePercent ?? 0;
+    const appliedSnapshot = rule
+      ? {
+          ...(rule.toSnapshot ? rule.toSnapshot() : rule),
+          appliedPlatformFeePct: appliedFeePct,
+          appliedPartnerRatePct: partnerRatePct,
+          stockRecoveryPaise: stockDebitPaise,
+        }
+      : {
+          platformFeePct: appliedFeePct,
+          partnerRatePct,
+          stockRecoveryPaise: stockDebitPaise,
+          source: 'default_no_active_rule',
+        };
+
+    const partnerRecord = outlet.partner ? partnerById.get(String(outlet.partner)) : null;
+    const outletBank = outlet.paymentConfig?.bank || {};
+    const payoutDetails = (outletBank.ifsc || outletBank.upiId)
+      ? outletBank
+      : (partnerRecord?.bank || {});
+    const payoutMethod = outlet.paymentConfig?.payoutMethod
+      || partnerRecord?.payoutMethod
+      || 'bank';
+
+    const built = await buildPayout({
+      period: {
+        from,
+        to,
+        label: new Date(from).toISOString().slice(0, 10) + '/' + new Date(to).toISOString().slice(0, 10),
+      },
+      partner: {
+        partner: outlet.partner,
+        franchise: outlet.franchise,
+        outlet: outlet._id,
+        business: outlet.business,
+        businessModel: payoutBusinessModel,
+      },
+      grossPaise,
+      carryInPaise,
+      deductPaise: stockDebitPaise,
+      partnerFeePct: appliedFeePct,
+      payoutDetails,
+      payoutMethod,
+      models,
+      nextNumber,
+      items: orders.map((o) => {
+        const grossOrderValue = Number(o.finalTotal || 0) / 100; // paise -> rupees
+        return {
+          order: o._id,
+          orderNo: o.orderNo,
+          orderDate: new Date(o.deliveredAt || Date.now()),
+          grossOrderValue,
+          commissionableRevenue: grossOrderValue,
+          revenueComponents: { product: grossOrderValue, delivery: 0, packaging: 0, service: 0 },
+          refundDeduction: 0,
+          platformFee: grossOrderValue * (appliedFeePct / 100),
+          commissionEarned: grossOrderValue * (partnerRatePct / 100),
+          ruleSnapshot: appliedSnapshot,
+        };
+      }),
+      ruleSnapshot: appliedSnapshot,
+    });
+
+    results.push({
+      outlet: String(outlet._id),
+      grossPaise,
+      stockDebitPaise,
+      carryInPaise,
+      platformFeePct: appliedFeePct,
+      partnerRatePct,
+      netPaise: built.decision.amount,
+      shouldPay: built.decision.shouldPay,
+      reason: built.decision.reason,
+      payoutNo: built.payout?.payoutNo,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * RIDER fees - their OWN document per BR-22 (`JhatkaDeliverySettlement`,
+ * LocalWala -> Driver). The platform does not take a cut of the rider's fee:
+ * the operator's statement above carries the platform's economics, and this
+ * statement carries the rider's. Mixing them is what BR-22 exists to forbid.
+ *
+ * Per active driver with delivered deliveries in the window:
+ *   deliveryFeeEarned = sum of order.deliveryFee (raw stored paise, lean)
+ *   netAmount         = deliveryFeeEarned + adjustments (v1: no adjustments)
+ *
+ * @returns {Promise<Array>} one summary per settlement written
+ */
+async function runRiderFeeSweep({ models, from, to, nextNumber }) {
+  const { JhatkaDriver, JhatkaDelivery, JhatkaDeliverySettlement } = models;
 
   const drivers = await JhatkaDriver.find({ status: 'active' })
     .select('_id outlet payoutMode')
@@ -180,98 +468,62 @@ async function runPayoutSweep({ models, from, to, nextNumber, partnerFeePct }) {
       status: 'delivered',
       codFrozenAt: { $gte: from, $lt: to },
     })
-      .populate('order')
+      .populate('order', 'deliveryFee')
       .lean();
 
     if (!deliveries.length) continue;
 
-    let grossPaise = 0;
-    for (const d of deliveries) {
-      // The delivery fee a rider earns lives on the ORDER, not the delivery. The
-      // previous version read `order.payment.driverCommissionPaise`, which is not a
-      // field on either model, so every sum was zero.
-      grossPaise += d.order?.deliveryFee || 0;
-    }
-
-    // Whatever this partner failed to collect last period.
-    const priorCarries = await JhatkaOperatorPayout.find({
-      outlet: driver.outlet,
-      status: 'draft',
-      statusReason: 'below_minimum_payout_rolled_forward',
-      'period.to': { $lt: from },
-    })
-      .select('totals.netAmount')
-      .lean();
-
-    const carryInPaise = priorCarries.reduce(
-      (s, p) => s + Math.round((p.totals?.netAmount || 0) * 100),
+    // Lean: order.deliveryFee is RAW PAISE.
+    const feePaise = deliveries.reduce(
+      (s, d) => s + Math.max(0, Number(d.order?.deliveryFee || 0)),
       0
     );
+    if (feePaise <= 0) continue;
 
-    const outlet = await models.JhatkaOutlet.findById(driver.outlet).lean();
-    if (!outlet) continue;
-
-    const built = await buildPayout({
+    const settlement = await JhatkaDeliverySettlement.create({
+      settlementNo: nextNumber('DS'),
+      driver: driver._id,
+      outlet: driver.outlet,
+      payoutMode: driver.payoutMode || 'business_pays',
       period: {
         from,
         to,
-        label: `${new Date(from).toISOString().slice(0, 10)}/${new Date(to).toISOString().slice(0, 10)}`,
+        label: new Date(from).toISOString().slice(0, 10) + '/' + new Date(to).toISOString().slice(0, 10),
       },
-      partner: {
-        partner: outlet.partner,
-        franchise: outlet.franchise,
-        outlet: outlet._id,
-        business: outlet.business,
-        // Validated by the model; a missing value here fails the save with a message
-        // naming one field, so it is resolved explicitly first.
-        businessModel: outlet.businessModel === 'franchise' ? 'franchise' : 'commission_partner',
+      totals: {
+        deliveryCount: deliveries.length,
+        successfulCount: deliveries.length,
+        failedCount: 0,
+        deliveryFeeEarned: feePaise / 100, // moneyField takes RUPEES
+        netAmount: feePaise / 100,         // POSITIVE: the platform owes the rider
       },
-      grossPaise,
-      carryInPaise,
-      partnerFeePct,
-      models,
-      nextNumber,
-      items: deliveries.map((d) => {
-        // `items[]` on `JhatkaOperatorPayout` is keyed on ORDER, not delivery —
-        // `order` and `orderNo` are both required. One payout line per ORDER, with the
-        // delivery's fee folded into `revenueComponents.delivery`.
-        const order = d.order || {};
-        const deliveryFee = Number(order.deliveryFee || 0) / 100; // paise -> rupees
-        const grossOrderValue = Number(order.finalTotal || order.estimatedTotal || 0) / 100;
-
-        return {
-          order: order._id,
-          orderNo: order.orderNo || String(d._id),
-          orderDate: new Date(d.codFrozenAt || order.createdAt || Date.now()),
-          grossOrderValue,
-          commissionableRevenue: grossOrderValue,
-          revenueComponents: {
-            product: Math.max(0, grossOrderValue - deliveryFee),
-            delivery: deliveryFee,
-            packaging: Number(order.packagingFee || 0) / 100,
-            service: 0,
-          },
-          refundDeduction: 0,
-          platformFee: deliveryFee * (partnerFeePct / 100),
-          commissionEarned: 0,
-          ruleSnapshot: { partnerFeePct },
-        };
-      }).filter((i) => i.order),
-      ruleSnapshot: { partnerFeePct },
+      deliveries: deliveries.map((d) => ({
+        delivery: d._id,
+        deliveryNo: d.deliveryNo,
+        deliveredAt: d.codFrozenAt || new Date(),
+        // Per-line fee snapshot (the totals are the sum of these) and the
+        // payer, REQUIRED per line.
+        deliveryFee: (Number(d.order?.deliveryFee) || 0) / 100,
+        payoutMode: driver.payoutMode || 'business_pays',
+      })),
+      status: 'draft',
     });
 
     results.push({
       driver: String(driver._id),
-      grossPaise,
-      carryInPaise,
-      netPaise: built.decision.amount,
-      shouldPay: built.decision.shouldPay,
-      reason: built.decision.reason,
-      payoutNo: built.payout?.payoutNo,
+      settlementNo: settlement.settlementNo,
+      deliveryCount: deliveries.length,
+      feePaise,
     });
   }
 
   return results;
 }
 
-module.exports = { buildPayout, runPayoutSweep, DEFAULT_MINIMUM_PAYOUT_PAISE };
+module.exports = {
+  buildPayout,
+  runPayoutSweep,
+  runRiderFeeSweep,
+  pickActiveRule,
+  DEFAULT_MINIMUM_PAYOUT_PAISE,
+};

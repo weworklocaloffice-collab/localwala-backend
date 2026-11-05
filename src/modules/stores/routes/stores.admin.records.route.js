@@ -73,7 +73,7 @@ router.get('/drivers/:driver', webAuth('stores_records_read'), validate(V.driver
 // stuck delivery needs the row regardless of which outlet created it.
 
 router.get('/deliveries', webAuth('stores_records_read'), validate(V.deliveryList), deliveryController.listDeliveries);
-router.get('/deliveries/:delivery', webAuth('stores_records_read'), validate(V.deliveryId), deliveryController.getDelivery);
+router.get('/deliveries/:delivery', webAuth('stores_records_read'), validate(V.deliveryId), deliveryController.getDeliveryById);
 
 /**
  * BR-08 — a driver is never hard-deleted. There is deliberately no DELETE on this path:
@@ -194,6 +194,10 @@ router.get('/refunds', webAuth('stores_records_read'), validate(V.refundList), c
 // -- subscriptions ------------------------------------------------------------
 
 router.get('/subscriptions', webAuth('stores_records_read'), validate(V.subscriptionList), controller.listSubscriptions);
+
+// Customer subscriptions (admin oversight, §6.18.10).
+router.get('/customer-subscriptions', webAuth('stores_records_read'), controller.listCustomerSubscriptions);
+router.patch('/customer-subscriptions/:subscription/:status', webAuth('stores_records_write'), controller.transitionCustomerSubscription);
 router.get(
   '/subscription-payments',
   webAuth('stores_records_read'),

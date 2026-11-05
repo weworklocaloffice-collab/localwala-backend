@@ -445,6 +445,9 @@ console.log('\n-- §5.4 recall: who ate this batch --');
      `${scope.deliveredCount}/${scope.undeliveredCount}`);
   ok('only DELIVERED orders generate a customer notification',
      scope.affectedCustomers.length === 1);
+  ok('...and the customer survives the order-level collapse',
+     String(scope.affectedCustomers[0].customer) === OID,
+     String(scope.affectedCustomers[0].customer));
   ok('and the notification carries the order it refers to',
      scope.affectedCustomers[0].orders.length === 1);
   ok('undelivered orders are REPORTED, not dropped — they need ON_HOLD',

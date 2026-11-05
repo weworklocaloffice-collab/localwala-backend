@@ -19,8 +19,8 @@
 /**
  * jhatka.admin.operations.route.js — B1.5
  *
- * The variance console (weight fraud), yield specs, and three GET-only operational
- * consoles the plan names separately.
+ * The variance console (weight fraud), yield specs, read-only operational consoles,
+ * and the two human escape hatches for refunds the automated queue cannot settle.
  *
  * ## Schema verified against `docs/JHATKA-ADMIN-SCHEMA-SURVEY.md`
  *
@@ -68,12 +68,19 @@ const {
   JhatkaOutlet,
   JhatkaCompliance,
   JhatkaRecall,
+  PaymentInitiation,
+  PaymentConfig,
 } = require('../../../models');
 const analyticsService = require('../services/jhatka.analytics.service');
+const refundSettlement = require('../services/jhatka.refund.settlement');
 
 const router = express.Router();
 const validate = require('../../../middlewares/validate');
 const V = require('../validations/jhatka.admin.validation');
+
+// `.lean()` bypasses the model's toJSON `id` virtual. The console acts on `id`, so
+// every lean row returned here must carry the same identifier the model promises.
+const withLeanId = (doc) => (doc ? { ...doc, id: String(doc._id) } : doc);
 
 const FLAG_ACTIONS = ['none', 'observed', 'reviewed', 'escalated', 'calibrated', 'fraud_referred'];
 const CUT_TYPES = [
@@ -126,7 +133,7 @@ router.get('/operations/variance', webAuth('jhatka_inventory_read'), async (req,
     const under = flags.filter((f) => f.direction === 'under');
 
     return res.json({
-      flags,
+      flags: flags.map(withLeanId),
       page: Number(page),
       limit: Number(limit),
       total,
@@ -197,9 +204,9 @@ if (note) flag.actionNote = note;
 /**
  * GET /v1/jhatka/admin/operations/refunds
  *
- * GET-ONLY CONSOLE over `JhatkaRefund`. The refund SETTLEMENT job is the only thing
- * that may change a refund's status; this is the operator's view of the queue, which
- * is what you need when one is stuck in `FAILED` with five attempts.
+ * The operator's view of the refund queue. Automatic settlement still owns the happy
+ * path; this console shows the rows where that path stopped, and the two POST routes
+ * below are the deliberate human escape hatches.
  */
 router.get('/operations/refunds', webAuth('jhatka_payables_read'), async (req, res, next) => {
   try {
@@ -226,7 +233,7 @@ router.get('/operations/refunds', webAuth('jhatka_payables_read'), async (req, r
     ]);
 
     return res.json({
-      refunds,
+      refunds: refunds.map(withLeanId),
       page: Number(page),
       limit: Number(limit),
       total,
@@ -240,6 +247,66 @@ router.get('/operations/refunds', webAuth('jhatka_payables_read'), async (req, r
     return next(error);
   }
 });
+
+/**
+ * POST /v1/jhatka/admin/operations/refunds/:refund/retry
+ *
+ * Re-issue a parked or stuck refund through the SAME document. The service resets
+ * the exhausted attempt counter but derives the idempotency key from the refund id,
+ * so a gateway that already accepted the original request de-duplicates it instead
+ * of paying twice.
+ */
+router.post(
+  '/operations/refunds/:refund/retry',
+  webAuth('jhatka_settlement_write'),
+  validate(V.namedParam('refund')),
+  validate(V.refundRetryBody),
+  async (req, res, next) => {
+    try {
+      const refund = await refundSettlement.retryRefund({
+        models: {
+          JhatkaRefund, JhatkaOrder, PaymentInitiation, PaymentConfig,
+        },
+        refundId: req.params.refund,
+        actor: { _id: req.user._id, name: req.user.name },
+        note: req.body?.note,
+      });
+
+      return res.json({ refund: withLeanId(refund.toObject()) });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
+/**
+ * POST /v1/jhatka/admin/operations/refunds/:refund/resolve
+ *
+ * Close a FAILED refund that finance settled OUTSIDE the gateway queue. Only a
+ * FAILED row is eligible: a PROCESSING row may still be in flight, and marking that
+ * paid could pay twice. The reference and operator note are both mandatory.
+ */
+router.post(
+  '/operations/refunds/:refund/resolve',
+  webAuth('jhatka_settlement_write'),
+  validate(V.namedParam('refund')),
+  validate(V.refundResolveBody),
+  async (req, res, next) => {
+    try {
+      const refund = await refundSettlement.resolveRefundManually({
+        models: { JhatkaRefund, JhatkaOrder },
+        refundId: req.params.refund,
+        actor: { _id: req.user._id, name: req.user.name },
+        paymentReference: req.body.paymentReference,
+        note: req.body.note,
+      });
+
+      return res.json({ refund: withLeanId(refund.toObject()) });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
 
 /**
  * GET /v1/jhatka/admin/operations/recurring-orders
@@ -269,7 +336,7 @@ router.get('/operations/recurring-orders', webAuth('jhatka_subscription_read'), 
     // `reserved` is the health signal: it means -9.4 actually claimed stock. An
     // occurrence that is `generated` but not `reserved` promised meat it never held.
     return res.json({
-      occurrences,
+      occurrences: occurrences.map(withLeanId),
       count: occurrences.length,
       summary: {
         reserved: occurrences.filter((o) => o.stockReserved).length,
@@ -302,7 +369,7 @@ router.get('/operations/subscriptions', webAuth('jhatka_subscription_read'), asy
       .lean();
 
     return res.json({
-      subscriptions,
+      subscriptions: subscriptions.map(withLeanId),
       count: subscriptions.length,
       summary: {
         active: subscriptions.filter((s) => s.status === 'active').length,
@@ -352,7 +419,9 @@ router.get('/operations/cancellations', webAuth('jhatka_order_read'), async (req
       byActor[a] = (byActor[a] || 0) + 1;
     }
 
-    return res.json({ orders, count: orders.length, byReason, byActor });
+    return res.json({
+      orders: orders.map(withLeanId), count: orders.length, byReason, byActor,
+    });
   } catch (error) {
     return next(error);
   }
@@ -372,7 +441,7 @@ router.get('/operations/yield-specs', webAuth('jhatka_catalog_read'), async (req
       .sort({ cutType: 1, name: 1 })
       .lean();
 
-    return res.json({ yieldSpecs: specs, count: specs.length });
+    return res.json({ yieldSpecs: specs.map(withLeanId), count: specs.length });
   } catch (error) {
     return next(error);
   }

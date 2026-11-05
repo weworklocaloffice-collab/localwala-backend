@@ -664,6 +664,29 @@ const getCatalogHealth = async () => {
   };
 };
 
+/**
+ * Public storefront profile of one outlet.
+ *
+ * Feeds the customer app's outlet screen: who runs it, where it is, and whether
+ * it is verified — everything a customer needs before subscribing to it. Only
+ * fields safe for unauthenticated reads are selected; owner, contact email,
+ * commission and territory are deliberately absent. A closed or unverified
+ * business still resolves, because the customer must be able to *see* why they
+ * cannot order from it, not hit a 404.
+ */
+const getBusinessProfile = async (id) => {
+  const business = await Business.findOne({ _id: id, vertical: 'dairy' })
+    .select('name code logo cover description city locality businessModel verified rating ownDeliveryPartner status')
+    .populate('city', 'name')
+    .populate('locality', 'name')
+    .lean();
+
+  if (!business) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
+  }
+  return business;
+};
+
 module.exports = {
   createCategory,
   listCategories,
@@ -690,4 +713,5 @@ module.exports = {
   searchProducts,
   importProducts,
   getCatalogHealth,
+  getBusinessProfile,
 };

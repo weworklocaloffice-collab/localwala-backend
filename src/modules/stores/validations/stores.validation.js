@@ -232,6 +232,46 @@ const orderIdValidation = {
   params: Joi.object({ order: objectId.required() }).required(),
 };
 
+// Additional param validations for routes that previously lacked them.
+const subscriptionIdValidation = Joi.object({ subscription: objectId.required() }).required();
+
+
+const planIdValidation = Joi.object({ plan: objectId.required() }).required();
+
+
+const driverIdValidation = Joi.object({ driver: objectId.required() }).required();
+
+
+const policyIdValidation = Joi.object({ policy: objectId.required() }).required();
+
+
+const returnIdValidation = Joi.object({ return: objectId.required() }).required();
+
+
+const deliveryIdValidation = Joi.object({ delivery: objectId.required() }).required();
+
+
+const remittanceIdValidation = Joi.object({ remittance: objectId.required() }).required();
+
+
+const promotionIdValidation = Joi.object({ promotion: objectId.required() }).required();
+
+
+const reviewIdValidation = Joi.object({ review: objectId.required() }).required();
+
+
+const complaintIdValidation = Joi.object({ complaint: objectId.required() }).required();
+
+
+const warrantyIdValidation = Joi.object({ warranty: objectId.required() }).required();
+
+
+const featuredIdValidation = Joi.object({ placement: objectId.required() }).required();
+
+
+const customerIdValidation = Joi.object({ customer: objectId.required() }).required();
+
+
 // ---------------------------------------------------------------------------
 // onboarding
 // ---------------------------------------------------------------------------
@@ -1011,7 +1051,7 @@ const complaintListValidation = {
   }),
 };
 
-module.exports = {
+const schemas = {
   onboardingDraftValidation,
   submitValidation,
   applicationIdValidation,
@@ -1052,8 +1092,30 @@ module.exports = {
   cartUpdateValidation,
   cartRemoveValidation,
   cartOutletValidation,
+  // GET /v1/stores/customer/eligibility/reasons explains WHY an outlet is hidden from a
+  // saved address (§7.2 line 2748). Already `{ query }`-shaped, so it needs no registry entry.
+  eligibilityReasonsValidation: {
+    query: Joi.object({
+      outlet: objectId.required(),
+      address: objectId,
+    }),
+  },
   orderCreateValidation,
   customerOrderIdValidation: orderIdValidation,
+  orderIdValidation,
+  subscriptionIdValidation,
+  planIdValidation,
+  driverIdValidation,
+  policyIdValidation,
+  returnIdValidation,
+  deliveryIdValidation,
+  remittanceIdValidation,
+  promotionIdValidation,
+  reviewIdValidation,
+  complaintIdValidation,
+  warrantyIdValidation,
+  featuredIdValidation,
+  customerIdValidation,
   orderPayValidation,
   subscriptionPayValidation,
   pickItemValidation,
@@ -1151,8 +1213,20 @@ module.exports = {
     category: objectId,
     subcategory: objectId,
   }),
+  brandRequestCreateValidation: Joi.object({
+    name: Joi.string().trim().min(2).max(100).required(),
+    category: objectId,
+    subcategory: objectId,
+    note: Joi.string().trim().max(1000).allow(''),
+  }),
+  brandRequestListValidation: Joi.object({
+    status: Joi.string().valid('pending', 'approved', 'rejected', 'all').default('all'),
+    page: Joi.number().integer().min(1).default(1),
+    limit: Joi.number().integer().min(1).max(100).default(20),
+  }),
   taxonomyQueryValidation: Joi.object({
     category: objectId,
+    search: Joi.string().trim().max(100).allow(''),
   }),
 
   // -- inventory -----------------------------------------------------
@@ -1188,7 +1262,7 @@ module.exports = {
     approval: Joi.string().valid('not_required', 'pending', 'approved', 'rejected'),
   }),
   productApproval: Joi.object({
-    product: objectId.required(),
+    product: objectId,
     status: Joi.string().valid('approved', 'rejected').required(),
     note: Joi.string().trim().max(1000),
   }),
@@ -1214,11 +1288,43 @@ module.exports = {
   orderListValidation: Joi.object({
     lifecycle: Joi.string().valid('created', 'payment_pending', 'paid', 'store_received', 'accepted', 'picking', 'packing', 'ready', 'driver_assigned', 'picked_up', 'out_for_delivery', 'delivered', 'completed', 'rejected', 'cancelled', 'payment_failed'),
     page: Joi.number().integer().min(1).default(1),
-    limit: Joi.number().integer().min(1).max(100).default(20),
-  }),
-  orderIdValidation: Joi.object({
-    order: objectId.required(),
-  }),
+     limit: Joi.number().integer().min(1).max(100).default(20),
+   }),
+  orderPartnerTransitionValidation: {
+    params: Joi.object({
+      order: objectId.required(),
+      status: Joi.string().valid('accepted', 'picking', 'packing', 'ready').required(),
+    }),
+  },
+  orderRejectValidation: {
+    params: Joi.object({ order: objectId.required() }),
+    body: Joi.object({
+      reason: Joi.string().trim().min(3).max(500).required(),
+      reasonCode: Joi.string()
+        .valid(
+          'out_of_stock',
+          'store_closed',
+          'cannot_fulfil',
+          'pricing_issue',
+          'duplicate_order',
+          'customer_unreachable',
+          'other'
+        )
+        .required(),
+    }),
+  },
+  deliveryPartnerTransitionValidation: {
+    params: Joi.object({
+      delivery: objectId.required(),
+      status: Joi.string().valid('cancelled').required(),
+    }),
+  },
+  deliveryDriverTransitionValidation: {
+    params: Joi.object({
+      delivery: objectId.required(),
+      status: Joi.string().valid('accepted', 'picked_up', 'out_for_delivery').required(),
+    }),
+  },
 
   // -- subscription --------------------------------------------------
   subscriptionPlanValidation: Joi.object({
@@ -1285,6 +1391,102 @@ module.exports = {
     notes: Joi.string(),
   }),
 
+  // Customer post-sale bodies. The customer names WHAT they are returning or
+  // exchanging; the server derives outlet, chain, name, price and refund from
+  // the order. Prices and totals sent by a customer are ignored by design.
+  orderReviewValidation: {
+    body: Joi.object({
+      rating: Joi.number().integer().min(1).max(5).required(),
+      title: Joi.string().trim().max(200),
+      comment: Joi.string().trim().max(2000),
+      images: Joi.array().items(Joi.string()).default([]),
+      productRatings: Joi.array().items(Joi.object({
+        product: objectId.required(),
+        rating: Joi.number().integer().min(1).max(5).required(),
+        title: Joi.string().trim().max(200),
+        comment: Joi.string().trim().max(2000),
+        images: Joi.array().items(Joi.string()).default([]),
+      })).default([]),
+    }).required(),
+  },
+  customerReturnCreateValidation: {
+    body: Joi.object({
+      order: objectId.required(),
+      items: Joi.array()
+        .items(
+          Joi.object({
+            product: objectId.required(),
+            variant: objectId.required(),
+            quantity: Joi.number().integer().min(1).required(),
+            reason: Joi.string().trim().min(3).max(500),
+            condition: Joi.string().valid(
+              'unopened',
+              'opened_unused',
+              'defective',
+              'damaged',
+              'wrong_item',
+              'other'
+            ),
+            notes: Joi.string().trim().max(500),
+            images: Joi.array().items(Joi.string()).default([]),
+          }).required()
+        )
+        .min(1)
+        .required(),
+      reason: Joi.string().trim().min(3).max(500).required(),
+      reasonCategory: Joi.string().valid(
+        'defective',
+        'wrong_item',
+        'damaged_in_delivery',
+        'not_as_described',
+        'changed_mind',
+        'other'
+      ),
+      images: Joi.array().items(Joi.string()).default([]),
+      notes: Joi.string().trim().max(1000),
+    }).required(),
+  },
+  customerExchangeCreateValidation: {
+    body: Joi.object({
+      order: objectId.required(),
+      items: Joi.array()
+        .items(
+          Joi.object({
+            originalProduct: objectId.required(),
+            originalVariant: objectId.required(),
+            exchangeForProduct: objectId,
+            exchangeForVariant: objectId,
+            quantity: Joi.number().integer().min(1).required(),
+            reason: Joi.string().trim().min(3).max(500),
+            condition: Joi.string().valid(
+              'unopened',
+              'opened_unused',
+              'defective',
+              'damaged',
+              'wrong_item',
+              'other'
+            ),
+            notes: Joi.string().trim().max(500),
+            images: Joi.array().items(Joi.string()).default([]),
+          }).required()
+        )
+        .min(1)
+        .required(),
+      reason: Joi.string().trim().min(3).max(500).required(),
+      reasonCategory: Joi.string().valid(
+        'defective',
+        'wrong_item',
+        'damaged_in_delivery',
+        'not_as_described',
+        'size_fit',
+        'changed_mind',
+        'other'
+      ),
+      images: Joi.array().items(Joi.string()).default([]),
+      notes: Joi.string().trim().max(1000),
+    }).required(),
+  },
+
   // -- promotions ----------------------------------------------------
   promotionCreateValidation: {
     body: Joi.object({
@@ -1345,7 +1547,9 @@ module.exports = {
     status: Joi.string().valid('approved', 'rejected', 'archived').required(),
     reply: Joi.object({
       text: Joi.string().trim().max(1000).required(),
-      repliedBy: objectId.required(),
+      // The controller overwrites this with `req.user._id`; requiring it in the
+      // payload made a valid moderation request fail before the controller ran.
+      repliedBy: objectId,
     }),
   }),
 
@@ -1381,16 +1585,89 @@ module.exports = {
   }),
 
   // -- settlement ----------------------------------------------------
-  settlementListValidation: Joi.object({
-    status: Joi.string().valid('pending', 'processing', 'settled', 'failed', 'reversed', 'disputed'),
-    period: Joi.string().valid('daily', 'weekly', 'monthly', 'custom'),
-    page: Joi.number().integer().min(1).default(1),
-    limit: Joi.number().integer().min(1).max(100).default(20),
-  }),
-  settlementGenerateValidation: Joi.object({
-    store: objectId.required(),
-    period: Joi.string().valid('daily', 'weekly', 'monthly', 'custom').required(),
-    from: Joi.date().required(),
-    to: Joi.date().greater(Joi.ref('from')).required(),
-  }),
+  settlementListValidation: {
+    query: Joi.object({
+      status: Joi.string().valid('pending', 'processing', 'settled', 'failed', 'reversed', 'disputed'),
+      period: Joi.string().valid('daily', 'weekly', 'monthly', 'custom'),
+      page: Joi.number().integer().min(1).default(1),
+      limit: Joi.number().integer().min(1).max(100).default(20),
+    }),
+  },
+  settlementGenerateValidation: {
+    body: Joi.object({
+      period: Joi.string().valid('daily', 'weekly', 'monthly', 'custom').required(),
+      from: Joi.date().required(),
+      to: Joi.date().greater(Joi.ref('from')).required(),
+    }),
+  },
+  settlementIdValidation: {
+    params: Joi.object({ settlement: objectId.required() }).required(),
+  },
 };
+
+/**
+ * Wrap the schemas that describe a raw request body or query.
+ *
+ * `validate()` only reads `params`, `query` and `body`; a bare `Joi.object()` has none
+ * of those keys, so it was silently skipped. That is not a theoretical gap: the partner
+ * return, exchange and review writes - the routes that move money - reached their
+ * services unvalidated.
+ *
+ * Keeping the declarations above bare and wrapping them once here makes the target
+ * explicit in one list instead of repeating the wrapper at every call site. The
+ * `verify.stores.validation.wiring.js` suite fails if a new bare schema is passed to
+ * `validate()` without being added below.
+ */
+const BODY_SCHEMAS = [
+  'productCreateValidation',
+  'productUpdateValidation',
+  'variantGenerateValidation',
+  'stockAdjustValidation',
+  'productApproval',
+  'subscriptionPlanValidation',
+  'deliveryAssignValidation',
+  'deliveryOtpValidation',
+  'deliveryCodValidation',
+  'returnCreateValidation',
+  'exchangeCreateValidation',
+  'reviewCreateValidation',
+  'reviewModerateValidation',
+  'driverCreateValidation',
+  'driverUpdateValidation',
+  'brandRequestCreateValidation',
+];
+
+const QUERY_SCHEMAS = [
+  'productListValidation',
+  'productFormQueryValidation',
+  'taxonomyQueryValidation',
+  'stockListValidation',
+  'movementListValidation',
+  'productAdminList',
+  'inventoryStockList',
+  'inventoryMovementList',
+  'orderListValidation',
+  'brandRequestListValidation',
+];
+
+const PARAMS_SCHEMAS = [
+  'subscriptionIdValidation',
+  'planIdValidation',
+  'driverIdValidation',
+  'policyIdValidation',
+  'returnIdValidation',
+  'deliveryIdValidation',
+  'remittanceIdValidation',
+  'promotionIdValidation',
+  'reviewIdValidation',
+  'complaintIdValidation',
+  'warrantyIdValidation',
+  'featuredIdValidation',
+  'customerIdValidation',
+];
+
+for (const key of BODY_SCHEMAS) schemas[key] = { body: schemas[key] };
+for (const key of QUERY_SCHEMAS) schemas[key] = { query: schemas[key] };
+for (const key of PARAMS_SCHEMAS) schemas[key] = { params: schemas[key] };
+
+module.exports = schemas;

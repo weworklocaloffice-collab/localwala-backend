@@ -19,6 +19,7 @@
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
+const { withOptionalTransaction } = require('../../../utils/optionalTransaction');
 
 const SUBSCRIPTION_TRANSITIONS = {
   trial: ['active', 'payment_due', 'cancelled', 'expired'],
@@ -103,7 +104,7 @@ const createSubscription = async ({ chain, business, plan, amount, taxAmount, to
  * sweep idempotent: a restart mid-ladder resumes at the rung the database says, not at
  * whatever the previous process had in a variable.
  */
-const transitionSubscription = async (subscriptionId, to, { notes, actor } = {}) => {
+const transitionSubscription = async (subscriptionId, to, { notes, actor, session = null } = {}) => {
   const StoreSubscription = mongoose.model('StoreSubscription');
   const sub = await StoreSubscription.findById(subscriptionId);
   if (!sub) throw new ApiError(httpStatus.NOT_FOUND, 'Subscription not found');
@@ -157,7 +158,7 @@ const transitionSubscription = async (subscriptionId, to, { notes, actor } = {})
   sub.statusHistory.push({ from, to, by: actor, reason: notes, at: now });
   sub.status = to;
 
-  await sub.save();
+  await sub.save(session ? { session } : {});
   return sub;
 };
 
@@ -197,9 +198,10 @@ const recordPayment = async ({ subscription, attemptNo, amount, status, paymentM
  * rather than writing a status the ladder does not contain.
  */
 const processBillingSweep = async () => {
+  return withOptionalTransaction(async (session) => {
   const StoreSubscription = mongoose.model('StoreSubscription');
   const now = new Date();
-  const due = await StoreSubscription.dueForDunning(now);
+  const due = await StoreSubscription.dueForDunning(now).session(session);
   const results = { advanced: 0, skipped: 0, failed: 0 };
 
   for (const sub of due) {
@@ -220,7 +222,7 @@ const processBillingSweep = async () => {
         continue;
       }
 
-      await transitionSubscription(sub._id, next, { notes: `Sweep ${now.toISOString()}` });
+      await transitionSubscription(sub._id, next, { notes: `Sweep ${now.toISOString()}`, session });
       results.advanced += 1;
     } catch (error) {
       // One partner's bad row must not abort the sweep for everyone else.
@@ -229,6 +231,7 @@ const processBillingSweep = async () => {
   }
 
   return results;
+  });
 };
 
 /**

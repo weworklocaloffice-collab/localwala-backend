@@ -25,6 +25,7 @@
 
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
+const logger = require('../../../config/logger');
 const ApiError = require('../../../utils/ApiError');
 
 const WARRANTY_TRANSITIONS = {
@@ -200,7 +201,7 @@ const startExpiryWatcher = () => {
       // Could send notifications here
       return expiring;
     } catch (error) {
-      console.error('Warranty expiry watch failed:', error.message);
+      logger.error(`Warranty expiry watch failed: ${error.message}`);
     }
   };
 };

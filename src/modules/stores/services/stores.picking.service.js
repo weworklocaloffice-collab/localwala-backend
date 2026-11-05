@@ -19,6 +19,7 @@
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
+const orderService = require('./stores.order.service');
 
 const getPickList = async (orderId, { outlet } = {}) => {
   const StoreOrder = mongoose.model('StoreOrder');
@@ -41,7 +42,8 @@ const getPickList = async (orderId, { outlet } = {}) => {
       quantity: item.quantity,
       shelfLocation: stockItem?.shelfLocation || null,
       availableQty: stockItem?.availableQty || 0,
-      status: 'pending',
+      status: item.fulfilment || 'pending',
+      pickedQuantity: item.fulfilledQuantity || 0,
     });
   }
 
@@ -52,6 +54,10 @@ const pickItem = async ({ orderId, outlet, variant, pickedQuantity, status, reso
   const StoreOrder = mongoose.model('StoreOrder');
   const order = outlet ? await StoreOrder.findOne({ _id: orderId, outlet }) : await StoreOrder.findById(orderId);
   if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+
+  if (!['accepted', 'picking'].includes(order.lifecycle)) {
+    throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, 'ORDER_NOT_PICKABLE');
+  }
 
   const item = order.items.find((i) => i.variant.toString() === variant.toString());
   if (!item) throw new ApiError(httpStatus.NOT_FOUND, 'Item not found in order');
@@ -82,6 +88,10 @@ const pickItem = async ({ orderId, outlet, variant, pickedQuantity, status, reso
   });
 
   await order.save();
+
+  if (order.lifecycle === 'accepted') {
+    return orderService.transitionOrder(order._id, 'picking', { outlet });
+  }
   return order;
 };
 
@@ -89,6 +99,10 @@ const completePacking = async ({ orderId, outlet, packageCount, totalWeightGrams
   const StoreOrder = mongoose.model('StoreOrder');
   const order = outlet ? await StoreOrder.findOne({ _id: orderId, outlet }) : await StoreOrder.findById(orderId);
   if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+
+  if (order.lifecycle !== 'picking') {
+    throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, 'ORDER_NOT_PACKABLE');
+  }
 
   order.packing = {
     completedAt: new Date(),
@@ -100,7 +114,7 @@ const completePacking = async ({ orderId, outlet, packageCount, totalWeightGrams
   };
 
   await order.save();
-  return order;
+  return orderService.transitionOrder(order._id, 'packing', { outlet });
 };
 
 const calculatePartialFulfilment = async (orderId, { outlet } = {}) => {

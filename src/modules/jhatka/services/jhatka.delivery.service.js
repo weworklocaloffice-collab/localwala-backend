@@ -25,6 +25,7 @@ const { savePod, maybeCreateComplaint } = require('./jhatka.pod.service');
 const { syncOrderRefundState } = require('./jhatka.refund.settlement');
 const lifecycleService = require('./jhatka.order-lifecycle.service');
 const complianceGate = require('./jhatka.compliance-gate.service');
+const notifyService = require('./jhatka.notify.service');
 const { verifyOtp } = require('./jhatka.otp.service');
 const { JhatkaDeliveryPOD, JhatkaDriver, JhatkaOrder, JhatkaRefund, JhatkaOutlet, JhatkaCompliance } = require('../../../models');
 
@@ -199,6 +200,13 @@ async function deliverPod({ delivery, clientRef, deliveredTempC, photo, signatur
     available: true,
     $inc: { 'stats.totalDeliveries': 1 },
   });
+
+  if (deliveredOrder) {
+    await notifyService.notifyCustomer(deliveredOrder.customer, 'order_delivered', {
+      ...notifyService.buildOrderContext(deliveredOrder),
+      useWithin: 'the use-by date on the pack',
+    });
+  }
 
   return {
     delivery: {

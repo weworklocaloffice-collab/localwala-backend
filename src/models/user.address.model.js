@@ -114,6 +114,13 @@ locality: {
       trim: true,
     },
 
+    gstin: {
+      type: String,
+      required: false,
+      trim: true,
+      uppercase: true,
+    },
+
     landmark: {
       type: String,
       required: false,

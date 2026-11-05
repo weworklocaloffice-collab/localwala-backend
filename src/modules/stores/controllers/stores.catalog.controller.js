@@ -20,6 +20,7 @@ const { status: httpStatus } = require('http-status');
 const catchAsync = require('../../../utils/catchAsync');
 const pick = require('../../../utils/pick');
 const catalogService = require('../services/stores.catalog.service');
+const taxonomyService = require('../services/stores.admin.taxonomy.service');
 
 const listProducts = catchAsync(async (req, res) => {
   const filter = pick(req.query, ['category', 'subcategory', 'brand', 'search', 'facetKeys', 'inStockOnly', 'organicOnly', 'status', 'page', 'limit', 'sort']);
@@ -69,7 +70,7 @@ const listSubcategories = catchAsync(async (req, res) => {
 });
 
 const listBrands = catchAsync(async (req, res) => {
-  const brands = await catalogService.listBrands();
+  const brands = await catalogService.listBrands({ search: req.query.search });
   res.status(httpStatus.OK).send({ brands });
 });
 
@@ -89,6 +90,15 @@ const approveProduct = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ product });
 });
 
+const submitBrandCertification = catchAsync(async (req, res) => {
+  const result = await taxonomyService.addBrandCertification(req.params.brand, {
+    ...req.body,
+    chain: req.chainId,
+    requestedBy: req.user._id,
+  });
+  res.status(httpStatus.CREATED).send(result);
+});
+
 module.exports = {
   listProducts,
   getProduct,
@@ -101,4 +111,5 @@ module.exports = {
   listSubcategories,
   listBrands,
   approveProduct,
+  submitBrandCertification,
 };

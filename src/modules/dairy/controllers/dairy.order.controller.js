@@ -20,6 +20,7 @@ const catchAsync = require('../../../utils/catchAsync');
 const pick = require('../../../utils/pick');
 const dairyCartService = require('../services/dairy.cart.service');
 const dairyOrderService = require('../services/dairy.order.service');
+const dairyCanService = require('../services/dairy.can.service');
 
 // //// Cart ////
 
@@ -141,6 +142,21 @@ const orderSummary = catchAsync(async (req, res) => {
   res.send({ summary });
 });
 
+// //// Can deposits ////
+
+/**
+ * The customer's own cans and the deposit currently held for them.
+ *
+ * The money lives in the wallet as a hold; this reports the can side so the
+ * customer can see what is outstanding and why it releases when cans come back.
+ * The customer comes from the token — one customer must not be able to read
+ * another's deposit position by guessing an id.
+ */
+const myDepositSummary = catchAsync(async (req, res) => {
+  const summary = await dairyCanService.getCustomerDepositSummary(req.user._id);
+  res.send(summary);
+});
+
 /**
  * Revenue and order counts for one outlet.
  *
@@ -172,4 +188,5 @@ module.exports = {
   dispatch,
   orderSummary,
   partnerOrderSummary,
+  myDepositSummary,
 };

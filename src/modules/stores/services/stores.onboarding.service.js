@@ -363,6 +363,13 @@ const approveAndCommit = async (applicationId, actor) => {
       grantedBy: actor ? actor._id : undefined,
     });
 
+    // Promote the applicant to the storePartner platform role so the partner
+    // app APIs (which are gated by appAuth rights) become reachable. The
+    // StoreRoleAssignment above is the per-outlet authorization; User.role is
+    // the platform authentication role. Both are needed.
+    const { User } = require('../../../models');
+    await User.findByIdAndUpdate(draft.owner, { $set: { role: 'storePartner' } });
+
     // Carry the documents across, preserving their review state.
     if (draft.documents && draft.documents.length) {
       await StoreComplianceDocument.updateMany(

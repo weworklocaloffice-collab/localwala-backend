@@ -220,6 +220,9 @@ const jhatkaOperatorPayoutSchema = mongoose.Schema(
     },
     paymentReference: { type: String, required: false, trim: true },
     paidAt: { type: Date, required: false },
+    /** Finance user who recorded the external transfer. */
+    paidBy: { type: mongoose.SchemaTypes.ObjectId, ref: 'User', required: false },
+    paidByName: { type: String, required: false, trim: true },
 
     approvedAt: { type: Date, required: false },
     approvedBy: { type: mongoose.SchemaTypes.ObjectId, ref: 'User', required: false },

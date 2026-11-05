@@ -256,6 +256,22 @@ const listSettlements = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(result);
 });
 
+const mySettlements = catchAsync(async (req, res) => {
+  const Provider = require('../models/localservice.provider.model');
+  const provider = await Provider.findOne({ owner: req.user._id }).lean();
+  if (!provider || !provider.business) {
+    return res.status(httpStatus.OK).send({ results: [], totalResults: 0 });
+  }
+  const filter = { vertical: 'local_services', counterparty: provider.business, ...pick(req.query, ['status']) };
+  const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  if (!options.sortBy) options.sortBy = 'createdAt:desc';
+  const result = await Settlement.paginate(filter, {
+    ...options,
+    populate: { path: 'counterparty', select: 'name' },
+  });
+  res.status(httpStatus.OK).send(result);
+});
+
 const generateSettlement = catchAsync(async (req, res) => {
   const { settlement, summary, held, note } = await settlementService.generateSettlement(req.body);
   await recordAudit(req, {
@@ -322,5 +338,6 @@ module.exports = {
   markSettlement,
   paySettlement,
   listSettlements,
+  mySettlements,
   assertTransition,
 };

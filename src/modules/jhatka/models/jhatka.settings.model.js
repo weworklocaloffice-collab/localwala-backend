@@ -18,6 +18,7 @@
 
 const mongoose = require('mongoose');
 const { toJSON } = require('../../../models/plugins');
+const moneyField = require('../../../utils/money.field');
 
 /**
  * Jhatka platform settings — the `jhatka_settings` tab in Business Setup.
@@ -97,6 +98,13 @@ const jhatkaSettingsSchema = mongoose.Schema(
       min: 1,
       max: 1440,
     },
+    /**
+     * OD-12/supply: the platform credit cap for "deduct from payout" supply
+     * requests, in RUPEES (moneyField). A partner's outstanding supply value
+     * plus a new request's value must stay under this for deduct mode to be
+     * offered — beyond it, the partner prepays or pays on delivery.
+     */
+    supplyCreditCap: moneyField(50000),
   },
   {
     timestamps: true,

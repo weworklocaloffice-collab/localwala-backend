@@ -48,11 +48,18 @@ const { status: httpStatus } = require('http-status');
 
 const ApiError = require('../../../utils/ApiError');
 const webAuth = require('../../../middlewares/webAuth');
-const { JhatkaOutlet, JhatkaPartner, JhatkaFranchise, JhatkaCompliance } = require('../../../models');
+const {
+  Business,
+  JhatkaOutlet,
+  JhatkaPartner,
+  JhatkaFranchise,
+  JhatkaCompliance,
+} = require('../../../models');
 
 const router = express.Router();
 const validate = require('../../../middlewares/validate');
 const V = require('../validations/jhatka.admin.validation');
+const JhatkaOnboarding = require('../services/jhatka.onboarding.service');
 
 const OUTLET_STATUS = ['draft', 'pending_approval', 'active', 'suspended', 'closed'];
 const BUSINESS_MODEL = ['direct', 'franchise', 'commission_partner'];
@@ -65,6 +72,92 @@ const OUTLET_TRANSITIONS = {
   suspended: ['active', 'closed'],
   closed: [],
 };
+
+/** Shallow-merge only when the caller actually sent an object. */
+const mergeIfObject = (current, incoming) =>
+  incoming && typeof incoming === 'object' && !Array.isArray(incoming)
+    ? { ...(current || {}), ...incoming }
+    : current;
+
+/**
+ * GET /v1/jhatka/admin/outlets/stats
+ *
+ * Counts for the outlet overview. Kept as an aggregate rather than derived from
+ * the current page: an operator must see the truth for the whole network even
+ * when a search narrows the table.
+ */
+router.get('/outlets/stats', webAuth('jhatka_catalog_read'), async (req, res, next) => {
+  try {
+    const [statusRows, modelRows, total] = await Promise.all([
+      JhatkaOutlet.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+      JhatkaOutlet.aggregate([{ $group: { _id: '$businessModel', count: { $sum: 1 } } }]),
+      JhatkaOutlet.countDocuments(),
+    ]);
+
+    const byStatus = OUTLET_STATUS.reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
+    statusRows.forEach((row) => {
+      if (row._id) byStatus[row._id] = row.count;
+    });
+
+    const byBusinessModel = BUSINESS_MODEL.reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
+    modelRows.forEach((row) => {
+      if (row._id) byBusinessModel[row._id] = row.count;
+    });
+
+    return res.json({ total, byStatus, byBusinessModel });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * GET /v1/jhatka/admin/businesses
+ *
+ * The business picker for the outlet form. `Business` is a kernel model with no
+ * admin list endpoint of its own; this scoped lookup exists so an operator never
+ * has to paste an ObjectId into an outlet draft.
+ */
+router.get('/businesses', webAuth('jhatka_catalog_read'), async (req, res, next) => {
+  try {
+    const { search, limit = 100 } = req.query;
+    const query = { vertical: 'jhatka' };
+
+    if (search) {
+      const safe = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [
+        { name: new RegExp(safe, 'i') },
+        { code: new RegExp(safe, 'i') },
+      ];
+    }
+
+    const businesses = await Business.find(query)
+      .select('name code businessModel logo city owner contact')
+      .populate('city', 'name state')
+      .sort({ name: 1 })
+      .limit(Math.min(200, Math.max(1, Number(limit))))
+      .lean();
+
+    return res.json({ businesses, count: businesses.length });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * POST /v1/jhatka/admin/businesses
+ *
+ * Create the owner/operator entity an outlet must belong to. Kept next to the
+ * outlet routes because this is how the outlet form unblocks itself when no
+ * Jhatka business exists yet.
+ */
+router.post('/businesses', webAuth('jhatka_catalog_write'), validate(V.businessBody), async (req, res, next) => {
+  try {
+    const business = await JhatkaOnboarding.ensureAdminBusiness(req.body);
+    return res.status(httpStatus.CREATED).json({ business });
+  } catch (error) {
+    return next(error);
+  }
+});
 
 /**
  * GET /v1/jhatka/admin/outlets
@@ -88,6 +181,7 @@ router.get('/outlets', webAuth('jhatka_catalog_read'), async (req, res, next) =>
     const [outlets, total] = await Promise.all([
       JhatkaOutlet.find(query)
         .populate('city', 'name state')
+        .populate('business', 'name code businessModel logo')
         .sort({ createdAt: -1 })
         .skip((Math.max(1, Number(page)) - 1) * Number(limit))
         .limit(Math.min(200, Math.max(1, Number(limit))))
@@ -107,12 +201,33 @@ router.get('/outlets', webAuth('jhatka_catalog_read'), async (req, res, next) =>
   }
 });
 
+/**
+ * GET /v1/jhatka/admin/outlets/next-code
+ *
+ * Must stay ABOVE `/outlets/:outlet`; Express would otherwise treat
+ * `next-code` as an outlet id and the parameter validator would reject it.
+ */
+router.get('/outlets/next-code', webAuth('jhatka_catalog_read'), async (req, res, next) => {
+  try {
+    const { city } = req.query || {};
+    if (!city) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'city is required', true, '', {
+        code: 'MISSING_REQUIRED_FIELD', field: 'city',
+      });
+    }
+    return res.json({ outletCode: await JhatkaOnboarding.generateOutletCode(city) });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 /** GET /v1/jhatka/admin/outlets/:outlet */
 router.get('/outlets/:outlet', webAuth('jhatka_catalog_read'), validate(V.namedParam('outlet')), async (req, res, next) => {
   try {
     const outlet = await JhatkaOutlet.findById(req.params.outlet)
       .populate('city', 'name state')
-      .populate('partner')
+      .populate('locality', 'name')
+      .populate('business', 'name code businessModel logo city owner contact')
       .lean();
 
     if (!outlet) throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
@@ -141,12 +256,37 @@ router.get('/outlets/:outlet', webAuth('jhatka_catalog_read'), validate(V.namedP
  */
 router.post('/outlets', webAuth('jhatka_catalog_write'), validate(V.outletBody), async (req, res, next) => {
   try {
-    const { outletCode, business, businessModel, name, address, city, serviceArea, location } =
-      req.body || {};
+    const {
+      outletCode,
+      business,
+      businessModel,
+      name,
+      logo,
+      cover,
+      description,
+      contact,
+      address,
+      city,
+      locality,
+      location,
+      serviceArea,
+      territory,
+      ownDeliveryPartner,
+      driverPayoutMode,
+      operatingHours,
+      qualityPolicy,
+      orderConfig,
+      cancellationConfig,
+      subscriptionConfig,
+      taxIdentity,
+      packaging,
+      paymentConfig,
+      holdPolicy,
+    } = req.body || {};
 
     for (const [field, label] of [
-      ['outletCode', 'outletCode'], ['business', 'business'],
-      ['businessModel', 'businessModel'], ['name', 'name'], ['city', 'city'],
+      ['business', 'business'], ['businessModel', 'businessModel'],
+      ['name', 'name'], ['city', 'city'],
     ]) {
       if (!req.body?.[field]) {
         throw new ApiError(httpStatus.BAD_REQUEST, `${label} is required`, true, '', {
@@ -170,19 +310,67 @@ router.post('/outlets', webAuth('jhatka_catalog_write'), validate(V.outletBody),
       });
     }
 
-    const outlet = await JhatkaOutlet.create({
-      outletCode: String(outletCode).toUpperCase().trim(),
+    const owningBusiness = await Business.findOne({ _id: business, vertical: 'jhatka' })
+      .select('_id businessModel')
+      .lean();
+    if (!owningBusiness) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'business must be an existing Jhatka business', true, '', {
+        code: 'INVALID_BUSINESS', field: 'business',
+      });
+    }
+
+    const payload = {
       business,
       businessModel,
       name,
+      logo,
+      cover,
+      description,
+      contact,
       address,
       // TOP-LEVEL, ref to `City`. See the note in the file docblock.
       city,
+      locality,
       location,
       serviceArea,
+      territory,
+      ownDeliveryPartner,
+      driverPayoutMode,
+      operatingHours,
+      qualityPolicy,
+      orderConfig,
+      cancellationConfig,
+      subscriptionConfig,
+      taxIdentity,
+      packaging,
+      paymentConfig,
+      holdPolicy,
       // Never `active` on create. See the docblock.
       status: 'pending_approval',
-    });
+    };
+
+    let outlet;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const resolvedOutletCode = outletCode
+        ? String(outletCode).toUpperCase().trim()
+        : await JhatkaOnboarding.generateOutletCode(city);
+      try {
+        outlet = await JhatkaOutlet.create({ ...payload, outletCode: resolvedOutletCode });
+        break;
+      } catch (error) {
+        if (error?.code === 11000 && !outletCode && attempt < 2) continue;
+        if (error?.code === 11000) {
+          throw new ApiError(
+            httpStatus.CONFLICT,
+            'That outlet code is already in use',
+            true,
+            '',
+            { code: 'OUTLET_CODE_TAKEN', field: 'outletCode' }
+          );
+        }
+        throw error;
+      }
+    }
 
     return res.status(201).json({ outlet: outlet.toObject() });
   } catch (error) {
@@ -204,9 +392,34 @@ router.patch('/outlets/:outlet', webAuth('jhatka_catalog_write'), validate(V.nam
     if (!outlet) throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
 
     const {
-      name, address, location, serviceArea, territory, orderConfig, taxIdentity,
-      operatingHours, status, statusReason, cancellationConfig, paymentConfig,
-      driverPayoutMode, minDeliveryMinutes,
+      outletCode,
+      business,
+      businessModel,
+      name,
+      logo,
+      cover,
+      description,
+      contact,
+      address,
+      city,
+      locality,
+      location,
+      serviceArea,
+      territory,
+      ownDeliveryPartner,
+      driverPayoutMode,
+      operatingHours,
+      qualityPolicy,
+      orderConfig,
+      taxIdentity,
+      status,
+      statusReason,
+      cancellationConfig,
+      subscriptionConfig,
+      packaging,
+      paymentConfig,
+      holdPolicy,
+      minDeliveryMinutes,
     } = req.body || {};
 
     if (status !== undefined && status !== outlet.status) {
@@ -251,22 +464,50 @@ router.patch('/outlets/:outlet', webAuth('jhatka_catalog_write'), validate(V.nam
       if (status === 'active') outlet.activatedAt = new Date();
     }
 
+    if (businessModel !== undefined && !BUSINESS_MODEL.includes(businessModel)) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        `businessModel must be one of ${BUSINESS_MODEL.join(' | ')}`,
+        true, '', { code: 'INVALID_BUSINESS_MODEL', allowed: BUSINESS_MODEL, received: businessModel }
+      );
+    }
+
+    if (outletCode !== undefined) outlet.outletCode = String(outletCode).toUpperCase().trim();
+    if (business !== undefined) outlet.business = business;
+    if (businessModel !== undefined) outlet.businessModel = businessModel;
     if (name !== undefined) outlet.name = name;
-    if (address !== undefined) outlet.address = { ...(outlet.address || {}), ...address };
+    if (logo !== undefined) outlet.logo = logo;
+    if (cover !== undefined) outlet.cover = cover;
+    if (description !== undefined) outlet.description = description;
+    if (contact !== undefined) outlet.contact = mergeIfObject(outlet.contact, contact);
+    if (address !== undefined) outlet.address = mergeIfObject(outlet.address, address);
+    if (city !== undefined) outlet.city = city;
+    if (locality !== undefined) outlet.locality = locality || undefined;
     if (location !== undefined) outlet.location = location;
-    if (serviceArea !== undefined) outlet.serviceArea = { ...(outlet.serviceArea || {}), ...serviceArea };
+    if (serviceArea !== undefined) outlet.serviceArea = mergeIfObject(outlet.serviceArea, serviceArea);
     if (territory !== undefined) outlet.territory = territory;
-    if (orderConfig !== undefined) outlet.orderConfig = { ...(outlet.orderConfig || {}), ...orderConfig };
-    if (taxIdentity !== undefined) outlet.taxIdentity = { ...(outlet.taxIdentity || {}), ...taxIdentity };
-    if (operatingHours !== undefined) outlet.operatingHours = operatingHours;
-    if (cancellationConfig !== undefined) {
-      outlet.cancellationConfig = { ...(outlet.cancellationConfig || {}), ...cancellationConfig };
-    }
-    if (paymentConfig !== undefined) {
-      outlet.paymentConfig = { ...(outlet.paymentConfig || {}), ...paymentConfig };
-    }
+    if (ownDeliveryPartner !== undefined) outlet.ownDeliveryPartner = !!ownDeliveryPartner;
     if (driverPayoutMode !== undefined) outlet.driverPayoutMode = driverPayoutMode;
-    if (minDeliveryMinutes !== undefined) outlet.minDeliveryMinutes = Number(minDeliveryMinutes);
+    if (operatingHours !== undefined) outlet.operatingHours = operatingHours;
+    if (qualityPolicy !== undefined) outlet.qualityPolicy = mergeIfObject(outlet.qualityPolicy, qualityPolicy);
+    if (orderConfig !== undefined || minDeliveryMinutes !== undefined) {
+      outlet.orderConfig = mergeIfObject(outlet.orderConfig, {
+        ...(orderConfig || {}),
+        ...(minDeliveryMinutes !== undefined ? { minDeliveryMinutes: Number(minDeliveryMinutes) } : {}),
+      });
+    }
+    if (taxIdentity !== undefined) outlet.taxIdentity = mergeIfObject(outlet.taxIdentity, taxIdentity);
+    if (cancellationConfig !== undefined) {
+      outlet.cancellationConfig = mergeIfObject(outlet.cancellationConfig, cancellationConfig);
+    }
+    if (subscriptionConfig !== undefined) {
+      outlet.subscriptionConfig = mergeIfObject(outlet.subscriptionConfig, subscriptionConfig);
+    }
+    if (packaging !== undefined) outlet.packaging = mergeIfObject(outlet.packaging, packaging);
+    if (paymentConfig !== undefined) {
+      outlet.paymentConfig = mergeIfObject(outlet.paymentConfig, paymentConfig);
+    }
+    if (holdPolicy !== undefined) outlet.holdPolicy = mergeIfObject(outlet.holdPolicy, holdPolicy);
 
     await outlet.save();
     return res.json({ outlet: outlet.toObject() });

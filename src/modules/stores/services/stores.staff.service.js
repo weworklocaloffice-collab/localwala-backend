@@ -230,10 +230,12 @@ const assignRole = async ({ user, business, chain, role, scopeType, outlets, isP
     existing.notes = notes;
     existing.grantedBy = actor ? actor.userId : undefined;
     await existing.save();
+    const { User } = require('../../../models');
+    await User.findByIdAndUpdate(user, { $set: { role: 'storePartner' } });
     return existing;
   }
 
-  return StoreRoleAssignment.create({
+  const created = await StoreRoleAssignment.create({
     user,
     business,
     chain,
@@ -247,6 +249,9 @@ const assignRole = async ({ user, business, chain, role, scopeType, outlets, isP
     joinedAt: new Date(),
     grantedBy: actor ? actor.userId : undefined,
   });
+  const { User } = require('../../../models');
+  await User.findByIdAndUpdate(user, { $set: { role: 'storePartner' } });
+  return created;
 };
 
 const updateAssignment = async ({ assignmentId, patch, actor }) => {

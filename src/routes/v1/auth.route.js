@@ -398,6 +398,21 @@ router.post(
 );
 // Dairy Auth //
 
+// Partner App Auth //
+// One sign-in screen for the multi-vertical Partner app. Authentication is
+// vertical-neutral; the role resolves to that vertical's own profile service.
+router.post(
+  '/partner_app/login_po_verification',
+  validate(AuthValidation.phoneOtpValidation),
+  AuthController.partnerAppLoginWithPhoneOtpVerification
+);
+router.post(
+  '/partner_app/login_po/',
+  validate(AuthValidation.userLoginWithPhoneOTPValidation),
+  AuthController.partnerAppLoginWithPhoneOTP
+);
+// Partner App Auth //
+
 // Accountant Auth //
 router.post(
   '/accountant/login',

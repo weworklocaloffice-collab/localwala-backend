@@ -523,7 +523,12 @@ const ORDER_TRANSITIONS = {
   // Weight is settled. From here the rider's collect amount is knowable.
   WEIGHT_CONFIRMED: ['PACKING', 'ON_HOLD'],
   PACKING: ['READY', 'ON_HOLD'],
-  READY: ['DRIVER_ASSIGNED', 'CANCELLED'],
+  // `COMPLETED` from READY is the counter hand-over for a PICKUP order (OD-12):
+  // no rider, no PICKED_UP, no DELIVERED. The table cannot express per-mode
+  // edges without taking the order, so the mode gate lives in the pair of route
+  // guards — dispatch refuses pickup orders (PICKUP_ORDER), collect refuses
+  // delivery ones (DELIVERY_ORDER). A delivery order still cannot get here.
+  READY: ['DRIVER_ASSIGNED', 'CANCELLED', 'COMPLETED'],
   DRIVER_ASSIGNED: ['PICKED_UP', 'CANCELLED'],
   // On the road. No CANCELLED.
   PICKED_UP: ['OUT_FOR_DELIVERY'],

@@ -817,6 +817,59 @@ const vendorTableOrderSchameArray = [
   'restaurantCommission',
 ];
 
+const storeCategorySchemaArray = [
+  'key',
+  'name',
+  'description',
+  'icon',
+  'sortOrder',
+  'parent',
+  'status',
+];
+const storeSubcategorySchemaArray = [
+  'category',
+  'key',
+  'name',
+  'description',
+  'icon',
+  'image',
+  'sortOrder',
+  'status',
+];
+const storeBrandSchemaArray = [
+  'name',
+  'aliases',
+  'categories',
+  'subcategories',
+  'originCountry',
+  'website',
+  'description',
+  'logo',
+  'banner',
+  'status',
+];
+const chainProductSchemaArray = [
+  'name',
+  'category',
+  'subcategory',
+  'brand',
+  'description',
+  'images',
+  'videoUrl',
+  'basePrice',
+  'baseMrp',
+  'tax',
+  'taxPercentage',
+  'hsn',
+  'tags',
+  'searchTerms',
+  'isOrganic',
+  'warrantyMonths',
+  'warrantyProvider',
+  'warrantyType',
+  'status',
+];
+
 module.exports = {
   citySchemaKeys: citySchemaArray,
   localitySchemaKeys: localitySchemaArray,
@@ -899,5 +952,9 @@ module.exports = {
   dairyProductSchemaKeys: dairyProductSchemaArray,
   dairySkuSchemaKeys: dairySkuSchemaArray,
   dairyMilkProviderSchemaKeys: dairyMilkProviderSchemaArray,
+  storeCategorySchemaKeys: storeCategorySchemaArray,
+  storeSubcategorySchemaKeys: storeSubcategorySchemaArray,
+  storeBrandSchemaKeys: storeBrandSchemaArray,
+  chainProductSchemaKeys: chainProductSchemaArray,
 };
 

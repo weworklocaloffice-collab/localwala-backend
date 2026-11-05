@@ -100,4 +100,11 @@ reelsReportLimiter,
   reelsAdminUploadLimiter,
   realestateSearchLimiter,
   supportChatSendLimiter,
+  storesLimiter: rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_STORES_MAX) || 300,
+    keyGenerator: userAwareKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
 };

@@ -61,6 +61,10 @@ router.route('/documents').post(appAuth('localservices_partner_read'), validate(
 
 router.route('/earnings').get(appAuth('localservices_partner_read'), controller.myEarnings);
 
-router.route('/quotes/:id/revise').post(appAuth('localservices_partner_read'), validate(BV.quoteBody), bookingController.reviseQuote);
+const revenueController = require('../controllers/ls.revenue.controller');
+
+router.route('/quotes').get(appAuth('localservices_partner_read'), bookingController.listPartnerQuotes);
+
+router.route('/settlements').get(appAuth('localservices_partner_read'), revenueController.mySettlements);
 
 module.exports = router;

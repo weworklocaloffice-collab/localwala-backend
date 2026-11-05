@@ -43,6 +43,7 @@ const { toJSON, paginate } = require('../../../models/plugins');
  *   YIELD_SPLIT            raw becoming prepared and trim (BR-11)
  *   RESERVATION_RELEASE    a reservation released when an order was cancelled
  *   RECALL_FREEZE          quarantined without the stock moving (§5.4)
+ *   QUARANTINE_RELEASE     a quarantine lifted, fenced stock returned to sale
  *   EXPIRY_WRITE_OFF       a batch that was FEFO-skipped and then zeroed
  *   COUNT_ADJUSTMENT       a stocktake correction, distinguished from ADJUSTMENT
  *   SUBSTITUTION           a customer accepted different stock
@@ -62,6 +63,7 @@ const MOVEMENT_TYPES = [
   'YIELD_SPLIT',
   'RESERVATION_RELEASE',
   'RECALL_FREEZE',
+  'QUARANTINE_RELEASE',
   'EXPIRY_WRITE_OFF',
   'SUBSTITUTION',
 ];
@@ -82,6 +84,7 @@ const MOVEMENT_EFFECT = {
   TRANSFER: { onHand: 1, reserved: 0 },
   YIELD_SPLIT: { onHand: 1, reserved: 0 },
   RECALL_FREEZE: { onHand: 0, reserved: 0 },
+  QUARANTINE_RELEASE: { onHand: 0, reserved: 0 },
   EXPIRY_WRITE_OFF: { onHand: -1, reserved: 0 },
   SUBSTITUTION: { onHand: 0, reserved: -1 },
 };

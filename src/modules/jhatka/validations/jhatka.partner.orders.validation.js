@@ -35,6 +35,16 @@ const orderParam = {
   }),
 };
 
+// OD-12: the pickup hand-over. The OTP mirrors the rider deliver body — optional,
+// single-use, verified server-side against the hashed code on the order.
+const collectBody = {
+  body: Joi.object()
+    .keys({
+      otp: Joi.string().trim().min(4).max(8),
+    })
+    .unknown(true),
+};
+
 const rejectBody = {
   body: Joi.object()
     .keys({
@@ -95,4 +105,5 @@ module.exports = {
   orderParam,
   rejectBody,
   weighBody,
+  collectBody,
 };

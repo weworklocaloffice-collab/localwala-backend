@@ -124,6 +124,14 @@ localServiceBooking: {
       ref: 'JhatkaSubscription',
       required: false,
     },
+    // OD-12 companion: a partner's PREPAID supply request. The verified callback
+    // marks the request paid and credits JhatkaPartnerLedger — same dispatch
+    // shape as the other jhatka subjects.
+    jhatkaSupplyRequest: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'JhatkaSupplyRequest',
+      required: false,
+    },
     amount: {
       type: Number,
       required: false,

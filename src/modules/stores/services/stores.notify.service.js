@@ -313,6 +313,16 @@ const STORE_ORDER_NOTIFICATIONS = Object.freeze({
     route: '/orders',
     audience: ['customer'],
   },
+  delivery_otp: {
+    // The handover code is a SECRET that belongs to the customer alone. It is pushed to
+    // the customer's own device and written to their own in-app feed, and the partner or
+    // driver never receives it, so "show me the code" social engineering fails.
+    type: 'store.order.delivery_otp',
+    title: 'Delivery code for order {{orderNo}}',
+    body: 'Your delivery code is {{otp}}. Share it with the delivery partner only at handover.',
+    route: '/orders',
+    audience: ['customer'],
+  },
   order_delivered: {
     type: 'store.order.delivered',
     title: 'Order {{orderNo}} delivered',
@@ -340,6 +350,20 @@ const STORE_ORDER_NOTIFICATIONS = Object.freeze({
     body: 'Delivery for order {{orderNo}} from {{outletName}} could not be completed. {{reason}}',
     route: '/orders',
     audience: ['customer', 'partner'],
+  },
+  recurring_order_generated: {
+    type: 'store.recurring.order_generated',
+    title: 'Your recurring delivery for {{date}} is set',
+    body: 'Your box from {{outletName}} covers {{date}}. Edit or cancel up to {{cutoff}} before dispatch. {{note}}',
+    route: '/subscription',
+    audience: ['customer'],
+  },
+  recurring_order_skipped: {
+    type: 'store.recurring.order_skipped',
+    title: 'Recurring delivery for {{date}} skipped',
+    body: 'The recurring delivery from {{outletName}} on {{date}} will not run. {{reason}}',
+    route: '/subscription',
+    audience: ['customer'],
   },
 });
 
@@ -380,6 +404,10 @@ const buildOrderNotification = async (order, event, context = {}) => {
     outletName: outletName || 'The store',
     amount: order.grandTotal != null ? `INR ${order.grandTotal}` : '',
     driverName: context.driverName || 'Your driver',
+    otp: context.otp || '',
+    date: context.date || '',
+    cutoff: context.cutoff || '',
+    note: context.note || '',
     reason,
   };
 
@@ -471,7 +499,7 @@ const notifyOrderLifecycle = async (order, event, context = {}) => {
   const results = [];
 
   for (const userId of recipients) {
-    let feedWritten = false;
+    let feedWritten;
     try {
       await mongoose.model('NotificationList').create({
         user: userId,

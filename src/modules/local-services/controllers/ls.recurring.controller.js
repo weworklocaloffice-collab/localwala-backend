@@ -30,6 +30,17 @@ const createAgreement = catchAsync(async (req, res) => {
     nextOccurrenceDate: req.body.startDate,
     status: 'active',
   });
+  try {
+    const outbox = require('../services/localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'recurring',
+      aggregateId: String(doc._id),
+      eventType: 'recurring.created',
+      payload: { agreementId: String(doc._id), customer: String(req.user._id) },
+    });
+  } catch (e) {
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
   res.status(httpStatus.CREATED).send({ agreement: doc });
 });
 

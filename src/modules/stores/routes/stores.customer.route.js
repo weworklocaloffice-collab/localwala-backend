@@ -17,21 +17,23 @@
  */
 
 const express = require('express');
-const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
 const appAuth = require('../../../middlewares/appAuth');
 // Required for the §7.2 customer bodies. Without it these routes accepted anything and
 // failed deep inside Mongoose as CastErrors instead of answering with a useful 400.
 const validate = require('../../../middlewares/validate');
+const { storesLimiter } = require('../../../middlewares/rateLimiter');
+const { idempotencyMiddleware } = require('../../../middlewares/idempotency');
 const V = require('../validations/stores.validation');
 const eligibilityService = require('../services/stores.eligibility.service');
 const cartService = require('../services/stores.cart.service');
+const orderController = require('../controllers/stores.order.controller');
 const checkoutService = require('../services/stores.checkout.service');
+const customerSubscriptionController = require('../controllers/stores.customer.subscription.controller');
 const catalogService = require('../services/stores.catalog.service');
 const orderService = require('../services/stores.order.service');
 const paymentService = require('../services/stores.payment.service');
-const customerSubscriptionService = require('../services/stores.customer.subscription.service');
 const returnService = require('../services/stores.return.service');
 const reviewService = require('../services/stores.review.service');
 const favouriteService = require('../services/stores.favourite.service');
@@ -44,6 +46,17 @@ const listNearbyStores = async (req, res) => {
   if (!lat || !lng) throw new ApiError(httpStatus.BAD_REQUEST, 'lat and lng are required');
   const outlets = await eligibilityService.getNearbyOutlets({ lat: Number(lat), lng: Number(lng), radiusKm: Number(radiusKm) });
   res.status(httpStatus.OK).send({ outlets });
+};
+
+// §7.2: answers "why can't I order from that store?" with the same reason codes the
+// ordering gate itself produced — they can never disagree.
+const getEligibilityReasons = async (req, res) => {
+  const result = await eligibilityService.getEligibilityReasons({
+    outletId: req.query.outlet,
+    addressId: req.query.address,
+    userId: req.user._id,
+  });
+  res.status(httpStatus.OK).send(result);
 };
 
 const searchProducts = async (req, res) => {
@@ -146,6 +159,7 @@ const cancelOrder = async (req, res) => {
     reason: req.body.reason,
     cancelledBy: 'customer',
     cancelledByUserId: req.user._id,
+    customer: req.user._id,
   });
   res.status(httpStatus.OK).send({ order });
 };
@@ -182,15 +196,16 @@ const getCustomerOrderTracking = async (req, res) => {
 };
 
 const createReview = async (req, res) => {
-  const review = await reviewService.createReview({
+  const review = await reviewService.createOrderReview({
     ...req.body,
+    order: req.params.order,
     customer: req.user._id,
   });
   res.status(httpStatus.CREATED).send({ review });
 };
 
 const createReturn = async (req, res) => {
-  const request = await returnService.createReturnRequest({
+  const request = await returnService.createCustomerReturnRequest({
     ...req.body,
     customer: req.user._id,
   });
@@ -198,7 +213,7 @@ const createReturn = async (req, res) => {
 };
 
 const createExchange = async (req, res) => {
-  const request = await returnService.createExchangeRequest({
+  const request = await returnService.createCustomerExchangeRequest({
     ...req.body,
     customer: req.user._id,
   });
@@ -286,11 +301,12 @@ const removeFavourite = async (req, res) => {
  */
 
 // -- literals FIRST ----------------------------------------------------------
-router.get('/nearby', listNearbyStores);
-router.get('/products/search', searchProducts);
+  router.get('/nearby', listNearbyStores);
+  router.get('/eligibility/reasons', appAuth('stores_browse'), validate(V.eligibilityReasonsValidation), getEligibilityReasons);
+  router.get('/products/search', searchProducts);
 router.get('/products/:product', getProductDetail);
 
-router.get('/cart', validate(V.cartOutletValidation), appAuth('stores_cart_read'), getCart);
+  router.get('/cart', validate(V.cartOutletValidation), appAuth('stores_cart_read'), storesLimiter, getCart);
 router.get('/customer/orders', appAuth('stores_orders_read'), getCustomerOrders);
 router.get('/customer/orders/:order/track', appAuth('stores_orders_read'), validate(V.customerOrderIdValidation), getCustomerOrderTracking);
 router.get('/customer/orders/:order', appAuth('stores_orders_read'), getCustomerOrder);
@@ -346,20 +362,28 @@ router.delete(
  * schema to someone who has no token. Authentication is the cheaper and more
  * informative answer, and it is the one that does not hand out field names.
  */
-router.post('/cart/add', appAuth('stores_cart_write'), validate(V.cartAddValidation), addToCart);
-router.patch('/cart/update', appAuth('stores_cart_write'), validate(V.cartUpdateValidation), updateCart);
-router.post('/cart/remove', appAuth('stores_cart_write'), validate(V.cartRemoveValidation), removeFromCart);
-router.post('/cart/clear', appAuth('stores_cart_write'), clearCart);
+router.post('/cart/add', appAuth('stores_cart_write'), storesLimiter, validate(V.cartAddValidation), addToCart);
+router.patch('/cart/update', appAuth('stores_cart_write'), storesLimiter, validate(V.cartUpdateValidation), updateCart);
+router.post('/cart/remove', appAuth('stores_cart_write'), storesLimiter, validate(V.cartRemoveValidation), removeFromCart);
+router.post('/cart/clear', appAuth('stores_cart_write'), storesLimiter, validate(V.customerOrderIdValidation), clearCart);
 
-router.post('/checkout/eligibility', appAuth('stores_checkout'), checkoutEligibility);
-router.post('/checkout/summary', appAuth('stores_checkout'), checkoutSummary);
+router.post('/checkout/eligibility', appAuth('stores_checkout'), storesLimiter, checkoutEligibility);
+router.post('/checkout/summary', appAuth('stores_checkout'), storesLimiter, checkoutSummary);
 
-router.post('/orders', appAuth('stores_orders_write'), validate(V.orderCreateValidation), createOrder);
-router.post('/orders/:order/cancel', appAuth('stores_orders_write'), validate(V.customerOrderIdValidation), cancelOrder);
-router.post('/orders/:order/pay', appAuth('stores_orders_write'), validate(V.orderPayValidation), payOrder);
-router.post('/customer/orders/:order/review', appAuth('stores_reviews_write'), validate(V.customerOrderIdValidation), createReview);
-router.post('/customer/returns', appAuth('stores_returns_write'), createReturn);
-router.post('/customer/exchanges', appAuth('stores_returns_write'), createExchange);
+router.post('/orders', appAuth('stores_orders_write'), storesLimiter, validate(V.orderCreateValidation), createOrder);
+router.post('/orders/:order/cancel', appAuth('stores_orders_write'), storesLimiter, validate(V.customerOrderIdValidation), idempotencyMiddleware, cancelOrder);
+
+router.patch('/orders/:order', appAuth('stores_orders_write'), storesLimiter, validate(V.customerOrderIdValidation), orderController.editOrder);
+router.post('/orders/:order/pay', appAuth('stores_orders_write'), storesLimiter, validate(V.orderPayValidation), idempotencyMiddleware, payOrder);
+router.post(
+  '/customer/orders/:order/review',
+  appAuth('stores_reviews_write'),
+  validate(V.customerOrderIdValidation),
+  validate(V.orderReviewValidation),
+  createReview
+);
+router.post('/customer/returns', appAuth('stores_returns_write'), validate(V.customerReturnCreateValidation), createReturn);
+router.post('/customer/exchanges', appAuth('stores_returns_write'), validate(V.customerExchangeCreateValidation), createExchange);
 
 // Customer warranty routes. Creation derives outlet, chain and product
 // snapshots from the order; the customer only chooses the purchased item.
@@ -383,7 +407,6 @@ router.get(
 );
 
 // Customer subscription routes (requires appAuth)
-const customerSubscriptionController = require('../controllers/stores.customer.subscription.controller');
 
 router.post(
   '/subscriptions',
@@ -437,6 +460,7 @@ router.post(
 router.post(
   '/subscriptions/:subscription/resume',
   appAuth('stores_subscription_write'),
+  validate(V.subscriptionIdValidation),
   customerSubscriptionController.resumeSubscription
 );
 

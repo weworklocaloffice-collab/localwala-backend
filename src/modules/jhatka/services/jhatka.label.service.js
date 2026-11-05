@@ -99,6 +99,9 @@ async function buildLabel({
   // already knows to be wrong.
   const packedQty = item.actualQuantity || item.requestedQuantity;
   const netWeightGrams = toGrams(packedQty);
+  // FSSAI-style short units on the pack: "1050 g", not "1050 gram" (the raw
+  // enum lowercased). Unknown units fall back to lowercased enum text.
+  const UNIT_SHORT = { GRAM: 'g', KG: 'kg', PIECE: 'pc', DOZEN: 'dz' };
 
   const product = await models.JhatkaProduct.findById(item.product).lean();
   const variant = item.variant ? await models.JhatkaVariant.findById(item.variant).lean() : null;
@@ -112,7 +115,7 @@ async function buildLabel({
     variant: item.variant,
     productName: item.name,
     packSize: entry.packSize || variant?.unitLabel || item.unitLabel || 'kg',
-    netQuantity: `${packedQty.value} ${packedQty.unit.toLowerCase()}`,
+    netQuantity: `${packedQty.value} ${UNIT_SHORT[packedQty.unit] || String(packedQty.unit).toLowerCase()}`,
     packedOn,
     useBy: new Date(useBy),
     storageInstruction:
@@ -204,19 +207,18 @@ async function generateLabels({
 
         // An already-APPLIED label means the pack is on a shelf with that label. A
         // second one means two packs claim one batch line, and a recall then has to
-        // decide which customer got which.
+        // decide which customer got which. A DRAFT counts too: the {orderItem: 1}
+        // unique index rejects it at the insert anyway, and letting the pre-check
+        // see it converts the raw E11000/500 into the 409 LABEL_EXISTS this branch
+        // was written to produce.
         //
-        // KNOWN DEFECT: this checks `['printed','applied']`, but a freshly generated
-        // label is a DRAFT — so it does not match its own predecessor, and the
-        // `{orderItem: 1}` unique index rejects the insert with a raw E11000 that
-        // surfaces as a 500 instead of the 409 LABEL_EXISTS this branch was written
-        // to produce. Widening the check to include 'draft' fixes the status code but
-        // also means a draft can never be regenerated, which is a product decision.
-        // Left as-is and recorded in `verify.jhatka.integration.js` rather than
-        // silently changed here.
+        // Product decision recorded 2026-10-25: a draft can NOT be regenerated —
+        // the existing draft must be voided first. A regenerable draft would let
+        // two printed packs carry one batch line, which is the exact ambiguity
+        // the unique index exists to prevent.
         const existing = await models.JhatkaLabel.findOne({
           orderItem: item._id,
-          status: { $in: ['printed', 'applied'] },
+          status: { $in: ['draft', 'printed', 'applied'] },
         }).session(session);
         if (existing) {
           throw new ApiError(

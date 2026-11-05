@@ -33,11 +33,13 @@ const DairyProcurementValidation = require('../validations/dairy.procurement.val
 const DairySettlementValidation = require('../validations/dairy.settlement.validation');
 const DairyComplianceValidation = require('../validations/dairy.compliance.validation');
 const DairyDashboardValidation = require('../validations/dairy.dashboard.validation');
+const DairyReportValidation = require('../validations/dairy.report.validation');
   const DairyPartnerValidation = require('../validations/dairy.partner.validation');
   const DairyFleetValidation = require('../validations/dairy.fleet.validation');
   const DairyNotificationValidation = require('../validations/dairy.notification.validation');
   const VerticalValidation = require('../validations/vertical.validation');
 const DairyPayableValidation = require('../validations/dairy.provider.payable.validation');
+const DairyOperationsValidation = require('../validations/dairy.operations.validation');
 
 const DairyProfileController = require('../controllers/dairy.profile.controller');
 const DairyRegistrationController = require('../controllers/dairy.registration.controller');
@@ -54,8 +56,10 @@ const DairyProcurementController = require('../controllers/dairy.procurement.con
 const DairySettlementController = require('../controllers/dairy.settlement.controller');
 const DairyComplianceController = require('../controllers/dairy.compliance.controller');
 const DairyDashboardController = require('../controllers/dairy.dashboard.controller');
+const DairyReportController = require('../controllers/dairy.report.controller');
 const { partnerAuth } = require('../middlewares/dairy.outlet');
 const DairyPayableController = require('../controllers/dairy.provider.payable.controller');
+const DairyOperationsController = require('../controllers/dairy.operations.controller');
 const DeliveryRunController = require('../../../kernel/delivery/controllers/delivery.run.controller');
 
 const router = express.Router();
@@ -351,6 +355,13 @@ router.get(
   '/catalog/products/:id',
   validate(DairyCatalogValidation.productDetailValidation),
   DairyCatalogController.productDetail
+);
+// Outlet profile, public for the same reason as the catalogue: the customer app
+// shows who runs an outlet before login. Selected fields only — see the service.
+router.get(
+  '/catalog/businesses/:id',
+  validate(DairyCatalogValidation.businessDetailValidation),
+  DairyCatalogController.businessProfile
 );
 // Catalog Public Read Routes //
 
@@ -681,6 +692,14 @@ router.get(
   validate(DairyOrderValidation.orderHistoryValidation),
   DairyOrderController.orderHistory
 );
+// Can deposits held in the customer's wallet. The rider side reports the same
+// data per run; this is the customer's own position, scoped from the token.
+router.get(
+  '/customer/deposits',
+  appAuth('dairy_customer_can_deposit_summary'),
+  validate(DairyCanValidation.depositSummaryValidation),
+  DairyOrderController.myDepositSummary
+);
 router.post(
   '/customer/orders/:order/cancel',
   appAuth('dairy_customer_order_cancel'),
@@ -797,6 +816,26 @@ router.get('/partner/reports/provider_payable',
 // Procurement Routes — Partner //
 
 // Partner Agreement Routes — Admin //
+// Create an outlet (direct, commission partner, or franchise) with its owner
+// login in one step. Admin-only counterpart of self-registration, mirroring the
+// restaurant "Add Restaurant" flow.
+router.post(
+  '/admin/outlets',
+  webAuth('review_dairy_joining_request', 'dairy_partner_manage', 'dairy_franchise_manage'),
+  validate(DairySettlementValidation.adminOutletCreateValidation),
+  DairySettlementController.adminOutletCreate
+);
+// The all-outlets directory. Read by the governance screen and by both agreement
+// create dialogs (`?availableFor=`), so a franchise or commission partner can be
+// created from an outlet that exists, rather than from a partner agreement that
+// must already exist. OR-rights: an operator with any one of the three dairy
+// governance rights can see outlets; the write routes below keep their own gate.
+router.get(
+  '/admin/outlets',
+  webAuth('review_dairy_joining_request', 'dairy_partner_manage', 'dairy_franchise_manage'),
+  validate(DairySettlementValidation.outletListValidation),
+  DairySettlementController.outletList
+);
 // commission_partner: the platform OWES the partner a cut of their sales.
 router.post(
   '/admin/partners',
@@ -925,6 +964,26 @@ router.get('/partner/dashboard',
   partnerAuth('dairy_partner_dashboard'),
   validate(DairyDashboardValidation.dashboardValidation),
   DairyDashboardController.dashboard
+);
+
+// Sales & revenue report (admin). Aggregates dairy orders by model, status and
+// outlet for the requested period.
+router.get('/admin/reports/sales',
+  webAuth('dairy_operations_view'),
+  validate(DairyReportValidation.salesSummaryValidation),
+  DairyReportController.salesSummary
+);
+
+router.get('/admin/reports/compliance',
+  webAuth('dairy_operations_view'),
+  validate(DairyReportValidation.complianceSummaryValidation),
+  DairyReportController.complianceSummary
+);
+
+router.get('/admin/reports/settlements',
+  webAuth('dairy_operations_view'),
+  validate(DairyReportValidation.settlementSummaryValidation),
+  DairyReportController.settlementSummary
 );
 // Partner Dashboard Routes //
 
@@ -1109,6 +1168,42 @@ router.patch(
   VerticalController.setStatus
 );
 // Vertical Registry Routes — Admin //
+
+// Operations Monitoring Routes — Admin //
+// Read-only views of live work: orders, delivery runs and the rider fleet.
+// One right covers all five — an operator who may watch one may watch all;
+// there is no mutation here to subdivide.
+router.get(
+  '/admin/orders',
+  webAuth('dairy_operations_view'),
+  validate(DairyOperationsValidation.orderListValidation),
+  DairyOperationsController.orderList
+);
+router.get(
+  '/admin/orders/:order',
+  webAuth('dairy_operations_view'),
+  validate(DairyOperationsValidation.orderDetailValidation),
+  DairyOperationsController.orderDetail
+);
+router.get(
+  '/admin/runs',
+  webAuth('dairy_operations_view'),
+  validate(DairyOperationsValidation.runListValidation),
+  DairyOperationsController.runList
+);
+router.get(
+  '/admin/runs/:run',
+  webAuth('dairy_operations_view'),
+  validate(DairyOperationsValidation.runDetailValidation),
+  DairyOperationsController.runDetail
+);
+router.get(
+  '/admin/drivers',
+  webAuth('dairy_operations_view'),
+  validate(DairyOperationsValidation.driverListValidation),
+  DairyOperationsController.driverList
+);
+// Operations Monitoring Routes — Admin //
 
 // Compliance Routes — Admin //
 // Platform-wide sweeps: which outlets are non-compliant, and re-derive every

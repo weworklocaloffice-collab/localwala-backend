@@ -171,8 +171,12 @@ const refundFailures = async () => {
  */
 const inventoryDrift = async () => {
   const StoreOutletStockItem = mongoose.model('StoreOutletStockItem');
+  // `availableQty = onHand - reserved - damaged` — the same identity the JS mapper
+  // below and the reconcile sweep use. The pipeline previously subtracted
+  // `reserved` and `damaged` in the WRONG nesting, so the filter flagged healthy
+  // rows and missed drifted ones.
   const rows = await StoreOutletStockItem.find({
-    $expr: { $ne: ['$availableQty', { $subtract: ['$onHand', { $subtract: ['$reserved', '$damaged'] }] }] },
+    $expr: { $ne: ['$availableQty', { $subtract: ['$onHand', { $add: ['$reserved', '$damaged'] }] }] },
   })
     .populate('outlet', 'name outletCode')
     .populate('product', 'name slug')
@@ -210,11 +214,12 @@ const inventoryDrift = async () => {
 const complianceExpiry = async () => {
   const StoreComplianceDocument = mongoose.model('StoreComplianceDocument');
   const StoreSubscription = mongoose.model('StoreSubscription');
+  const StoreBrand = mongoose.model('StoreBrand');
 
   const now = new Date();
   const in30 = new Date(now.getTime() + 30 * 86400000);
 
-  const [docs, subs] = await Promise.all([
+  const [docs, subs, brands] = await Promise.all([
     StoreComplianceDocument.find({
       status: 'approved',
       expiryDate: { $lte: in30, $gte: now },
@@ -226,6 +231,18 @@ const complianceExpiry = async () => {
       nextBillingDate: { $lte: in30, $gte: now },
     })
       .populate('chain', 'name slug')
+      .lean(),
+    StoreBrand.find({
+      status: 'approved',
+      certifications: {
+        $elemMatch: {
+          status: 'approved',
+          validTo: { $lte: in30, $gte: now },
+        },
+      },
+    })
+      .select('name certifications')
+      .populate('certifications.chain', 'name slug')
       .lean(),
   ]);
 
@@ -239,6 +256,7 @@ const complianceExpiry = async () => {
   return {
     documents: docs.map((d) => ({
       _id: d._id,
+      kind: 'document',
       outletName: d.outlet ? d.outlet.name : null,
       outletCode: d.outlet ? d.outlet.outletCode : null,
       docType: d.docType || d.type,
@@ -248,12 +266,35 @@ const complianceExpiry = async () => {
     })),
     subscriptions: subs.map((s) => ({
       _id: s._id,
+      kind: 'subscription',
       chainName: s.chain ? s.chain.name : null,
       status: s.status,
       nextBillingDate: s.nextBillingDate,
       daysRemaining: Math.ceil((new Date(s.nextBillingDate).getTime() - now.getTime()) / 86400000),
       bucket: bucket(s.nextBillingDate),
     })),
+    brandCertifications: brands.flatMap((brand) =>
+      (brand.certifications || [])
+        .filter(
+          (certification) =>
+            certification.status === 'approved' &&
+            certification.validTo &&
+            certification.validTo >= now &&
+            certification.validTo <= in30
+        )
+        .map((certification, index) => ({
+          _id: String(brand._id) + ':' + index,
+          brandId: brand._id,
+          kind: 'brand_certification',
+          subjectName: brand.name,
+          chainName: certification.chain ? certification.chain.name : null,
+          docType: certification.type,
+          certificateNumber: certification.number,
+          expiryDate: certification.validTo,
+          daysRemaining: Math.ceil((new Date(certification.validTo).getTime() - now.getTime()) / 86400000),
+          bucket: bucket(certification.validTo),
+        }))
+    ),
   };
 };
 
@@ -441,7 +482,10 @@ const consoleSummary = async () => {
     settlementExceptions: settlements.length,
     refundFailures: refunds.length,
     inventoryDrift: drift.length,
-    complianceExpiry: compliance.documents.length + compliance.subscriptions.length,
+    complianceExpiry:
+      compliance.documents.length +
+      compliance.subscriptions.length +
+      compliance.brandCertifications.length,
     organicVerification: organic.length,
     abuse: abuse.length,
     applicationAgeing: applications.filter((a) => (a.ageDays ?? 0) > 3).length,

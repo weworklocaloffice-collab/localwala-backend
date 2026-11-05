@@ -52,7 +52,7 @@ const storeRecurringOrderSchema = mongoose.Schema(
     generationStatus: {
       type: String,
       default: 'generated',
-      enum: ['generated', 'reserved', 'skipped_no_stock', 'skipped_store_inactive', 'payment_failed', 'cancelled', 'expired'],
+      enum: ['generated', 'reserved', 'skipped_no_stock', 'skipped_store_inactive', 'payment_failed', 'cancelled', 'expired', 'awaiting_price_acceptance'],
     },
     creditAmount: {
       type: Number,

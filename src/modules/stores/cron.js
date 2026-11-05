@@ -17,9 +17,12 @@
  */
 
 const cron = require('node-cron');
+const logger = require('../../config/logger');
 const subscriptionService = require('./services/stores.subscription.service');
+const customerSubscriptionService = require('./services/stores.customer.subscription.service');
 const settlementService = require('./services/stores.settlement.service');
 const organicService = require('./services/stores.organic.service');
+const taxonomyService = require('./services/stores.admin.taxonomy.service');
 const inventoryService = require('./services/stores.inventory.service');
 const orderService = require('./services/stores.order.service');
 const remittanceService = require('./services/stores.remittance.service');
@@ -36,7 +39,20 @@ const startCronJobs = () => {
       await subscriptionService.processSuspendedExpiry();
       await subscriptionService.processTrialExpiry();
     } catch (error) {
-      console.error('Subscription sweep failed:', error.message);
+      logger.error(`Subscription sweep failed: ${error.message}`);
+    }
+  });
+
+  // §6.18.6: the customer recurring-box generator, nightly just after midnight so an
+  // occurrence "for today" exists before the store's morning prep list is built. It is
+  // idempotent by the (subscription, occurrenceDate) unique index, so an overlap with
+  // the 02:00 billing sweep is safe, not a duplicate.
+  cron.schedule('15 0 * * *', async () => {
+    try {
+      const summary = await customerSubscriptionService.generateOccurrences();
+      logger.info(`[stores] recurring occurrence generation: generated=${summary.generated} skipped=${summary.skipped} advanced=${summary.advanced} failures=${summary.failures}`);
+    } catch (error) {
+      logger.error(`Recurring occurrence generation failed: ${error.message}`);
     }
   });
 
@@ -44,7 +60,13 @@ const startCronJobs = () => {
     try {
       await organicService.expireCertifications();
     } catch (error) {
-      console.error('Organic certification expiry failed:', error.message);
+      logger.error(`Organic certification expiry failed: ${error.message}`);
+    }
+
+    try {
+      await taxonomyService.expireBrandCertifications();
+    } catch (error) {
+      logger.error(`Brand certification expiry failed: ${error.message}`);
     }
   });
 
@@ -54,7 +76,7 @@ const startCronJobs = () => {
     try {
       await promotionService.syncPromotionLifecycle();
     } catch (error) {
-      console.error('Promotion lifecycle sweep failed:', error.message);
+      logger.error(`Promotion lifecycle sweep failed: ${error.message}`);
     }
   });
 
@@ -91,7 +113,21 @@ const startCronJobs = () => {
         await orderService.transitionOrder(order._id, 'cancelled');
       }
     } catch (error) {
-      console.error('Reservation expiry failed:', error.message);
+      logger.error(`Reservation expiry failed: ${error.message}`);
+    }
+  });
+
+  // §6.5: the reconciliation sweep. Hourly, NOT nightly — availableQty guards the
+  // oversell query in real time, so a drifted row is a live oversell window that
+  // should be closed in minutes, not by the next morning.
+  cron.schedule('5 * * * *', async () => {
+    try {
+      const summary = await inventoryService.reconcileStock();
+      if (summary.corrected.length || summary.uncorrectable.length) {
+        logger.warn(`[stores] stock reconciliation: corrected=${summary.corrected.length} uncorrectable=${summary.uncorrectable.length} scanned=${summary.scanned}`);
+      }
+    } catch (error) {
+      logger.error(`Stock reconciliation failed: ${error.message}`);
     }
   });
 
@@ -148,15 +184,12 @@ const startCronJobs = () => {
             });
           } catch (error) {
             // One bad outlet must not stop the rest of the chain or the sweep.
-            console.error(
-              `Settlement generation failed for outlet ${outlet._id}:`,
-              error.message,
-            );
+            logger.error(`Settlement generation failed for outlet ${outlet._id}: ${error.message}`);
           }
         }
       }
     } catch (error) {
-      console.error('Settlement generation failed:', error.message);
+      logger.error(`Settlement generation failed: ${error.message}`);
     }
   });
 
@@ -177,11 +210,21 @@ const startCronJobs = () => {
         await remittanceService.generateRemittanceForDriver(driver._id, driver.store, outlet.chain, yesterday);
       }
     } catch (error) {
-      console.error('Remittance generation failed:', error.message);
+      logger.error(`Remittance generation failed: ${error.message}`);
     }
   });
 
-  console.log('Stores cron jobs scheduled');
+  // Reconciliation sweep: repair occurrences that have no order (crash recovery).
+  cron.schedule('*/15 * * * *', async () => {
+    try {
+      const summary = await customerSubscriptionService.reconcileOccurrences();
+      if (summary.repaired || summary.failed) {
+        logger.info(`[stores] occurrence reconciliation: scanned=${summary.scanned} repaired=${summary.repaired} failed=${summary.failed}`);
+      }
+    } catch (error) {
+      logger.error(`Occurrence reconciliation failed: ${error.message}`);
+    }
+  });
 };
 
 module.exports = { startCronJobs };

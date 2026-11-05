@@ -46,6 +46,7 @@
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
 const lifecycleService = require('./jhatka.order-lifecycle.service');
+const notifyService = require('./jhatka.notify.service');
 const { assertStatus } = require('../middlewares/jhatka.delivery');
 
 /** Rider-visible in-hand states. Mirrors the route's `active=true` filter exactly. */
@@ -252,7 +253,18 @@ async function markOutForDelivery({ models, delivery, now = new Date() } = {}) {
   }
   await delivery.save();
 
-  await moveOrderBestEffort({ models: { JhatkaOrder }, delivery, to: 'OUT_FOR_DELIVERY' });
+  const orderMove = await moveOrderBestEffort({
+    models: { JhatkaOrder },
+    delivery,
+    to: 'OUT_FOR_DELIVERY',
+  });
+  if (orderMove.moved) {
+    await notifyService.notifyCustomer(
+      orderMove.order.customer,
+      'out_for_delivery',
+      notifyService.buildOrderContext(orderMove.order)
+    );
+  }
 
   return {
     delivery: {
@@ -450,13 +462,14 @@ async function moveOrderBestEffort({ models, delivery, to, patch = {} } = {}) {
   const { JhatkaOrder } = models;
   try {
     const order = await JhatkaOrder.findById(delivery.order);
-    if (order) {
-      await lifecycleService.tryMoveTo(order, to, patch);
-    }
+    if (!order) return { order: null, moved: false };
+    const result = await lifecycleService.tryMoveTo(order, to, patch);
+    return { order, moved: result.moved };
   } catch (error) {
     console.error(
       `[jhatka.rider] ${delivery._id} moved but could not move order ${delivery.order} to ${to}: ${error.message}`
     );
+    return { order: null, moved: false };
   }
 }
 

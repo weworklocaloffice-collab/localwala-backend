@@ -72,13 +72,16 @@ const REFUND_STATUSES = ['REFUND_PENDING', 'PROCESSING', 'REFUNDED', 'FAILED', '
  *
  * `REFUNDED → REVERSED` is legal because a chargeback can arrive after the money
  * is gone. `FAILED → PROCESSING` is legal because a gateway timeout is not a
- * permanent failure and must be retryable. Everything else is terminal.
+ * permanent failure and must be retryable. `FAILED → REFUNDED` is the operator's
+ * manual settlement: finance paid outside the provider after the queue parked the
+ * row, and the reference on the document is the evidence. Everything else is
+ * terminal.
  */
 const REFUND_TRANSITIONS = {
   REFUND_PENDING: ['PROCESSING', 'REVERSED'],
   PROCESSING: ['REFUNDED', 'FAILED', 'REVERSED'],
   REFUNDED: ['REVERSED'],
-  FAILED: ['PROCESSING'],
+  FAILED: ['PROCESSING', 'REFUNDED'],
   REVERSED: [],
 };
 
@@ -203,7 +206,8 @@ const jhatkaRefundSchema = mongoose.Schema(
 
     /**
      * How the money actually moved: `gateway` (provider refund), `cod` (nothing was
-     * collected; the customer hands over less), or `credit` (platform absorbs it).
+     * collected; the customer hands over less), `credit` (platform absorbs it), or
+     * `manual` (finance paid outside the provider after the gateway was exhausted).
      *
      * Recorded because `REFUNDED` alone does not say whether anyone was ever PAID.
      * A COD refund and a gateway refund are the same status and completely different
@@ -213,7 +217,20 @@ const jhatkaRefundSchema = mongoose.Schema(
     settlementRoute: {
       type: String,
       required: false,
-      enum: ['gateway', 'cod', 'credit'],
+      enum: ['gateway', 'cod', 'credit', 'manual'],
+    },
+
+    /**
+     * The bank/UPI/provider reference for a refund settled manually.
+     *
+     * `gatewayRefundId` remains provider-only. Finance occasionally has to refund from
+     * the provider dashboard after the automated queue parks; recording that reference
+     * here is what stops a manual close from being an unexplained `REFUNDED` row.
+     */
+    manualReference: {
+      type: String,
+      required: false,
+      trim: true,
     },
 
     /** When the money actually moved. NOT the same as the last attempt. */
@@ -352,17 +369,25 @@ jhatkaRefundSchema.statics.canTransition = function (from, to) {
 };
 
 /**
- * Is `REFUNDED` reachable without a gateway reference?
+ * Is `REFUNDED` reachable without evidence that money moved?
  *
  * This is F-5 expressed as a method. `stores.refund.service.js` can reach
  * `REFUNDED` with `gatewayRefundId` empty, because nothing ever writes it — the
  * state machine is complete and the money never leaves. Making this a method means
  * the service can assert it, and the verify suite can test it.
  *
+ * The evidence is route-specific: gateway refunds need `gatewayRefundId`, manual
+ * settlements need `manualReference`, and COD/credit settlements have no external
+ * transaction to point at. A legacy row with no route is treated as a gateway row
+ * so old invalid states are still caught.
+ *
  * @returns {boolean} true means the state is INVALID
  */
 jhatkaRefundSchema.methods.isRefundedWithoutGatewayId = function () {
-  return this.status === 'REFUNDED' && !this.gatewayRefundId;
+  if (this.status !== 'REFUNDED') return false;
+  if (this.settlementRoute === 'manual') return !this.manualReference;
+  if (this.settlementRoute === 'cod' || this.settlementRoute === 'credit') return false;
+  return !this.gatewayRefundId;
 };
 
 /**

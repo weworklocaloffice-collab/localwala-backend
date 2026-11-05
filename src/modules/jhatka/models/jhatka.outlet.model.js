@@ -211,6 +211,20 @@ const jhatkaOutletSchema = mongoose.Schema(
         default: 5,
         min: 0,
       },
+    /**
+     * Two-band delivery (OD-12 companion): how far BEYOND `radiusKm` the outlet
+     * will still deliver (for a flat fee), and that fee. Both are per-outlet,
+     * admin-editable, bounded by `Vertical.settings.maxRadiusKm` at approval.
+     * 0/absent = no outer band: beyond `radiusKm` is refused, as always.
+     */
+    extendedRadiusKm: {
+      type: Number,
+      required: false,
+      default: 0,
+      min: 0,
+      max: 20,
+    },
+    extendedDeliveryFee: moneyField(0),
       localities: [
         {
           type: mongoose.SchemaTypes.ObjectId,
@@ -278,6 +292,23 @@ const jhatkaOutletSchema = mongoose.Schema(
        */
       absorbOvercharge: { type: Boolean, required: false, default: true },
       codEnabled: { type: Boolean, required: false, default: false },
+      /**
+       * OD-12: counter pickup. Off by default — an outlet opts in. A pickup order
+       * skips DRIVER_ASSIGNED onward (no rider, no delivery document) and is
+       * handed over at the counter via `POST /partner/orders/:order/collect`.
+       */
+      pickupEnabled: { type: Boolean, required: false, default: false },
+      /**
+       * Delivery-fee type for the INNER ring (≤ serviceArea.radiusKm).
+       * 'free' is the default and today's behaviour; 'flat' would charge the
+       * extended fee inside the ring too. A config, never an assumption.
+       */
+      deliveryFeeType: {
+        type: String,
+        required: false,
+        enum: ['free', 'flat'],
+        default: 'free',
+      },
       codTolerancePct: { type: Number, required: false, default: 10, min: 0, max: 50 },
       minCodValue: moneyField(1),
       maxCodValue: moneyField(500),

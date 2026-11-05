@@ -51,6 +51,19 @@ router.patch(
   subscriptionController.transitionSubscription
 );
 
+router.get(
+  '/subscriptions/awaiting-price-changes',
+  appAuth('stores_subscription_read'),
+  subscriptionController.listAwaitingPriceChanges
+);
+
+router.post(
+  '/subscriptions/:subscription/accept-price-change',
+  appAuth('stores_subscription_write'),
+  validate(V.customerSubscriptionTransitionValidation),
+  subscriptionController.acceptPriceChange
+);
+
 router.post(
   '/subscriptions/:subscription/skip',
   appAuth('stores_subscription_write'),

@@ -164,7 +164,7 @@ const run = async () => {
       let threw = false;
       try {
         orderService.assertTransition(from, to);
-      } catch (e) {
+      } catch {
         threw = true;
       }
       if (threw) ck(`${from} -> ${to} is allowed`, false, 'threw ILLEGAL_ORDER_MOVE');
@@ -191,6 +191,72 @@ const run = async () => {
     }
     ck(`${from} -> ${to} is rejected`, /ILLEGAL_ORDER_MOVE/.test(msg), msg);
   }
+
+  console.log('\n=== order access is outlet/customer scoped ===\n');
+
+  const scoped = await makeOrder();
+  const otherOutlet = new mongoose.Types.ObjectId();
+  const otherCustomer = new mongoose.Types.ObjectId();
+
+  let readScoped = false;
+  try {
+    await orderService.getOrder(scoped._id, { outlet: otherOutlet });
+  } catch (e) {
+    readScoped = e.statusCode === 404;
+  }
+  ck('an order cannot be read through another outlet', readScoped);
+
+  let writeScoped = false;
+  try {
+    await orderService.transitionOrder(scoped._id, 'accepted', { outlet: otherOutlet });
+  } catch (e) {
+    writeScoped = e.statusCode === 404;
+  }
+  ck('an order cannot be transitioned through another outlet', writeScoped);
+
+  let cancelOutletScoped = false;
+  try {
+    await orderService.cancelOrder(scoped._id, {
+      reason: 'test',
+      cancelledBy: 'store',
+      cancelledByUserId: new mongoose.Types.ObjectId(),
+      outlet: otherOutlet,
+    });
+  } catch (e) {
+    cancelOutletScoped = e.statusCode === 404;
+  }
+  ck('an order cannot be cancelled through another outlet', cancelOutletScoped);
+
+  let cancelCustomerScoped = false;
+  try {
+    await orderService.cancelOrder(scoped._id, {
+      reason: 'test',
+      cancelledBy: 'customer',
+      cancelledByUserId: otherCustomer,
+      customer: otherCustomer,
+    });
+  } catch (e) {
+    cancelCustomerScoped = e.statusCode === 404;
+  }
+  ck('a customer cannot cancel another customer order', cancelCustomerScoped);
+  ck('a refused cancellation leaves the order untouched',
+    (await StoreOrder.findById(scoped._id).lean()).lifecycle === 'paid');
+
+  const codOrder = await makeOrder({ lifecycle: 'created', paymentMode: 'cod', paymentStatus: 'pending', paidAmount: 0 });
+  const codAccepted = await orderService.transitionOrder(codOrder._id, 'accepted', { outlet: OUTLET });
+  ck('a COD order can be accepted from created', codAccepted.lifecycle === 'accepted', codAccepted.lifecycle);
+
+  const onlineOrder = await makeOrder({ lifecycle: 'created', paymentMode: 'gateway', paymentStatus: 'pending', paidAmount: 0 });
+  let onlineAcceptBlocked = false;
+  try {
+    await orderService.transitionOrder(onlineOrder._id, 'accepted', { outlet: OUTLET });
+  } catch (e) {
+    onlineAcceptBlocked = /ORDER_NOT_PAYABLE/.test(e.message || '');
+  }
+  ck('an online order cannot be accepted before payment', onlineAcceptBlocked);
+
+  const paidAccept = await orderService.transitionOrder(scoped._id, 'accepted', { outlet: OUTLET });
+  ck('a paid online order can be accepted', paidAccept.lifecycle === 'accepted', paidAccept.lifecycle);
 
   console.log('\n=== BR-28: a cancelled line refunds its own share ===\n');
 
@@ -299,13 +365,13 @@ const run = async () => {
   }
   ck('a refund that would breach the ceiling is rejected', ceilingBlocked, ceilingMsg);
 
-  let withinCeiling = false;
+  let withinCeiling;
   try {
     const r = await refundService.createComponentRefund({
       order: ceiling, componentKey: 'packaging_fee', amount: 40, reason: 'other', fundingSource: 'connected_account',
     });
     withinCeiling = Number(r.amount) === 40;
-  } catch (e) {
+  } catch {
     withinCeiling = false;
   }
   ck('a refund that exactly fills the ceiling is accepted', withinCeiling);
@@ -375,9 +441,8 @@ const run = async () => {
   ck('the invoice is marked issued', paidOrder.invoiceStatus === 'issued', paidOrder.invoiceStatus);
 
   // A retried gateway callback must not consume a second number.
-  const secondNo = paidOrder.invoiceNo;
   ck('a re-paid order cannot happen — the ladder has no self-edge',
-    (() => { try { orderService.assertTransition('paid', 'paid'); return false; } catch (e) { return true; } })());
+    (() => { try { orderService.assertTransition('paid', 'paid'); return false; } catch { return true; } })());
 
   // `cancelled` must hand reserved stock back, or an abandoned order strands inventory.
   const StoreStockReservation = mongoose.model('StoreStockReservation');
@@ -442,6 +507,52 @@ const run = async () => {
     reCancel = /ILLEGAL_ORDER_MOVE/.test(e.message || '');
   }
   ck('a second cancellation is rejected by the transition table', reCancel);
+
+  console.log('\n=== a store rejection is a terminal close ===\n');
+
+  const toReject = await makeOrder();
+  const rejected = await orderService.cancelOrder(toReject._id, {
+    reason: 'cannot fulfil', cancelledBy: 'store', target: 'rejected',
+  });
+  ck('the order reaches rejected', rejected.lifecycle === 'rejected', rejected.lifecycle);
+  ck('rejection voids the invoice', rejected.invoiceStatus === 'void', rejected.invoiceStatus);
+  const rejectRefunds = await StoreRefund.find({ order: toReject._id }).lean();
+  ck('a paid rejection refunds every component', rejectRefunds.length === 3, `count=${rejectRefunds.length}`);
+  ck('rejection is recorded as a cancellation',
+    !!(await StoreCancellation.findOne({ order: toReject._id }).lean()));
+
+  let rejectedReopen = false;
+  try {
+    await orderService.transitionOrder(toReject._id, 'accepted');
+  } catch (e) {
+    rejectedReopen = /ILLEGAL_ORDER_MOVE/.test(e.message || '');
+  }
+  ck('a rejected order cannot be reopened', rejectedReopen);
+
+  let invalidTarget = false;
+  try {
+    await orderService.cancelOrder(toReject._id, {
+      reason: 'again', cancelledBy: 'store', target: 'completed',
+    });
+  } catch (e) {
+    invalidTarget = e.statusCode === 422 && /INVALID_ORDER_CLOSE_TARGET/.test(e.message);
+  }
+  ck('only cancelled/rejected are valid close targets', invalidTarget);
+
+  const completedOrder = await makeOrder({ lifecycle: 'completed' });
+  let completedRefused = false;
+  try {
+    await orderService.cancelOrder(completedOrder._id, {
+      reason: 'too late', cancelledBy: 'store',
+    });
+  } catch (e) {
+    completedRefused = /ILLEGAL_ORDER_MOVE/.test(e.message || '');
+  }
+  const untouchedCompleted = await StoreOrder.findById(completedOrder._id).lean();
+  ck('a completed order cannot be closed', completedRefused);
+  ck('the refused close leaves its lines untouched',
+    untouchedCompleted.lifecycle === 'completed' &&
+      untouchedCompleted.items.every((i) => i.fulfilment === 'pending'));
 };
 
 run()
@@ -452,7 +563,7 @@ run()
   .finally(async () => {
     try {
       await cleanup();
-    } catch (e) {
+    } catch {
       /* the run already failed; cleanup errors must not mask it */
     }
     await mongoose.disconnect();

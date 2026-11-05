@@ -19,6 +19,7 @@
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
+const { AUDIT_ACTIONS, recordAudit } = require('./stores.audit.service');
 
 /**
  * The Admin side of the stores taxonomy.
@@ -82,17 +83,18 @@ const getCategory = async (categoryId) => {
 
 const createCategory = async ({ name, icon, sortOrder, status } = {}) => {
   const StoreCategory = mongoose.model('StoreCategory');
-  const slug = slugify(name);
-  const existing = await StoreCategory.findOne({ slug });
-  if (existing) throw new ApiError(httpStatus.CONFLICT, 'A category with this name already exists');
+  // `key` allows only [a-z0-9_] but `slugify` writes hyphens. The old check queried a
+  // `slug` field StoreCategory does not have, so it always found nothing and a duplicate
+  // name reached Mongo's unique index as a raw 500. Check the field that exists.
+  const key = slugify(name).replace(/-/g, '_');
 
-  // `key` allows only [a-z0-9_] but `slugify` writes hyphens. Deriving the key straight
-  // from the slug made every create throw ValidationError, so no admin category could
-  // ever be created. The slug keeps hyphens (it is URL-facing); the key takes underscores.
+  if (await StoreCategory.isKeyTaken(key)) {
+    throw new ApiError(httpStatus.CONFLICT, 'A category with this name already exists');
+  }
+
   return StoreCategory.create({
-    key: slug.replace(/-/g, '_'),
+    key,
     name,
-    slug,
     icon: icon || 'tablerShoppingCart',
     sortOrder: sortOrder || 0,
     status: status === undefined ? true : status,
@@ -104,13 +106,10 @@ const updateCategory = async (categoryId, updates = {}) => {
   const category = await StoreCategory.findById(categoryId);
   if (!category) throw new ApiError(httpStatus.NOT_FOUND, 'Category not found');
 
-  if (updates.name && updates.name !== category.name) {
-    const slug = slugify(updates.name);
-    const clash = await StoreCategory.findOne({ slug, _id: { $ne: category._id } });
-    if (clash) throw new ApiError(httpStatus.CONFLICT, 'A category with this name already exists');
-    category.slug = slug;
-    category.key = slug;
-  }
+  // `key` is the stable import/seed reference and is READ-ONLY on edit; `name` is the
+  // human label. The old code regenerated the key from the new name, and because
+  // `slugify` writes hyphens it produced a key the model's [a-z0-9_] validator rejected,
+  // so every rename failed.
   if (updates.name !== undefined) category.name = updates.name;
   if (updates.icon !== undefined) category.icon = updates.icon;
   if (updates.sortOrder !== undefined) category.sortOrder = updates.sortOrder;
@@ -276,7 +275,7 @@ const listBrands = async ({ page = 1, limit = 20, search, status } = {}) => {
  * it publishes something unreachable. This is the one brand rule enforced at write time
  * rather than left to the review screen.
  */
-const createBrand = async ({ name, aliases, categories, originCountry, website, description, status } = {}) => {
+const createBrand = async ({ name, aliases, categories, originCountry, website, description, status, by } = {}) => {
   const StoreBrand = mongoose.model('StoreBrand');
   const slug = slugify(name);
   const existing = await StoreBrand.findOne({ slug });
@@ -286,7 +285,7 @@ const createBrand = async ({ name, aliases, categories, originCountry, website, 
     throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, 'A brand cannot be approved without a category');
   }
 
-  return StoreBrand.create({
+  const brand = await StoreBrand.create({
     name,
     slug,
     aliases: aliases || [],
@@ -295,29 +294,64 @@ const createBrand = async ({ name, aliases, categories, originCountry, website, 
     website,
     description,
     status: status || 'pending',
-    isVerified: status === 'approved',
+    isVerified: false,
   });
+
+  await recordAudit({
+    actor: by || undefined,
+    role: 'admin',
+    action: AUDIT_ACTIONS.brandCreated,
+    targetType: 'StoreBrand',
+    targetId: brand._id,
+    after: { name: brand.name, slug: brand.slug, status: brand.status },
+  });
+
+  return brand;
 };
 
-const updateBrand = async (brandId, updates = {}) => {
+const updateBrand = async (brandId, updates = {}, { by } = {}) => {
   const StoreBrand = mongoose.model('StoreBrand');
   const brand = await StoreBrand.findById(brandId);
   if (!brand) throw new ApiError(httpStatus.NOT_FOUND, 'Brand not found');
 
-  if (updates.status === 'approved' && !(brand.categories || []).length) {
+  // Approval may arrive in the same PATCH as the categories it depends on. The old check
+  // read the brand's current categories, so "approve + assign category" was rejected while
+  // a later "approve" with no body change succeeded.
+  const nextCategories =
+    updates.categories !== undefined ? updates.categories : brand.categories || [];
+  if (updates.status === 'approved' && !nextCategories.length) {
     throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, 'A brand cannot be approved without a category');
   }
 
-  const allowed = ['name', 'aliases', 'categories', 'subcategories', 'originCountry', 'website', 'description', 'logo', 'banner', 'status', 'isVerified'];
+  const before = {
+    name: brand.name,
+    status: brand.status,
+    isVerified: brand.isVerified,
+    categories: brand.categories,
+  };
+
+  const allowed = ['name', 'aliases', 'categories', 'subcategories', 'originCountry', 'website', 'description', 'logo', 'banner', 'status'];
   for (const key of allowed) {
     if (updates[key] !== undefined) brand[key] = updates[key];
   }
+  brand.isVerified = brand.status === 'approved' && StoreBrand.isCertified(brand);
 
   await brand.save();
+
+  await recordAudit({
+    actor: by,
+    role: 'admin',
+    action: AUDIT_ACTIONS.brandUpdated,
+    targetType: 'StoreBrand',
+    targetId: brand._id,
+    before,
+    after: { name: brand.name, status: brand.status, isVerified: brand.isVerified },
+  });
+
   return brand;
 };
 
-const removeBrand = async (brandId) => {
+const removeBrand = async (brandId, { by } = {}) => {
   const StoreBrand = mongoose.model('StoreBrand');
   const ChainProduct = mongoose.model('ChainProduct');
 
@@ -333,8 +367,276 @@ const removeBrand = async (brandId) => {
   }
 
   brand.status = 'archived';
+  brand.isVerified = false;
   await brand.save();
+
+  await recordAudit({
+    actor: by,
+    role: 'admin',
+    action: AUDIT_ACTIONS.brandArchived,
+    targetType: 'StoreBrand',
+    targetId: brand._id,
+    after: { status: 'archived' },
+  });
+
   return brand;
+};
+
+const addBrandCertification = async (brandId, payload = {}) => {
+  const StoreBrand = mongoose.model('StoreBrand');
+  const brand = await StoreBrand.findById(brandId);
+  if (!brand) throw new ApiError(httpStatus.NOT_FOUND, 'Brand not found');
+  if (brand.status === 'archived' || brand.mergedInto) {
+    throw new ApiError(httpStatus.CONFLICT, 'Certifications cannot be added to an archived brand');
+  }
+
+  if (payload.chain) {
+    const duplicate = (brand.certifications || []).some(
+      (certification) =>
+        certification.chain &&
+        String(certification.chain) === String(payload.chain) &&
+        certification.status === 'pending'
+    );
+    if (duplicate) {
+      throw new ApiError(httpStatus.CONFLICT, 'A pending certification already exists for this brand');
+    }
+  }
+
+  brand.certifications.push({
+    chain: payload.chain || undefined,
+    requestedBy: payload.requestedBy || undefined,
+    submittedAt: payload.submittedAt || (payload.chain ? new Date() : undefined),
+    type: payload.type,
+    number: payload.number || undefined,
+    validFrom: payload.validFrom || undefined,
+    validTo: payload.validTo || undefined,
+    document: payload.document || undefined,
+    status: 'pending',
+  });
+  await brand.save();
+
+  await recordAudit({
+    actor: payload.requestedBy || undefined,
+    role: payload.requestedByRole || 'admin',
+    action: AUDIT_ACTIONS.brandCertificationAdded,
+    targetType: 'StoreBrand',
+    targetId: brand._id,
+    chain: payload.chain || undefined,
+    after: {
+      index: brand.certifications.length - 1,
+      type: payload.type,
+      status: 'pending',
+    },
+  });
+
+  return { brand, index: brand.certifications.length - 1 };
+};
+
+const reviewBrandCertification = async (brandId, index, { status, rejectionReason, by } = {}) => {
+  const StoreBrand = mongoose.model('StoreBrand');
+  const brand = await StoreBrand.findById(brandId);
+  if (!brand) throw new ApiError(httpStatus.NOT_FOUND, 'Brand not found');
+
+  const certification = brand.certifications[index];
+  if (!certification) throw new ApiError(httpStatus.NOT_FOUND, 'Certification not found');
+  if (certification.status === 'expired') {
+    throw new ApiError(httpStatus.CONFLICT, 'Expired certifications cannot be reviewed again');
+  }
+  if (status === 'approved' && certification.validTo && certification.validTo <= new Date()) {
+    throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, 'An expired certification cannot be approved');
+  }
+
+  const beforeStatus = certification.status;
+  certification.status = status;
+  certification.verifiedBy = by || undefined;
+  certification.verifiedAt = new Date();
+  certification.rejectionReason = status === 'rejected' ? rejectionReason || undefined : undefined;
+  if (status === 'approved') certification.expiredAt = undefined;
+
+  brand.isVerified = brand.status === 'approved' && StoreBrand.isCertified(brand);
+  await brand.save();
+
+  await recordAudit({
+    actor: by,
+    role: 'admin',
+    action: AUDIT_ACTIONS.brandCertificationReviewed,
+    targetType: 'StoreBrand',
+    targetId: brand._id,
+    before: { index, status: beforeStatus },
+    after: { index, status, rejectionReason: status === 'rejected' ? rejectionReason : undefined },
+  });
+
+  return brand;
+};
+
+const expireBrandCertifications = async () => {
+  const StoreBrand = mongoose.model('StoreBrand');
+  const now = new Date();
+  const brands = await StoreBrand.find({
+    $or: [{ 'certifications.0': { $exists: true } }, { isVerified: true }],
+  });
+
+  let expired = 0;
+  let badgesCleared = 0;
+
+  for (const brand of brands) {
+    let changed = false;
+
+    for (const certification of brand.certifications) {
+      if (
+        certification.status === 'approved' &&
+        certification.validTo &&
+        certification.validTo <= now
+      ) {
+        certification.status = 'expired';
+        certification.expiredAt = now;
+        expired += 1;
+        changed = true;
+      }
+    }
+
+    const nextVerified = brand.status === 'approved' && StoreBrand.isCertified(brand);
+    if (Boolean(brand.isVerified) !== nextVerified) {
+      brand.isVerified = nextVerified;
+      if (!nextVerified) badgesCleared += 1;
+      changed = true;
+    }
+
+    if (changed) await brand.save();
+  }
+
+  return { expired, brandsChecked: brands.length, badgesCleared };
+};
+
+const uniqueIds = (left = [], right = []) => {
+  const seen = new Set((left || []).map(String));
+  const merged = [...(left || [])];
+  for (const value of right || []) {
+    if (!seen.has(String(value))) {
+      seen.add(String(value));
+      merged.push(value);
+    }
+  }
+  return merged;
+};
+
+/**
+ * Merge a duplicate brand into the canonical one.
+ *
+ * A merge is a multi-collection write: products and brand requests move, the target's
+ * aliases/taxonomy/certifications are unioned, and the duplicate is archived with a
+ * pointer back to the survivor. A partial move would leave products split across two
+ * brands, so this runs in a transaction. Nothing is hard-deleted (BR-25).
+ */
+const mergeBrand = async (sourceId, { targetBrand, note, by } = {}) => {
+  const StoreBrand = mongoose.model('StoreBrand');
+  const ChainProduct = mongoose.model('ChainProduct');
+  const StoreBrandRequest = mongoose.model('StoreBrandRequest');
+
+  if (String(sourceId) === String(targetBrand)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'A brand cannot be merged into itself');
+  }
+
+  const session = await mongoose.startSession();
+  let outcome;
+  try {
+    outcome = await session.withTransaction(async () => {
+      const [source, target] = await Promise.all([
+        StoreBrand.findById(sourceId).session(session),
+        StoreBrand.findById(targetBrand).session(session),
+      ]);
+
+      if (!source) throw new ApiError(httpStatus.NOT_FOUND, 'Duplicate brand not found');
+      if (!target) throw new ApiError(httpStatus.NOT_FOUND, 'Target brand not found');
+      if (source.mergedInto) {
+        throw new ApiError(httpStatus.CONFLICT, 'This brand has already been merged');
+      }
+      if (source.status === 'archived') {
+        throw new ApiError(httpStatus.CONFLICT, 'Archived brands cannot be merged');
+      }
+      if (target.status !== 'approved') {
+        throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, 'Target brand must be approved');
+      }
+
+      const movedProducts = await ChainProduct.countDocuments({ brand: source._id }).session(session);
+      await ChainProduct.updateMany(
+        { brand: source._id },
+        { $set: { brand: target._id } },
+        { session }
+      );
+      await StoreBrandRequest.updateMany(
+        { brand: source._id },
+        { $set: { brand: target._id } },
+        { session }
+      );
+
+      // Aliases drive partner search; carry the duplicate's name and aliases across so a
+      // partner typing the old spelling still finds the canonical row.
+      const aliases = new Map();
+      const addAlias = (value) => {
+        const clean = String(value || '').trim();
+        if (clean && !aliases.has(clean.toLowerCase())) aliases.set(clean.toLowerCase(), clean);
+      };
+      (target.aliases || []).forEach(addAlias);
+      addAlias(source.name);
+      (source.aliases || []).forEach(addAlias);
+      target.aliases = [...aliases.values()];
+
+      target.categories = uniqueIds(target.categories, source.categories);
+      target.subcategories = uniqueIds(target.subcategories, source.subcategories);
+
+      const certifications = new Map();
+      for (const certification of [...(target.certifications || []), ...(source.certifications || [])]) {
+        const value = certification.toObject ? certification.toObject() : certification;
+        const key = `${value.type || ''}|${value.number || ''}|${value.document || ''}`;
+        if (!certifications.has(key)) certifications.set(key, value);
+      }
+      target.certifications = [...certifications.values()];
+
+      for (const field of ['originCountry', 'website', 'description', 'logo', 'banner', 'supportContact', 'supportPhone']) {
+        if (!target[field] && source[field]) target[field] = source[field];
+      }
+
+      const totalRatings = (target.ratingCount || 0) + (source.ratingCount || 0);
+      if (totalRatings > 0) {
+        target.rating =
+          ((target.rating || 0) * (target.ratingCount || 0) +
+            (source.rating || 0) * (source.ratingCount || 0)) /
+          totalRatings;
+        target.ratingCount = totalRatings;
+      }
+      target.isVerified = target.status === 'approved' && StoreBrand.isCertified(target);
+
+      source.status = 'archived';
+      source.isVerified = false;
+      source.mergedInto = target._id;
+      source.mergedAt = new Date();
+      source.mergedBy = by || undefined;
+      source.mergeNote = note || undefined;
+
+      await target.save({ session });
+      await source.save({ session });
+
+      return { source, target, movedProducts };
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  // Audit AFTER the transaction has committed: a row written inside the session would be
+  // discarded with it, so a retried merge would leave no trail at all.
+  await recordAudit({
+    actor: by,
+    role: 'admin',
+    action: AUDIT_ACTIONS.brandMerged,
+    targetType: 'StoreBrand',
+    targetId: targetBrand,
+    before: { sourceStatus: outcome.source.status },
+    after: { target: String(targetBrand), archivedSource: String(outcome.source._id) },
+    meta: { movedProducts: outcome.movedProducts, note },
+  });
+
+  return outcome;
 };
 
 // ---------------------------------------------------------------------------
@@ -409,6 +711,10 @@ module.exports = {
   createBrand,
   updateBrand,
   removeBrand,
+  addBrandCertification,
+  reviewBrandCertification,
+  expireBrandCertifications,
+  mergeBrand,
   listAttributeTemplates,
   createAttributeTemplate,
   updateAttributeTemplate,

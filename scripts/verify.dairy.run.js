@@ -240,7 +240,7 @@ const run = async () => {
     let closeBlockedByOpenStops = false;
     try {
       // Stop 3 is still pending, so this should fail on open stops first.
-      await deliveryRunService.completeRun(createdRunId, agentId, { cansReturned: 4, amountCollected: 12000 });
+      await deliveryRunService.completeRun(createdRunId, agentId, { cansReturned: 4 });
     } catch (e) {
       closeBlocked = true;
       closeBlockedByOpenStops = /still open/.test(e.message);
@@ -255,7 +255,7 @@ const run = async () => {
     // Now all stops are settled. cansLoaded 6, issued 5 (2+3), so 1 expected back.
     let varianceBlocked = false;
     try {
-      await deliveryRunService.completeRun(createdRunId, agentId, { cansReturned: 4, amountCollected: 30000 });
+      await deliveryRunService.completeRun(createdRunId, agentId, { cansReturned: 4 });
     } catch (e) {
       varianceBlocked = e.statusCode === 409;
     }
@@ -263,7 +263,6 @@ const run = async () => {
 
     const withReason = await deliveryRunService.completeRun(createdRunId, agentId, {
       cansReturned: 4,
-      amountCollected: 30000,
       adjustmentReason: 'Customer refused to return 3 cans; follow-up scheduled',
     });
     check('same mismatch ACCEPTED with a reason', withReason.status === 'completed');

@@ -4,6 +4,10 @@ const userService = require('./user.service');
 const Token = require('../models/token.model');
 const ApiError = require('../utils/ApiError');
 const { tokenTypes } = require('../config/tokens');
+const StoreRoleAssignment = require('../modules/stores/models/store.role.assignment.model');
+const LSProvider = require('../modules/local-services/models/localservice.provider.model');
+const RealEstateVendor = require('../modules/realestate/models/realestate.vendor.model');
+const RealEstateExecutive = require('../modules/realestate/models/realestate.executive.model');
 
 const loginUserWithEmailAndPassword = async (email, password, appLocale) => {
   const user = await userService.getUserByEmail(email);
@@ -549,6 +553,74 @@ const loginDairyWithPhoneOTP = async (countryCode, mobileNumber, appLocale) => {
   return user;
 };
 
+/**
+ * Partner-app phone login.
+ *
+ * The Partner app is a single binary for several verticals, so its sign-in
+ * cannot be owned by dairy. This is deliberately vertical-neutral: each role
+ * still gets its own profile payload from its own module after authentication.
+ */
+const PARTNER_APP_ROLES = ['dairyPartner', 'dairyDriver', 'jhatkaPartner', 'jhatkaDriver'];
+
+/**
+ * Resolve which verticals a partner-app user may enter.
+ *
+ * A single platform account can hold memberships in several verticals:
+ *  - dairy / jhatka: platform role (User.role)
+ *  - stores: an active StoreRoleAssignment (per chain/outlet) or a StoreDriver record
+ *  - local_services: an LS Provider record owned by the user
+ *  - realestate: a RealEstateVendor or RealEstateExecutive record linked to the user
+ *
+ * Returns an array of vertical ids ('dairy','jhatka','stores','local_services',
+ * 'realestate'). Empty means no partner access.
+ */
+const resolvePartnerVerticals = async (user) => {
+  const verticals = [];
+  if (PARTNER_APP_ROLES.includes(user.role)) {
+    if (user.role === 'dairyPartner' || user.role === 'dairyDriver') verticals.push('dairy');
+    if (user.role === 'jhatkaPartner' || user.role === 'jhatkaDriver') verticals.push('jhatka');
+  }
+  try {
+    const storeAssignment = await StoreRoleAssignment.findOne({ user: user._id, status: 'active' }).lean();
+    if (storeAssignment) verticals.push('stores');
+  } catch (e) { /* ignore */ }
+  try {
+    const driverRecord = await (require('../modules/stores/models/store.driver.model'))?.findOne({ user: user._id, status: 'active' }).lean();
+    if (driverRecord && !verticals.includes('stores')) verticals.push('stores');
+  } catch (e) { /* ignore */ }
+  try {
+    const provider = await LSProvider.findOne({ owner: user._id }).lean();
+    if (provider) verticals.push('local_services');
+  } catch (e) { /* ignore */ }
+  try {
+    const vendor = await RealEstateVendor.findOne({ user: user._id }).lean();
+    if (vendor) verticals.push('realestate');
+  } catch (e) { /* ignore */ }
+  try {
+    const executive = await RealEstateExecutive.findOne({ user: user._id }).lean();
+    if (executive && !verticals.includes('realestate')) verticals.push('realestate');
+  } catch (e) { /* ignore */ }
+  return [...new Set(verticals)];
+};
+
+const loginPartnerAppWithPhoneOTP = async (countryCode, mobileNumber, appLocale) => {
+  const user = await userService.getUserByCountryCodeAndMobileNumber(countryCode, mobileNumber);
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Not found');
+  }
+  const verticals = await resolvePartnerVerticals(user);
+  if (verticals.length === 0) {
+    throw new ApiError(httpStatus.UNAUTHORIZED, 'Unauthorized');
+  }
+  if (!(user.status === true)) {
+    throw new ApiError(httpStatus.UNAUTHORIZED, 'Account Blocked');
+  }
+  Object.assign(user, { locale: appLocale });
+  await user.save();
+  user.verticals = verticals;
+  return user;
+};
+
 const loginKitchenWithSocialAccount = async (email, appLocale) => {
   const user = await userService.getUserByEmail(email);
   if (!user) {
@@ -834,6 +906,8 @@ module.exports = {
   loginKitchenWithPhoneOTP,
   driverLoginWithSocialAccount,
   loginKitchenWithSocialAccount,
+  PARTNER_APP_ROLES,
+  loginPartnerAppWithPhoneOTP,
   loginDairyWithPhoneOTP,
   loginWaiterWithSocialAccount,
   resetFirebaseWebPassword,

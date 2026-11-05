@@ -26,41 +26,66 @@ const assignDriver = catchAsync(async (req, res) => {
     ...req.body,
     outlet: req.outletId,
     chain: req.chainId,
+    actor: req.user._id,
   });
-  res.status(httpStatus.CREATED).send({ delivery });
+  res.status(httpStatus.CREATED).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 });
 
 const transitionDelivery = catchAsync(async (req, res) => {
   const delivery = await deliveryService.transitionDelivery(req.params.delivery, req.params.status, {
     actor: req.user._id,
     notes: req.body.notes,
+    outlet: req.outletId,
   });
-  res.status(httpStatus.OK).send({ delivery });
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 });
 
 const verifyDeliveryOtp = catchAsync(async (req, res) => {
-  const delivery = await deliveryService.verifyDeliveryOtp(req.params.delivery, req.body.otp);
-  res.status(httpStatus.OK).send({ delivery });
+  const delivery = await deliveryService.verifyDeliveryOtp(req.params.delivery, req.body.otp, {
+    actor: req.user._id,
+    outlet: req.outletId,
+  });
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
+});
+
+const resendDeliveryOtp = catchAsync(async (req, res) => {
+  const { delivery, notified } = await deliveryService.resendDeliveryOtp(req.params.order, {
+    outlet: req.outletId,
+    actor: req.user._id,
+  });
+  res.status(httpStatus.OK).send({ delivery, notified });
 });
 
 const collectCod = catchAsync(async (req, res) => {
-  const delivery = await deliveryService.collectCod(req.params.delivery, req.body.amount);
-  res.status(httpStatus.OK).send({ delivery });
+  const delivery = await deliveryService.collectCod(req.params.delivery, req.body.amount, {
+    outlet: req.outletId,
+  });
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 });
 
 const reconcileCod = catchAsync(async (req, res) => {
-  const delivery = await deliveryService.reconcileCod(req.params.delivery);
-  res.status(httpStatus.OK).send({ delivery });
+  const delivery = await deliveryService.reconcileCod(req.params.delivery, {
+    outlet: req.outletId,
+  });
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 });
 
 const getDelivery = catchAsync(async (req, res) => {
-  const delivery = await deliveryService.getDelivery(req.params.order);
-  res.status(httpStatus.OK).send({ delivery });
+  const delivery = await deliveryService.getDeliveryByOrder(req.params.order, {
+    outlet: req.outletId,
+  });
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
+});
+
+const getDeliveryById = catchAsync(async (req, res) => {
+  const delivery = await deliveryService.getDeliveryById(req.params.delivery);
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 });
 
 const listDeliveries = catchAsync(async (req, res) => {
   const filter = pick(req.query, ['driver', 'status', 'page', 'limit']);
   const result = await deliveryService.listDeliveries({ ...filter, outlet: req.outletId });
+  result.items = result.items.map((row) => deliveryService.sanitizeDelivery(row));
   res.status(httpStatus.OK).send(result);
 });
 
@@ -73,9 +98,11 @@ module.exports = {
   assignDriver,
   transitionDelivery,
   verifyDeliveryOtp,
+  resendDeliveryOtp,
   collectCod,
   reconcileCod,
   getDelivery,
+  getDeliveryById,
   listDeliveries,
   getAvailableDrivers,
 };

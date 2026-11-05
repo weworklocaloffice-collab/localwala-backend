@@ -43,10 +43,13 @@ const pickItem = catchAsync(async (req, res) => {
   // Picking comes after acceptance. Moving here on first item both protects the
   // counter from acting on a stale `created` order and gives the packing gate a state.
   if (order.lifecycle === 'accepted') {
-    await orderService.transitionOrder(req.params.order, 'picking', { actor: req.user._id });
+    await orderService.transitionOrder(req.params.order, 'picking', {
+      actor: req.user._id,
+      outlet: req.outletId,
+    });
   }
 
-  const refreshed = await orderService.getOrder(req.params.order);
+  const refreshed = await orderService.getOrder(req.params.order, { outlet: req.outletId });
   res.status(httpStatus.OK).send({ order: refreshed });
 });
 
@@ -62,10 +65,13 @@ const completePacking = catchAsync(async (req, res) => {
   });
 
   if (order.lifecycle === 'picking') {
-    await orderService.transitionOrder(req.params.order, 'packing', { actor: req.user._id });
+    await orderService.transitionOrder(req.params.order, 'packing', {
+      actor: req.user._id,
+      outlet: req.outletId,
+    });
   }
 
-  const refreshed = await orderService.getOrder(req.params.order);
+  const refreshed = await orderService.getOrder(req.params.order, { outlet: req.outletId });
   res.status(httpStatus.OK).send({ order: refreshed });
 });
 

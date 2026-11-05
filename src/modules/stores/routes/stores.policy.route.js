@@ -55,6 +55,7 @@ router.patch(
 router.post(
   '/policies/:policy/archive',
   storeAuth('stores_policy_write'),
+  validate(V.policyIdValidation),
   policyController.archivePolicy
 );
 

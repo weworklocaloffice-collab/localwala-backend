@@ -272,6 +272,7 @@ module.exports.StoreCategory = require('../modules/stores/models/store.category.
 module.exports.StoreSubcategory = require('../modules/stores/models/store.subcategory.model');
 module.exports.StoreAttributeTemplate = require('../modules/stores/models/store.attribute.template.model');
 module.exports.StoreBrand = require('../modules/stores/models/store.brand.model');
+module.exports.StoreBrandRequest = require('../modules/stores/models/store.brand.request.model');
 module.exports.StoreProduct = require('../modules/stores/models/store.product.model');
 module.exports.StoreProductVariant = require('../modules/stores/models/store.product.variant.model');
 module.exports.StoreOutletProduct = require('../modules/stores/models/store.outlet.product.model');
@@ -308,6 +309,7 @@ module.exports.StoreFeaturedPlacement = require('../modules/stores/models/store.
 module.exports.StoreRecurringPlan = require('../modules/stores/models/store.recurring.plan.model');
 module.exports.StoreCustomerSubscription = require('../modules/stores/models/store.customer.subscription.model');
 module.exports.StoreRecurringOrder = require('../modules/stores/models/store.recurring.order.model');
+module.exports.StoreAuditLog = require('../modules/stores/models/store.audit.log.model');
 
 // Modules - jhatka vertical (Phase 1, fresh meat / butcher).
 //
@@ -391,6 +393,10 @@ module.exports.JhatkaCompliance = require('../modules/jhatka/models/jhatka.compl
 module.exports.JhatkaComplaint = require('../modules/jhatka/models/jhatka.complaint.model');
 module.exports.JhatkaReview = require('../modules/jhatka/models/jhatka.review.model');
 module.exports.JhatkaPromotion = require('../modules/jhatka/models/jhatka.promotion.model');
+// -- jhatka: supply (partner stock requests) and the partner account ledger --
+module.exports.JhatkaSupplyRequest = require('../modules/jhatka/models/jhatka.supply.request.model');
+module.exports.JhatkaPartnerLedger = require('../modules/jhatka/models/jhatka.partner.ledger.model');
+module.exports.JhatkaAreaChangeRequest = require('../modules/jhatka/models/jhatka.area.change.request.model');
 
 // -- local-services: revenue engine (Phase 1). Registered as flat block at END,
 // never edit above lines (jhatka pattern). refs are lazy so order is for humans.

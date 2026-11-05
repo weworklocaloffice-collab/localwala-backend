@@ -87,12 +87,21 @@ const listProducts = async ({ outlet, chain, category, subcategory, brand, searc
       .skip((page - 1) * limit)
       .limit(limit)
       .populate('category', 'name slug')
-      .populate('subcategory', 'name slug')
+      .populate('subcategory', 'name slug categoryDefaults')
+      .populate('brand', 'name slug logo isVerified certifications')
       .lean(),
     ChainProduct.countDocuments(filter),
   ]);
 
   let enriched = items;
+  // Default: add brandCertified for all paths
+  const StoreBrand = mongoose.model('StoreBrand');
+  if (items.length && !outlet && !chain) {
+    enriched = items.map((item) => ({
+      ...item,
+      brandCertified: StoreBrand.hasChainCertification(item.brand, null),
+    }));
+  }
   if (outlet && items.length) {
     const ChainProductVariant = mongoose.model('ChainProductVariant');
     const StoreOutletStockItem = mongoose.model('StoreOutletStockItem');
@@ -125,8 +134,11 @@ const listProducts = async ({ outlet, chain, category, subcategory, brand, searc
     enriched = items.map((item) => {
       const key = String(item._id);
       const stock = stockByProduct.get(key) || { availableQty: 0, variantsInStock: 0 };
+      const StoreBrand = mongoose.model('StoreBrand');
+      const brandCertified = StoreBrand.hasChainCertification(item.brand, chain || null);
       return {
         ...item,
+        brandCertified,
         availability: {
           inStock: stock.variantsInStock > 0,
           availableQty: stock.availableQty,
@@ -135,6 +147,41 @@ const listProducts = async ({ outlet, chain, category, subcategory, brand, searc
         },
       };
     });
+  } else if (chain && items.length) {
+    const StoreOutletStockItem = mongoose.model('StoreOutletStockItem');
+    const productIds = items.map((item) => item._id);
+    const stockRows = await StoreOutletStockItem.find({
+      chain,
+      product: { $in: productIds },
+      $or: [{ availableQty: { $gt: 0 } }, { allowNegativeStock: true }],
+    })
+      .select('product outlet')
+      .lean();
+
+    const outletsByProduct = new Map();
+    for (const row of stockRows) {
+      const key = String(row.product);
+      if (!outletsByProduct.has(key)) outletsByProduct.set(key, new Set());
+      outletsByProduct.get(key).add(String(row.outlet));
+    }
+
+    const StoreBrand = mongoose.model('StoreBrand');
+    const authorizationMode = items.length && items[0].subcategory && items[0].subcategory.categoryDefaults
+      ? items[0].subcategory.categoryDefaults.brandAuthorizationMode || 'badge'
+      : 'badge';
+
+    let filtered = items;
+    enriched = items.map((item) => {
+      const brandCertified = StoreBrand.hasChainCertification(item.brand, chain || null);
+      if (authorizationMode === 'block' && item.brand && !brandCertified) {
+        return null;
+      }
+      return {
+        ...item,
+        brandCertified,
+        outletsInStock: (outletsByProduct.get(String(item._id)) || new Set()).size,
+      };
+    }).filter(Boolean);
   }
 
   return { items: enriched, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
@@ -165,9 +212,13 @@ const getProduct = async (productId, { chain } = {}) => {
   if (chain) filter.chain = chain;
   const product = await ChainProduct.findOne(filter)
     .populate('category', 'name slug')
-    .populate('subcategory', 'name slug')
-    .populate('brand', 'name slug logo')
+    .populate('subcategory', 'name slug categoryDefaults')
+    .populate('brand', 'name slug logo isVerified certifications')
     .lean();
+  if (product) {
+    const StoreBrand = mongoose.model('StoreBrand');
+    product.brandCertified = StoreBrand.hasChainCertification(product.brand, chain || null);
+  }
   if (!product) throw new ApiError(httpStatus.NOT_FOUND, 'Product not found');
 
   const variants = await ChainProductVariant.find({ product: product._id, status: 'active' })
@@ -328,7 +379,10 @@ const getProductForm = async ({ category, subcategory }) => {
       ...t,
       variantAxis: t.variantAxis || false,
     })),
-    brand: { required: sub.categoryDefaults?.brandRequired || false },
+    brand: {
+      required: sub.categoryDefaults?.brandRequired || false,
+      authorizationMode: sub.categoryDefaults?.brandAuthorizationMode || 'badge',
+    },
     tax: { allowedTypes: ['inclusive', 'exclusive', 'none'], hsnRequired: sub.categoryDefaults?.hsnRequired || false },
     warranty: { required: sub.categoryDefaults?.warrantyRequired || false },
     variants: {
@@ -396,10 +450,21 @@ const listSubcategories = async ({ category } = {}) => {
     .lean();
 };
 
-const listBrands = async () => {
+const listBrands = async ({ search } = {}) => {
   const StoreBrand = mongoose.model('StoreBrand');
-  return StoreBrand.find({ status: 'approved' })
-    .select('name slug logo categories subcategories')
+  const filter = { status: 'approved' };
+  const term = typeof search === 'string' ? search.trim() : '';
+  if (term) {
+    // Alias search is the point of the field: "SAMSUNG" must find "Samsung".
+    // Escape the input so a customer/partner cannot inject a regex.
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    filter.$or = [
+      { name: { $regex: escaped, $options: 'i' } },
+      { aliases: { $regex: escaped, $options: 'i' } },
+    ];
+  }
+  return StoreBrand.find(filter)
+    .select('name slug logo aliases categories subcategories isVerified')
     .sort({ name: 1 })
     .lean();
 };

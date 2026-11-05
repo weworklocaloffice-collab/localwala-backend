@@ -255,7 +255,7 @@ router.get('/orders/reviews', webAuth('jhatka_review_read'), async (req, res, ne
       : 0;
 
     return res.json({
-      reviews,
+      reviews: reviews.map((r) => ({ ...r, id: String(r._id) })),
       count: reviews.length,
       summary: {
         averageOutletRating: avg,

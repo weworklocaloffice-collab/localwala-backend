@@ -66,6 +66,7 @@ const { asMoney, toPaiseAmount } = require('./utils/money');
 const settlementService = require('./services/jhatka.settlement.service');
 const payoutService = require('./services/jhatka.payout.service');
 const { processRefundQueue } = require('./services/jhatka.refund.settlement');
+const cartService = require('./services/jhatka.cart.service');
 const reservationService = require('./services/jhatka.reservation.service');
 const expiryService = require('./services/jhatka.expiry.service');
 const occurrenceService = require('./services/jhatka.occurrence.service');
@@ -93,6 +94,7 @@ function startJhatkaCron({ mongoose: _mongoose, models }) {
     JhatkaSupplierPayable,
     JhatkaPromotion,
     JhatkaOutletVarianceFlag,
+    JhatkaCart,
   } = models;
 
   // `JhatkaSubscription`, `JhatkaRecurringOrder`, `JhatkaSubscriptionEvent` and
@@ -194,6 +196,24 @@ function startJhatkaCron({ mongoose: _mongoose, models }) {
       // Swallowed for the same reason as every other job here: a throw in this file
       // tears down the other eight. See §16.0.
       console.error('[jhatka.cron] subscription billing failed:', error.message);
+    }
+  });
+
+  // =========================================================================
+  // 00:15 — purge abandoned carts. §15.2
+  // =========================================================================
+  //
+  // `expiresAt` is seven days after the cart's last activity and is indexed, so
+  // this is a bounded range delete. An abandoned basket is not an order, a
+  // reservation or a liability; keeping it forever only grows the collection.
+  jobs.cartPurge = cron.schedule('15 0 * * *', async () => {
+    try {
+      const summary = await cartService.purgeStaleCarts({ JhatkaCart });
+      if (summary.deleted) {
+        console.log(`[jhatka.cron] stale carts purged: ${summary.deleted}`);
+      }
+    } catch (error) {
+      console.error('[jhatka.cron] cart purge failed:', error.message);
     }
   });
 
@@ -353,6 +373,18 @@ function startJhatkaCron({ mongoose: _mongoose, models }) {
 
   jobs.recurringOrders = cron.schedule('0 3 * * *', () => generateRecurringOrders(models));
 
+  // 18:00 - the outlet's book for tomorrow. The 03:00 generator already wrote the
+  // occurrences; this is the human-facing nudge to confirm stock before the
+  // earliest edit cutoff. Grouped per outlet so nine subscriptions are one push.
+  jobs.subscriptionDueReminders = cron.schedule('0 18 * * *', async () => {
+    try {
+      const summaries = await sendSubscriptionDueReminders(models);
+      console.log(`[jhatka.cron] subscription due reminders outlets=${summaries.length}`);
+    } catch (error) {
+      console.error('[jhatka.cron] subscription due reminders failed', error.message);
+    }
+  });
+
   // =========================================================================
   // 03:30 — F-5: actually move refunded money.
   //
@@ -388,7 +420,6 @@ function startJhatkaCron({ mongoose: _mongoose, models }) {
   jobs.complianceWarnings = cron.schedule('0 4 * * *', async () => {
     const now = new Date();
     const in30 = new Date(now.getTime() + 30 * 86400000);
-    const in7 = new Date(now.getTime() + 7 * 86400000);
 
     const expiring = await JhatkaCompliance.find({
       'fssai.expiresAt': { $gte: now, $lte: in30 },
@@ -460,6 +491,7 @@ function startJhatkaCron({ mongoose: _mongoose, models }) {
       availableQty: { $gt: 0 },
     })
       .populate('outlet', 'name')
+      .populate('product', 'name')
       .lean();
 
     for (const b of batches) {
@@ -467,6 +499,13 @@ function startJhatkaCron({ mongoose: _mongoose, models }) {
       console.log(
         `[jhatka.cron] batch ${b.batchNo} expires in ${days}d (${b.availableQty} ${b.unit}) at ${b.outlet?.name || b.outlet?._id}`
       );
+
+      if (new Date(b.expiresAt).toDateString() !== now.toDateString()) continue;
+      await notifyService.notifyOutlet(b.outlet?._id, 'batch_expiring', {
+        batchNo: b.batchNo,
+        available: `${b.availableQty} ${b.unit}`,
+        productName: b.product?.name || b.rawSku,
+      });
     }
 
     // Expiry write-off (§5). B7: this used to flip `JhatkaBatch.status` to 'expired'
@@ -507,6 +546,20 @@ function startJhatkaCron({ mongoose: _mongoose, models }) {
     // settlement job's `.select('netPayablePaise')` read nothing — riders were owed
     // nothing, permanently, with no error. Field names and §10.3 roll-forward now
     // live in the service.
+    //
+    // `partnerFeePct: 10` is the FALLBACK only: the sweep resolves the active
+    // `JhatkaCommissionRule` for each outlet's business model. The rule's
+    // `platformFeePercent` (LocalWala's cut, deducted) governs the charge when
+    // in force, and its `ratePercent` (the partner's earning) is recorded on
+    // the statement — two different rates, never netted. Each payout freezes
+    // the rule it applied onto its ruleSnapshot. This number governs only
+    // outlets with no effective rule.
+    // BR-22: TWO sweeps, TWO documents, never merged.
+    // 1. The OPERATOR statement — per outlet, from ORDER VALUE (finalTotal of
+    //    delivered/completed orders), platform fee + partner earning per the
+    //    active commission rule, minus the period's stock recovery (the ledger
+    //    STOCK_DEBIT magnitude — the partner pays for the meat).
+    // `partnerFeePct: 10` is the FALLBACK charge when no rule is in force.
     const payoutResults = await payoutService.runPayoutSweep({
       models,
       from,
@@ -516,12 +569,27 @@ function startJhatkaCron({ mongoose: _mongoose, models }) {
     });
 
     if (payoutResults.length) {
-      const rolled = payoutResults.filter((r) => r.reason === 'below_minimum_payout_rolled_forward');
+      const rolled = payoutResults.filter((r) =>
+        r.reason === 'below_minimum_payout_rolled_forward'
+          || r.reason === 'negative_net_carried_forward');
       console.log(
-        `[jhatka.cron] payouts=${payoutResults.length} ` +
-        `rolledForward=${rolled.length} ` +
-`payable=${payoutResults.filter((r) => r.shouldPay).length}`
+        `[jhatka.cron] operator payouts=${payoutResults.length} ` +
+        `carried=${rolled.length} ` +
+        `payable=${payoutResults.filter((r) => r.shouldPay).length}`
       );
+    }
+
+    // 2. The RIDER settlement — per driver, their delivery fees, their own
+    //    document (JhatkaDeliverySettlement). BR-22 forbids merging this with
+    //    the operator statement.
+    const riderResults = await payoutService.runRiderFeeSweep({
+      models,
+      from,
+      to,
+      nextNumber: num,
+    });
+    if (riderResults.length) {
+      console.log(`[jhatka.cron] rider settlements=${riderResults.length}`);
     }
   });
 
@@ -588,6 +656,20 @@ function startJhatkaCron({ mongoose: _mongoose, models }) {
     console.log(`[jhatka.cron] variance flags aged: ${result.modifiedCount}`);
   });
 
+  // 09:20 — Low-stock reorder reminders (OD-12 companion). Per-SKU, with a
+  // 72-hour cooldown per item so a SKU sitting at threshold does not nag daily;
+  // a deeper drop re-notifies immediately (the sweep re-runs everything under
+  // threshold, the cooldown only gates the send). Callable separately for tests.
+  jobs.lowStockReminders = cron.schedule('20 9 * * *', async () => {
+    const result = await runLowStockReminders(models);
+    if (result.reminded || result.skippedCooldown) {
+      console.log(
+        `[jhatka.cron] low-stock reminders: ${result.reminded} sent, ` +
+        `${result.skippedCooldown} in cooldown`
+      );
+    }
+  });
+
 return jobs;
 }
 
@@ -600,6 +682,80 @@ return jobs;
 // the integration suite could assert nothing about it. The schedule wraps this
 // function; tests call it directly.
 // =========================================================================
+/**
+ * Low-stock reorder reminders (OD-12 companion). Callable, like the other
+ * sweeps — the schedule above is a thin wrapper.
+ *
+ * For every active outlet, every inventory item at/below its own threshold
+ * (zero included — "none left" is the strongest reminder there is) gets the
+ * partner a push with a one-tap path into the supply-request screen. The
+ * cooldown is PER ITEM via `lowStockNotifiedAt`: 72 hours, or immediately when
+ * never reminded. A failed push never fails the sweep (notify service
+ * invariant #1) and never blocks other items.
+ *
+ * @param {object} models
+ * @param {object} [opts] `{ cooldownHours = 72, now = new Date() }`
+ * @returns {Promise<{reminded: number, skippedCooldown: number, outlets: number}>}
+ */
+async function runLowStockReminders(models, { cooldownHours = 72, now = new Date() } = {}) {
+  const { JhatkaOutlet, JhatkaInventoryItem, JhatkaProduct } = models;
+  const cooldownCutoff = new Date(now.getTime() - cooldownHours * 3600000);
+  const notifyService = require('./services/jhatka.notify.service');
+
+  const outlets = await JhatkaOutlet.find({ status: 'active' }).select('_id').lean();
+  let reminded = 0;
+  let skippedCooldown = 0;
+
+  for (const outlet of outlets) {
+    const items = await JhatkaInventoryItem.find({
+      outlet: outlet._id,
+      lowStockThreshold: { $gt: 0 },
+      $or: [
+        { lowStockNotifiedAt: { $lt: cooldownCutoff } },
+        { lowStockNotifiedAt: null },
+      ],
+      $expr: { $lte: ['$availableQty', '$lowStockThreshold'] },
+    })
+      .limit(100)
+      .lean();
+
+    if (!items.length) continue;
+
+    const productIds = [...new Set(items.map((i) => String(i.product)).filter(Boolean))];
+    const products = productIds.length
+      ? await JhatkaProduct.find({ _id: { $in: productIds } }).select('name').lean()
+      : [];
+    const nameById = new Map(products.map((pr) => [String(pr._id), pr.name]));
+
+    for (const item of items) {
+      const productName = nameById.get(String(item.product)) || item.rawSku || 'Stock item';
+      const result = await notifyService.notifyOutlet(outlet._id, 'low_stock_reminder', {
+        productName,
+        available: item.availableQty,
+        unit: item.unit || 'units',
+        threshold: item.lowStockThreshold,
+      });
+      // Stamped on any ATTEMPT, including no_admin_app / no_token (a dev or
+      // staging configuration state, not a fault) — the reminder HAPPENED and
+      // re-attempting daily would defeat the cooldown. Only genuine faults
+      // (model unavailable, lookup failed, unknown event) skip unstamped, so a
+      // real bug retries tomorrow instead of hiding.
+      const realFault = ['model_unavailable', 'lookup_failed', 'unknown_event'];
+      if (!realFault.includes(result.reason)) {
+        await JhatkaInventoryItem.updateOne(
+          { _id: item._id },
+          { $set: { lowStockNotifiedAt: now } }
+        );
+        reminded += 1;
+      } else {
+        skippedCooldown += 1;
+      }
+    }
+  }
+
+  return { reminded, skippedCooldown, outlets: outlets.length };
+}
+
 async function generateRecurringOrders(models) {
   const {
     JhatkaSubscription,
@@ -804,6 +960,110 @@ await live.save();
   return { generated, skippedNoStock, alreadyPresent, scanned: subs.length };
 }
 
+/**
+ * 18:00 - tell each outlet what it has to cut tomorrow, and by when.
+ *
+ * The 03:00 generator creates tomorrow's occurrences, but the outlet only sees
+ * them if someone opens the app. This is the evening nudge that makes the
+ * subscription book actionable. It is grouped by OUTLET, not sent per
+ * subscription: a counter with nine subscriptions should get one message listing
+ * the cuts, not nine notifications.
+ *
+ * Uses `isScheduledFor(tomorrow)`, the model's own skip/pause/term/recurrence
+ * predicate, so a skipped or paused subscription is not counted. The cutoff is
+ * the EARLIEST slot start minus that subscription's `editCutoffHours`; the
+ * binding deadline is the first one, not the average.
+ *
+ * @returns {Promise<Array<{outlet: string, count: number, itemSummary: string, cutoff: string}>>}
+ */
+async function sendSubscriptionDueReminders(models) {
+  const { JhatkaSubscription } = models;
+
+  const now = new Date();
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const dayAfter = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
+
+  const subs = await JhatkaSubscription.find({
+    status: 'active',
+    nextOccurrenceDate: { $gte: tomorrow, $lt: dayAfter },
+  }).select(
+    'outlet items skipDates pauseWindows startDate endDate scheduleType customDays ' +
+    'intervalCount deliverySlot editCutoffHours'
+  );
+
+  const byOutlet = new Map();
+  for (const sub of subs) {
+    if (!sub.isScheduledFor(tomorrow)) continue;
+    const key = String(sub.outlet);
+    if (!byOutlet.has(key)) byOutlet.set(key, []);
+    byOutlet.get(key).push(sub);
+  }
+
+  const summaries = [];
+  for (const [outlet, group] of byOutlet.entries()) {
+    const cutoffs = group
+      .map((sub) => subscriptionDueCutoff(sub, tomorrow))
+      .filter(Boolean);
+    const earliest = cutoffs.length
+      ? new Date(Math.min(...cutoffs.map((date) => date.getTime())))
+      : null;
+    const summary = {
+      outlet,
+      count: group.length,
+      itemSummary: summarizeSubscriptionItems(group),
+      cutoff: formatSubscriptionCutoff(earliest, now),
+    };
+    await notifyService.notifyOutlet(outlet, 'subscription_due', summary);
+    summaries.push(summary);
+  }
+
+  return summaries;
+}
+
+/** The earliest moment a customer can still change tomorrow's occurrence. */
+function subscriptionDueCutoff(sub, tomorrow) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(sub.deliverySlot?.startTime || ''));
+  if (!match) return null;
+  const slotStart = new Date(tomorrow);
+  slotStart.setHours(Number(match[1]), Number(match[2]), 0, 0);
+  const hours = Number(sub.editCutoffHours);
+  return new Date(slotStart.getTime() - (Number.isFinite(hours) ? hours : 2) * 3600000);
+}
+
+/** "today 6:00 pm", "tomorrow 6:00 am", or a dated fallback. */
+function formatSubscriptionCutoff(date, now) {
+  if (!date) return 'your first slot';
+  const startOf = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  const dayDiff = Math.round((startOf(date) - startOf(now)) / 86400000);
+  const time = date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+  if (dayDiff === 0) return `today ${time}`;
+  if (dayDiff === 1) return `tomorrow ${time}`;
+  return `${date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} ${time}`;
+}
+
+/** "2 KG Chicken, 1 KG Mutton" - quantities summed across customers. */
+function summarizeSubscriptionItems(subs) {
+  const totals = new Map();
+  for (const sub of subs) {
+    for (const item of sub.items || []) {
+      const name = item.nameSnapshot || item.name || item.sku || 'item';
+      const unit = item.requestedQuantity?.unit || '';
+      const value = Number(item.requestedQuantity?.value) || 0;
+      const key = `${name}\u0000${unit}`;
+      totals.set(key, (totals.get(key) || 0) + value);
+    }
+  }
+
+  const parts = [...totals.entries()].map(([key, value]) => {
+    const [name, unit] = key.split('\u0000');
+    const quantity = Number(value.toFixed(3));
+    return unit ? `${quantity} ${unit} ${name}` : `${quantity} × ${name}`;
+  });
+  if (!parts.length) return 'the subscription lines';
+  const shown = parts.slice(0, 4);
+  return shown.join(', ') + (parts.length > shown.length ? ` +${parts.length - shown.length} more` : '');
+}
+
 /** Grams for a quantity, used by the settlement COGS estimate. */
 function unitToGrams(qty) {
   if (!qty || typeof qty.value !== 'number') return null;
@@ -857,7 +1117,10 @@ module.exports = {
   startJhatkaCron,
   stopJhatkaCron,
   generateRecurringOrders,
+  sendSubscriptionDueReminders,
+  runLowStockReminders,
   processRefundQueue,
   processRefunds,
+  _internal: { subscriptionDueCutoff, formatSubscriptionCutoff, summarizeSubscriptionItems },
 };
 module.exports.unitToGrams = unitToGrams;

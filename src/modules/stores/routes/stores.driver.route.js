@@ -21,43 +21,67 @@ const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
 const appAuth = require('../../../middlewares/appAuth');
+const validate = require('../../../middlewares/validate');
 const deliveryService = require('../services/stores.delivery.service');
+const V = require('../validations/stores.validation');
 
 const router = express.Router();
 
+const currentDriver = async (req) => {
+  const StoreDriver = mongoose.model('StoreDriver');
+  const driver = await StoreDriver.findOne({
+    user: req.user._id,
+    status: { $in: ['active', 'reactivated'] },
+  }).select('_id outlet chain');
+  if (!driver) throw new ApiError(httpStatus.FORBIDDEN, 'No store driver profile is linked to this account');
+  return driver;
+};
+
 const getDriverDeliveries = async (req, res) => {
+  const driver = await currentDriver(req);
   const StoreDelivery = mongoose.model('StoreDelivery');
-  const deliveries = await StoreDelivery.find({ driver: req.user._id })
+  const deliveries = await StoreDelivery.find({ driver: driver._id })
     .sort({ createdAt: -1 })
     .limit(50)
     .lean();
-  res.status(httpStatus.OK).send({ deliveries });
+  res.status(httpStatus.OK).send({ deliveries: deliveries.map(deliveryService.sanitizeDelivery) });
 };
 
 const getDelivery = async (req, res) => {
-  const delivery = await deliveryService.getDelivery(req.params.delivery);
-  res.status(httpStatus.OK).send({ delivery });
+  const driver = await currentDriver(req);
+  const delivery = await deliveryService.getDeliveryById(req.params.delivery, {
+    driver: driver._id,
+  });
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 };
 
 const transitionDelivery = async (req, res) => {
+  const driver = await currentDriver(req);
   const delivery = await deliveryService.transitionDelivery(req.params.delivery, req.params.status, {
     actor: req.user._id,
     notes: req.body.notes,
+    driver: driver._id,
   });
-  res.status(httpStatus.OK).send({ delivery });
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 };
 
 const deliverWithOtp = async (req, res) => {
-  const delivery = await deliveryService.verifyDeliveryOtp(req.params.delivery, req.body.otp);
-  res.status(httpStatus.OK).send({ delivery });
+  const driver = await currentDriver(req);
+  const delivery = await deliveryService.verifyDeliveryOtp(req.params.delivery, req.body.otp, {
+    actor: req.user._id,
+    driver: driver._id,
+  });
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 };
 
 const failDelivery = async (req, res) => {
+  const driver = await currentDriver(req);
   const delivery = await deliveryService.transitionDelivery(req.params.delivery, 'failed', {
     actor: req.user._id,
     notes: req.body.reason,
+    driver: driver._id,
   });
-  res.status(httpStatus.OK).send({ delivery });
+  res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 };
 
 const getDriverEarnings = async (req, res) => {
@@ -90,9 +114,9 @@ router.get('/deliveries/:delivery', appAuth('storeDriver'), getDelivery);
 // the OTP handover (BR-29) and the failure path; declared after
 // `/deliveries/:delivery/:status` they were captured by it, so every completion call
 // silently ran the generic transition instead. The OTP proof was never verified.
-router.post('/deliveries/:delivery/deliver', appAuth('storeDriver'), deliverWithOtp);
+router.post('/deliveries/:delivery/deliver', appAuth('storeDriver'), validate(V.deliveryOtpValidation), deliverWithOtp);
 router.post('/deliveries/:delivery/fail', appAuth('storeDriver'), failDelivery);
-router.post('/deliveries/:delivery/:status', appAuth('storeDriver'), transitionDelivery);
+router.post('/deliveries/:delivery/:status', appAuth('storeDriver'), validate(V.deliveryDriverTransitionValidation), transitionDelivery);
 router.get('/earnings', appAuth('storeDriver'), getDriverEarnings);
 
 module.exports = router;

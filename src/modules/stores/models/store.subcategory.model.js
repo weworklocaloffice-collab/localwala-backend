@@ -104,6 +104,13 @@ const storeSubcategorySchema = mongoose.Schema(
         type: Boolean,
         required: false,
       },
+      // OD-27: whether an unverified brand is shown as a badge or blocks listing.
+      brandAuthorizationMode: {
+        type: String,
+        enum: ['badge', 'block'],
+        required: false,
+        default: 'badge',
+      },
       // is a variant generated, or does a product have exactly one SKU?
       hasVariants: {
         type: Boolean,

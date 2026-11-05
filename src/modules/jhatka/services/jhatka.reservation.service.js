@@ -127,7 +127,7 @@ async function reserveOccurrenceStock({ occurrence, lines, outlet, models, actor
           $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
         },
         { $inc: { reserved: take, availableQty: -take } },
-        { new: true }
+        { returnDocument: 'after' }
       );
 
       // null means another writer took it first. Move on to the next batch; do NOT
@@ -222,7 +222,7 @@ async function releaseOccurrenceStock({ occurrence, outlet, models, actor, reaso
       // Symmetric with the claim: `reserved` down AND `availableQty` back up.
       // Releasing only one of the pair leaves the item permanently unavailable.
       { $inc: { reserved: -alloc.qtyDelta, availableQty: alloc.qtyDelta } },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!item) continue;
 
@@ -367,7 +367,7 @@ async function allocateOrderItem({ order, item, outlet, models, actor }) {
         $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
       },
       { $inc: { reserved: take, availableQty: -take } },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!claimed) continue;
 

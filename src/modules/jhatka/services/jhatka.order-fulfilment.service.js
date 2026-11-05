@@ -47,6 +47,8 @@
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
 const lifecycleService = require('./jhatka.order-lifecycle.service');
+const otpService = require('./jhatka.otp.service');
+const notifyService = require('./jhatka.notify.service');
 
 /** Hard cap so a list cannot page the whole collection. */
 const MAX_PAGE_LIMIT = 100;
@@ -117,6 +119,9 @@ async function orderDetail({ models, order } = {}) {
       id: String(order._id),
       orderNo: order.orderNo,
       lifecycle: order.lifecycle,
+      // The fulfilment screen branches on this: a pickup order's READY hand is
+      // the counter collect, not a rider dispatch (OD-12).
+      fulfilmentMode: order.fulfilmentMode,
       customer: order.customer
         ? { id: String(order.customer._id), name: order.customer.name, phone: order.customer.phone }
         : null,
@@ -191,6 +196,11 @@ async function orderDetail({ models, order } = {}) {
  */
 async function receiveOrder({ order } = {}) {
   await lifecycleService.moveTo(order, 'OUTLET_RECEIVED');
+  await notifyService.notifyCustomer(
+    order.customer,
+    'order_outlet_received',
+    notifyService.buildOrderContext(order)
+  );
   return { order: { id: String(order._id), lifecycle: order.lifecycle } };
 }
 
@@ -199,6 +209,11 @@ async function receiveOrder({ order } = {}) {
  */
 async function acceptOrder({ order } = {}) {
   await lifecycleService.moveTo(order, 'ACCEPTED', { acceptedAt: new Date() });
+  await notifyService.notifyCustomer(
+    order.customer,
+    'order_accepted',
+    notifyService.buildOrderContext(order)
+  );
   return {
     order: { id: String(order._id), lifecycle: order.lifecycle, acceptedAt: order.acceptedAt },
   };
@@ -242,6 +257,15 @@ async function rejectOrder({
     reasonNote: reason,
     actor,
     nextNumber,
+  });
+
+  await notifyService.notifyCustomer(order.customer, 'order_rejected', {
+    ...notifyService.buildOrderContext(order),
+    reason,
+    refundNote:
+      order.paymentMode === 'gateway'
+        ? 'Your refund is on its way.'
+        : 'Nothing was charged.',
   });
 
   return {
@@ -375,6 +399,12 @@ async function startPreparation({
     },
   });
 
+  await notifyService.notifyCustomer(
+    order.customer,
+    'order_preparing',
+    notifyService.buildOrderContext(order)
+  );
+
   return {
     ticket: { id: String(ticket._id), ticketNo: ticket.ticketNo, attempt, status: ticket.status, lines: ticket.lines },
     order: { id: String(order._id), lifecycle: order.lifecycle },
@@ -449,6 +479,12 @@ async function markReady({ order } = {}) {
 
   await lifecycleService.moveTo(order, 'READY', { readyAt: new Date() });
 
+  await notifyService.notifyCustomer(
+    order.customer,
+    'order_packed',
+    notifyService.buildOrderContext(order)
+  );
+
   return { order: { id: String(order._id), lifecycle: order.lifecycle, readyAt: order.readyAt } };
 }
 
@@ -468,6 +504,19 @@ async function dispatchOrder({
 } = {}) {
   const { JhatkaDriver, JhatkaOutlet, JhatkaDelivery } = models;
   const { driver: driverId } = body;
+
+  // The mode gate for the READY table edge (see the model): a pickup order is
+  // handed over at the counter, and dispatching it would strand a rider with a
+  // delivery document that can never settle.
+  if (order.fulfilmentMode === 'pickup') {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      'This is a pickup order — hand it over at the counter, do not dispatch a rider',
+      true,
+      '',
+      { code: 'PICKUP_ORDER', fulfilmentMode: order.fulfilmentMode }
+    );
+  }
 
   if (!driverId) throw new ApiError(httpStatus.BAD_REQUEST, 'driver is required');
 
@@ -554,6 +603,80 @@ async function dispatchOrder({
   };
 }
 
+/**
+ * Collect: the counter hand-over for a PICKUP order (OD-12).
+ *
+ * The mirror of `dispatchOrder` for the other fulfilment mode: no rider, no
+ * delivery document, no transit guard — the customer is standing at the counter,
+ * so READY → COMPLETED directly. The optional handover OTP is the SAME code the
+ * rider flow verifies (single-use, hashed, attempt-capped), so one mechanism
+ * covers both modes and a stolen "your order is ready" phone is not enough to
+ * walk away with someone else's meat.
+ *
+ * A delivery order here is a refusal, not a redirect: the caller must not be
+ * silently moved onto a different money path (a delivery has a COD collection
+ * and a settlement the counter hand-over does not).
+ */
+async function collectOrder({ order, body = {}, actor } = {}) {
+  if (order.fulfilmentMode !== 'pickup') {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      'This is a delivery order — it is dispatched to a rider, not collected at the counter',
+      true,
+      '',
+      { code: 'DELIVERY_ORDER', fulfilmentMode: order.fulfilmentMode }
+    );
+  }
+
+  lifecycleService.assertTransition(order.lifecycle, 'COMPLETED');
+
+  // Optional but, when supplied, binding: a wrong code must not hand over the
+  // pack. `verifyOtp` mutates the attempt counter, so a rejected try is saved —
+  // the cap is real across retries.
+  if (body.otp) {
+    const otpResult = otpService.verifyOtp(order, String(body.otp).trim());
+    if (!otpResult.ok) {
+      await order.save();
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        `Handover code rejected (${otpResult.code})`,
+        true,
+        '',
+        { code: `OTP_${otpResult.code}`, ...otpResult }
+      );
+    }
+    order.deliveryOtp.verifiedBy = actor._id;
+  }
+
+  const patch = { completedAt: new Date() };
+  // COD at the counter: the money changed hands here, so the order stops saying
+  // pending. Gateway orders are already 'paid' from the verified callback.
+  // All three fallbacks read through moneyField getters (rupees) and write
+  // through the paidAmount setter — no unit conversion at the call site.
+  if (order.paymentMode === 'cod' && order.paymentStatus !== 'paid') {
+    patch.paymentStatus = 'paid';
+    patch.paidAmount = order.codCollectionAmount ?? order.codAmount ?? order.estimatedTotal;
+    patch.paidAt = new Date();
+  }
+
+  await lifecycleService.moveTo(order, 'COMPLETED', patch);
+
+  await notifyService.notifyCustomer(order.customer, 'order_delivered', {
+    ...notifyService.buildOrderContext(order),
+    useWithin: 'the use-by date on the pack',
+  });
+
+  return {
+    order: {
+      id: String(order._id),
+      lifecycle: order.lifecycle,
+      fulfilmentMode: order.fulfilmentMode,
+      completedAt: order.completedAt,
+      paymentStatus: order.paymentStatus,
+    },
+  };
+}
+
 module.exports = {
   listOrders,
   orderDetail,
@@ -564,5 +687,6 @@ module.exports = {
   packOrder,
   markReady,
   dispatchOrder,
+  collectOrder,
   MAX_PAGE_LIMIT,
 };

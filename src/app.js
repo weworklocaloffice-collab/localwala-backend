@@ -34,9 +34,10 @@ const morgan = require('./config/morgan');
 const mongoConnectionStatus = require('./config/mongoConnectionStatus');
 const { jwtWebStrategy, jwtAppStrategy } = require('./config/passport');
 const routes = require('./routes/v1');
-const { authLimiter } = require('./middlewares/rateLimiter');
+const { authLimiter, storesLimiter } = require('./middlewares/rateLimiter');
 const { errorConverter, errorHandler } = require('./middlewares/error');
 const ApiError = require('./utils/ApiError');
+const requestId = require('./middlewares/requestId');
 const CronJobSchedulerService = require('./services/cron.job.scheduler.service');
 
 const app = express();
@@ -49,6 +50,8 @@ if (!fs.existsSync(publicFolderPath)) {
 }
 
 app.disable('x-powered-by');
+
+app.use(requestId);
 
 if (config.env !== 'test') {
   app.use(morgan.successHandler);
@@ -166,6 +169,8 @@ const corsOptions = {
     return callback(err);
   },
   credentials: true,
+  maxAge: 86400,
+  optionsSuccessStatus: 204,
 };
 
 app.use(cors(corsOptions));

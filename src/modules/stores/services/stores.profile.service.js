@@ -124,13 +124,13 @@ const resolveActorOutlet = async (userId, requestedOutletId) => {
   if (StoreDriver) {
     const driver = await StoreDriver.findOne({
       user: userObjectId,
-      status: { $in: ['active', 'inactive', 'suspended'] },
+      status: { $in: ['active', 'inactive', 'suspended', 'reactivated'] },
     })
-      .select('store status')
+      .select('outlet status')
       .lean();
 
-    if (driver && driver.store) {
-      const outlet = await StoreOutlet.findById(driver.store)
+    if (driver && driver.outlet) {
+      const outlet = await StoreOutlet.findById(driver.outlet)
         .populate('chain')
         .lean();
       if (!outlet) {
@@ -355,13 +355,13 @@ const resolveActorScope = async (userId) => {
   if (StoreDriver) {
     const driver = await StoreDriver.findOne({
       user: userObjectId,
-      status: { $in: ['active', 'inactive', 'suspended'] },
+      status: { $in: ['active', 'inactive', 'suspended', 'reactivated'] },
     })
-      .select('store status')
+      .select('outlet status')
       .lean();
 
-    if (driver && driver.store) {
-      const outlet = await StoreOutlet.findById(driver.store).populate('chain').lean();
+    if (driver && driver.outlet) {
+      const outlet = await StoreOutlet.findById(driver.outlet).populate('chain').lean();
       if (!outlet) {
         throw new ApiError(httpStatus.FORBIDDEN, 'Driver outlet no longer exists');
       }
@@ -402,7 +402,6 @@ const resolveActorScope = async (userId) => {
 
   const groups = [];
   for (const assignment of assignments) {
-    // eslint-disable-next-line no-await-in-loop
     const ids = await permittedOutletIds(assignment);
     groups.push({
       business: assignment.business,

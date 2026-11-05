@@ -42,6 +42,10 @@
 
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
+const notifyService = require('./jhatka.notify.service');
+
+const subscriptionSummary = (sub) =>
+  (sub?.items || []).map((item) => item?.nameSnapshot || item?.name || item?.sku).filter(Boolean);
 
 /** Subscription statuses the list filter accepts. Read from the model in spirit. */
 const LISTABLE_STATUSES = [
@@ -229,6 +233,11 @@ async function pauseSubscription({ sub, body = {}, actor, actorType = 'admin', r
     fromValue: 'active',
   });
 
+  await notifyService.notifyCustomer(sub.customer, 'subscription_paused', {
+    itemSummary: subscriptionSummary(sub),
+    reason,
+  });
+
   return {
     subscription: {
       id: String(sub._id),
@@ -275,6 +284,10 @@ async function resumeSubscription({ sub, actor, actorType = 'admin', recordEvent
     fromValue: 'paused',
   });
 
+  await notifyService.notifyCustomer(sub.customer, 'subscription_resumed', {
+    itemSummary: subscriptionSummary(sub),
+  });
+
   return {
     subscription: {
       id: String(sub._id),
@@ -319,6 +332,11 @@ async function cancelSubscription({ models, sub, body = {}, actor, actorType = '
     actorName: actor.name,
     reason,
     toValue: 'cancelled',
+  });
+
+  await notifyService.notifyCustomer(sub.customer, 'subscription_cancelled', {
+    itemSummary: subscriptionSummary(sub),
+    refundNote: 'Future deliveries have been stopped.',
   });
 
   return {

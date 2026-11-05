@@ -67,7 +67,7 @@ const lifecycleService = require('./jhatka.order-lifecycle.service');
  * unclaimed subject as a configuration bug and logs it — and a prefix test would
  * quietly claim a subject belonging to a vertical added later.
  */
-const JHATKA_PAYMENT_SUBJECTS = Object.freeze(['jhatka_order', 'jhatka_subscription']);
+const JHATKA_PAYMENT_SUBJECTS = Object.freeze(['jhatka_order', 'jhatka_subscription', 'jhatka_supply_request']);
 
 const isJhatkaSubject = (paymentFrom) => JHATKA_PAYMENT_SUBJECTS.includes(paymentFrom);
 
@@ -86,6 +86,22 @@ const routePaidCallback = async (payment) => {
 
   if (payment.paymentFrom === 'jhatka_order') {
     await applyOrderPayment(payment);
+    return true;
+  }
+
+  if (payment.paymentFrom === 'jhatka_supply_request') {
+    // OD-12 companion: the partner's prepayment for a supply request. The
+    // supply service marks the request paid and credits the ledger.
+    const supplyService = require('./jhatka.supply-request.service');
+    await supplyService.markSupplyPrepaid({
+      models: {
+        JhatkaSupplyRequest: mongoose.model('JhatkaSupplyRequest'),
+      },
+      requestId: payment.jhatkaSupplyRequest?._id || payment.jhatkaSupplyRequest,
+      paymentId: payment._id,
+      gatewayPaymentId: payment.gatewayPaymentId || payment.payResponse?.gatewayPaymentId,
+      amountPaise: Math.round(Number(payment.amount) * 100),
+    });
     return true;
   }
 
@@ -155,11 +171,13 @@ const applyOrderPayment = async (payment) => {
   }
 
   await notifyService.notifyCustomer(order.customer, 'order_paid', {
+    orderId: String(order._id),
     orderNo: order.orderNo,
     outletName: order.outletSnapshot?.name,
   });
 
   await notifyService.notifyOutlet(order.outlet, 'order_paid', {
+    orderId: String(order._id),
     orderNo: order.orderNo,
     customerName: order.addressSnapshot?.name,
     estimatedTotal: order.estimatedTotal,
@@ -276,6 +294,7 @@ const routeFailedCallback = async (payment, reason) => {
   });
 
   await notifyService.notifyCustomer(order.customer, 'order_payment_failed', {
+    orderId: String(order._id),
     orderNo: order.orderNo,
     reason: reason || 'The payment was not completed.',
   });
@@ -284,6 +303,31 @@ const routeFailedCallback = async (payment, reason) => {
 };
 
 const orderNo = (order) => (order && order.orderNo) || String(order && order._id);
+
+/**
+ * The gateway the customer app should charge for a Jhatka checkout.
+ *
+ * The app integrates Razorpay only, so this deliberately returns the active Razorpay
+ * config rather than "the default" — handing the app a Cashfree/PhonePe config it has
+ * no SDK for would turn a config choice into a checkout that cannot open. When the app
+ * gains other gateways, widen this to prefer `isDefault` and return the list.
+ *
+ * Returns `null` when Razorpay is not configured. The quote still prices the basket;
+ * the app then says no payment method is available instead of guessing a provider.
+ *
+ * Only routing fields leave the server — never `credentials`.
+ *
+ * @returns {Promise<{id: string, slug: string, name: string}|null>}
+ */
+const resolveCheckoutPaymentConfig = async () => {
+  const PaymentConfig = mongoose.model('PaymentConfig');
+  const config = await PaymentConfig.findOne({ slug: 'razorpay', status: true })
+    .sort({ isDefault: -1, createdAt: 1 })
+    .select('slug name')
+    .lean();
+  if (!config) return null;
+  return { id: String(config._id), slug: config.slug, name: config.name };
+};
 
 /**
  * Create (or reuse) a gateway initiation for a customer's Jhatka order.
@@ -355,6 +399,62 @@ const initiateOrderPayment = async ({ orderId, customerId, paymentConfigId, paym
     amount: order.estimatedTotal,
     paymentRef: paymentRef || `JHATKA-ORDER-${order.orderNo}`,
     paymentFrom: 'jhatka_order',
+  });
+};
+
+/**
+ * Create (or reuse) a gateway initiation for a partner's PREPAID supply request
+ * (OD-12 companion).
+ *
+ * Same discipline as `initiateOrderPayment`: the amount is read from the
+ * request's own frozen `approvedValuePaise`, never from the request body, and a
+ * repeated tap returns the OPEN initiation rather than a second charge.
+ * Fulfilment is blocked until the verified callback lands, so an unpaid request
+ * can never become stock.
+ *
+ * @param {object}  args
+ * @param {object}  args.request        the JhatkaSupplyRequest document
+ * @param {string}  args.paymentConfigId
+ * @param {object}  [args.actor]
+ * @returns {Promise<object>} the PaymentInitiation document
+ */
+const createSupplyRequestPayment = async ({ request, paymentConfigId, actor }) => {
+  const PaymentInitiation = mongoose.model('PaymentInitiation');
+  const PaymentConfig = mongoose.model('PaymentConfig');
+
+  if (!request) throw new ApiError(httpStatus.NOT_FOUND, 'Supply request not found');
+  if (request.paymentMode !== 'prepaid') {
+    throw new ApiError(httpStatus.CONFLICT, 'JHATKA_SUPPLY_NOT_PREPAID');
+  }
+  if (request.payment?.status === 'paid') {
+    throw new ApiError(httpStatus.CONFLICT, 'JHATKA_SUPPLY_ALREADY_PAID');
+  }
+  if (!request.approvedValuePaise) {
+    throw new ApiError(httpStatus.CONFLICT, 'JHATKA_SUPPLY_NOT_APPROVED: an admin must approve (and price) the request first');
+  }
+
+  const config = await PaymentConfig.findById(paymentConfigId);
+  if (!config || config.status === false) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Payment gateway not available');
+  }
+
+  const open = await PaymentInitiation.findOne({
+    jhatkaSupplyRequest: request._id,
+    paymentFrom: 'jhatka_supply_request',
+    status: 'initiated',
+  }).sort({ createdAt: -1 });
+  if (open) return open;
+
+  return PaymentInitiation.create({
+    user: actor?._id || request.requestedBy,
+    payment: config._id,
+    jhatkaSupplyRequest: request._id,
+    // The approved value is what the partner owes (paise on the lean read of a
+    // document → the money getter applies on a hydrated doc; the model's amount
+    // setter takes RUPEES, and approvedValuePaise/100 IS rupees).
+    amount: request.approvedValuePaise / 100,
+    paymentRef: `JHATKA-SUPPLY-${request.requestNo}`,
+    paymentFrom: 'jhatka_supply_request',
   });
 };
 
@@ -575,6 +675,7 @@ async function closeAbandonedOrder({ models, orderId, actor } = {}) {
   });
 
   await notifyService.notifyCustomer(order.customer, 'order_cancelled', {
+    orderId: String(order._id),
     orderNo: order.orderNo,
     refundNote: 'Nothing was charged — you were not charged for this order.',
   });
@@ -588,8 +689,10 @@ module.exports = {
   routePaidCallback,
   applyOrderPayment,
   applySubscriptionPayment,
+  resolveCheckoutPaymentConfig,
   initiateOrderPayment,
   initiateSubscriptionPayment,
+  createSupplyRequestPayment,
   sweepAbandonedPayments,
   closeAbandonedOrder,
   routeFailedCallback,

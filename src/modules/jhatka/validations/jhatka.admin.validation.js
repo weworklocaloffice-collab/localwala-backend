@@ -46,8 +46,9 @@ const pageQuery = {
 const categoryBody = {
   body: Joi.object()
     .keys({
-      key: Joi.string().valid('chicken', 'mutton', 'fish_seafood', 'eggs'),
+      key: Joi.string(),
       name: Joi.string(),
+      parent: Joi.string(),
       sortOrder: Joi.number().integer(),
     })
     .unknown(true),
@@ -60,7 +61,7 @@ const productBody = {
       code: Joi.string(),
       name: Joi.string(),
       hsnCode: Joi.string(),
-      status: Joi.string().valid('active', 'inactive'),
+      status: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('active', 'inactive')),
     })
     .unknown(true),
 };
@@ -74,7 +75,12 @@ const variantBody = {
       measurementMode: Joi.string().valid('WEIGHT', 'COUNT'),
       pricePerUnit: Joi.number().min(0),
       priceBasis: Joi.string().valid('per_kg', 'per_piece', 'per_dozen', 'per_pack'),
-      status: Joi.string().valid('active', 'inactive'),
+      unitLabel: Joi.string(),
+      packSize: Joi.object({
+        value: Joi.number().min(0),
+        unit: Joi.string(),
+      }).unknown(true),
+      status: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('active', 'inactive')),
     })
     .unknown(true),
 };
@@ -87,6 +93,31 @@ const outletBody = {
       statusReason: Joi.string(),
     })
     .unknown(true),
+};
+
+const businessBody = {
+  body: Joi.object()
+    .keys({
+      name: Joi.string().trim().min(2).max(160).required(),
+      businessModel: Joi.string().valid('direct', 'franchise', 'commission_partner').default('direct'),
+      city: objectId.required(),
+      locality: objectId.allow('', null),
+      code: Joi.string().trim().max(40).allow('', null),
+      description: Joi.string().trim().max(1000).allow('', null),
+      logo: Joi.string().allow('', null),
+      cover: Joi.string().allow('', null),
+      contact: Joi.object({
+        name: Joi.string().trim().max(120).allow('', null),
+        mobile: Joi.alternatives().try(Joi.number(), Joi.string().allow('', null)),
+        countryCode: Joi.string().allow('', null),
+        email: Joi.string().email().allow('', null),
+      }).default({}),
+      location: Joi.object({
+        type: Joi.string().valid('Point'),
+        coordinates: Joi.array().items(Joi.number()).length(2),
+      }).allow(null),
+    })
+    .unknown(false),
 };
 
 const supplierBody = {
@@ -128,6 +159,38 @@ const payoutApproveBody = {
     .unknown(true),
 };
 
+// A paid payout is an auditable money movement: the bank/UPI reference is the
+// only thing that ties this row to the transfer. Optional here would let a paid
+// statement exist with no proof it was sent.
+const payoutPayBody = {
+  body: Joi.object()
+    .keys({
+      paymentReference: Joi.string().trim().min(3).max(120).required(),
+      notes: Joi.string().trim().max(500).allow('', null),
+    })
+    .unknown(true),
+};
+
+const refundRetryBody = {
+  body: Joi.object()
+    .keys({
+      note: Joi.string().trim().max(500).allow('', null),
+    })
+    .unknown(false),
+};
+
+// A manual refund close is an auditable money movement. Both the external reference
+// and the operator's reason are mandatory: without them the row is an unexplained
+// REFUNDED that no one can reconcile against a bank or provider statement.
+const refundResolveBody = {
+  body: Joi.object()
+    .keys({
+      paymentReference: Joi.string().trim().min(3).max(120).required(),
+      note: Joi.string().trim().min(5).max(500).required(),
+    })
+    .unknown(false),
+};
+
 // Admin commission rules speak PERCENT with a basis enum — deliberately
 // different from the partner money endpoint's basis POINTS. See
 // jhatka.partner.money.validation.js; mixing them is a 100x payout bug.
@@ -138,7 +201,12 @@ const commissionRuleAdminBody = {
       name: Joi.string(),
       businessModel: Joi.string().valid('commission_partner', 'franchise', 'direct'),
       basis: Joi.string().valid('final_weighted_value', 'gross_order_value', 'net_of_refunds', 'fixed_monthly'),
+      // The partner's earning rate.
       ratePercent: Joi.number().min(0).max(100),
+      // The platform's charge — DEDUCTED from the payout. Deliberately separate
+      // from ratePercent: netting them hides both in a statement (the rule
+      // model's own comment).
+      platformFeePercent: Joi.number().min(0).max(100),
     })
     .unknown(true),
 };
@@ -150,9 +218,13 @@ module.exports = {
   productBody,
   variantBody,
   outletBody,
+  businessBody,
   supplierBody,
   reviewDecisionBody,
   settlementDecisionBody,
   payoutApproveBody,
+  payoutPayBody,
+  refundRetryBody,
+  refundResolveBody,
   commissionRuleAdminBody,
 };

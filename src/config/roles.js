@@ -148,6 +148,7 @@ const allRoles = {
     'dairy_customer_subscription_create',
     'dairy_customer_subscription_manage',
     'dairy_customer_subscription_skip',
+    'dairy_customer_can_deposit_summary',
     // Jhatka customer rights (mirror dairy_customer_* for the Jhatka vertical).
     // Without these, the `/v1/jhatka/customer/*` surface will 403 every real customer.
     'jhatka_customer_cart_manage',
@@ -172,6 +173,10 @@ const allRoles = {
     'reels_interact',
     'reels_comment',
     'reels_upload',
+    // Stores self-serve onboarding (any user may apply to become a store partner).
+    'stores_onboarding_read',
+    'stores_onboarding_write',
+    'stores_onboarding_submit',
     // Local Services customer surface (browse/book/track/review own bookings).
     'localservices_customer_read',
     // Local Services provider surface. Granted to `user` (not a separate DB
@@ -187,6 +192,8 @@ const allRoles = {
     'dairy_catalog_manage',
     'dairy_catalog_publish',
     'dairy_catalog_view',
+    // Read-only operations monitoring: orders, runs, rider fleet.
+    'dairy_operations_view',
     // Reels admin publishing (docs §15). Manage = drafts/media/edit/delete,
     // publish = publish + pause, analytics = read-only stats.
     'reels_admin_manage',
@@ -1718,6 +1725,7 @@ const allRoles = {
     'dairy_customer_order_list',
     'dairy_customer_order_pay',
     'dairy_customer_order_cancel',
+    'dairy_customer_can_deposit_summary',
     'notification_list',
     'mark_all_read',
     'update_password',
@@ -1827,6 +1835,10 @@ const allRoles = {
     'read_notification',
     'notification_list',
     'mark_all_read',
+    // vertical-native profile / role resolution for the Partner app
+    'jhatka_profile',
+    'jhatka_available_roles',
+    'jhatka_switch_role',
     // session / outlet switching
     'jhatka_session_outlet_switch',
     'jhatka_session_scope_read',
@@ -1928,6 +1940,9 @@ const allRoles = {
     'read_notification',
     'notification_list',
     'mark_all_read',
+    'jhatka_profile',
+    'jhatka_available_roles',
+    'jhatka_switch_role',
     // exactly one outlet resolved from JhatkaDriver.outlet server-side
     'jhatka_delivery_read',
     'jhatka_delivery_accept',
@@ -2009,6 +2024,11 @@ const JHATKA_ADMIN_RIGHTS = [
   'jhatka_settlement_read',
   'jhatka_settlement_write',
   'jhatka_subscription_read',
+  // Supply (OD-12 companion): the admin approves partner stock requests and
+  // fulfils them. Approve/fulfil is a CREDIT decision, so write is its own right
+  // — granting read-only visibility must not grant the purse.
+  'jhatka_supply_read',
+  'jhatka_supply_write',
 ];
 
 allRoles.admin = [...new Set([...(allRoles.admin || []), ...JHATKA_ADMIN_RIGHTS])];

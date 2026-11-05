@@ -136,7 +136,7 @@ const JHATKA_CUSTOMER_NOTIFICATIONS = Object.freeze({
   order_rejected: {
     type: 'jhatka.order.rejected',
     title: 'Order could not be fulfilled',
-    body: '{{outletName}} could not fulfil order {{orderNo}}. {{reason}} Your refund is on its way.',
+    body: '{{outletName}} could not fulfil order {{orderNo}}. {{reason}} {{refundNote}}',
     route: '/jhatka/orders',
   },
   order_cancelled: {
@@ -268,7 +268,7 @@ const JHATKA_OUTLET_NOTIFICATIONS = Object.freeze({
   new_order: {
     type: 'jhatka.outlet.new_order',
     title: 'New order {{orderNo}}',
-    body: '{{customerName}} ordered {{itemSummary}} for {{estimatedTotal}}. Accept before {{acceptBy}}.',
+    body: '{{customerName}} ordered {{itemSummary}} for {{estimatedTotal}}. Open the app to accept.',
     route: '/jhatka/orders',
   },
   order_paid: {
@@ -298,7 +298,7 @@ const JHATKA_OUTLET_NOTIFICATIONS = Object.freeze({
   batch_expiring: {
     type: 'jhatka.outlet.batch_expiring',
     title: 'Batch {{batchNo}} expires today',
-    body: '{{available}} of {{productName}} will be written off at close of business.',
+    body: '{{available}} of {{productName}} is still on hand. Use it or write it off today.',
     route: '/jhatka/inventory',
   },
   batch_quarantined: {
@@ -363,6 +363,23 @@ const JHATKA_OUTLET_NOTIFICATIONS = Object.freeze({
       '{{consecutiveFailures}} consecutive failure(s) so far. Buy or substitute before the next run.',
     route: '/jhatka/subscriptions',
   },
+  // OD-12 companion: the low-stock reorder reminder and the supply-request
+  // status pushes. The reminder's cooldown lives in the cron sweep, not here —
+  // this file composes and delivers, it does not decide when.
+  low_stock_reminder: {
+    type: 'jhatka.outlet.low_stock_reminder',
+    title: 'Low stock: {{productName}}',
+    body:
+      '{{available}} {{unit}} of {{productName}} left (threshold {{threshold}}). ' +
+      'Tap to request stock from LocalWala.',
+    route: '/jhatka/supply',
+  },
+  supply_request_status: {
+    type: 'jhatka.outlet.supply_request_status',
+    title: 'Stock request {{requestNo}}: {{status}}',
+    body: '{{statusNote}}',
+    route: '/jhatka/supply',
+  },
 });
 
 /** Lightweight template fill. Strings only, braces are an exact replace. */
@@ -402,10 +419,23 @@ const buildNotification = (audience, event, context = {}) => {
       event,
       audience,
       vertical: 'jhatka',
+      route: template.route,
       click_action: 'FLUTTER_NOTIFICATION_CLICK',
     },
   };
 };
+
+/**
+ * FCM `data` values must be strings. Contexts carry numbers (money, counts) and
+ * Dates (subscription start), and one non-string value fails the whole multicast —
+ * so the transport normalises here rather than trusting every caller.
+ */
+const pushData = (data = {}) =>
+  Object.fromEntries(
+    Object.entries(data)
+      .filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : String(value)])
+  );
 
 /**
  * True only when the Firebase admin SDK has somewhere to send a message.
@@ -462,7 +492,7 @@ const deliver = async (userIds, payload) => {
   try {
     const result = await admin.messaging().sendEachForMulticast({
       notification: { title: payload.title, body: payload.body },
-      data: payload.data,
+      data: pushData(payload.data),
       android: {
         priority: 'high',
         notification: { channelId: 'high_importance_channel', clickAction: 'FLUTTER_NOTIFICATION_CLICK' },
@@ -646,6 +676,24 @@ const markNotified = (recall, result) => {
 };
 
 /**
+ * The shared context for an order-lifecycle push.
+ *
+ * `order` must be a HYDRATED document: `estimatedTotal` is deliberately not read
+ * here because it is a moneyField getter (rupees) on a hydrated doc and raw paise
+ * on a lean one. The fields used here are unit-free, so both reads are safe.
+ *
+ * @param {object} order a hydrated `JhatkaOrder`
+ * @param {object} [extras] event-specific template variables
+ */
+const buildOrderContext = (order = {}, extras = {}) => ({
+  orderId: order?._id ? String(order._id) : undefined,
+  orderNo: order?.orderNo,
+  outletName: order?.outletSnapshot?.name,
+  itemSummary: (order?.items || []).map((item) => item?.name || item?.sku).filter(Boolean),
+  ...extras,
+});
+
+/**
  * Build the `weight_confirmed` context from a finished weigh.
  *
  * §3.3 is the rule this exists to state in plain language to a customer: inside the
@@ -688,6 +736,7 @@ const buildWeightConfirmationContext = (order, summary = {}) => {
   }
 
   return {
+    orderId: order?._id ? String(order._id) : '',
     orderNo: order?.orderNo,
     outletName: order?.outletSnapshot?.name,
     actualWeight: summary.actualGrams ? `${(Number(summary.actualGrams) / 1000).toFixed(3)} kg` : '',
@@ -704,6 +753,7 @@ module.exports = {
   notifyOutlet,
   notifyAffectedCustomers,
   markNotified,
+  buildOrderContext,
   buildWeightConfirmationContext,
   _internal: { fill, deliver, adminReady, tokensFor },
 };

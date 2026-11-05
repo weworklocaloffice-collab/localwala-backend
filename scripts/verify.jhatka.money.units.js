@@ -790,6 +790,42 @@ ok('assigning settlement PAISE directly is 100x WRONG — the defect this servic
      wrongWay === 440, String(wrongWay));
 }
 
+// ---- §10.3: the payout sweep reads the ACTIVE rule, not a hardcoded 10 ----
+console.log('\n-- §10.3: pickActiveRule selection (pure, no DB) --');
+{
+  const { pickActiveRule } = require('../src/modules/jhatka/services/jhatka.payout.service');
+  const AT = new Date('2026-10-20');
+  const mk = (over) => ({
+    code: 'R', businessModel: 'commission_partner', status: 'active',
+    effectiveFrom: new Date('2026-10-01'), ratePercent: 15, ...over,
+  });
+
+  ok('the active in-force rule is picked',
+     pickActiveRule([mk()], 'commission_partner', AT)?.ratePercent === 15);
+
+  ok('a DRAFT rule never applies',
+     pickActiveRule([mk({ status: 'draft' })], 'commission_partner', AT) === null);
+
+  ok('a RETIRED rule never applies',
+     pickActiveRule([mk({ status: 'retired' })], 'commission_partner', AT) === null);
+
+  ok('an active rule dated in the FUTURE does not govern yet',
+     pickActiveRule([mk({ effectiveFrom: new Date('2026-11-01') })], 'commission_partner', AT) === null);
+
+  ok('another business model\'s rule is not mine',
+     pickActiveRule([mk({ businessModel: 'franchise' })], 'commission_partner', AT) === null);
+
+  ok('when two candidates exist the LATEST effectiveFrom wins',
+     pickActiveRule(
+       [mk({ code: 'OLD', effectiveFrom: new Date('2026-09-01'), ratePercent: 8 }),
+        mk({ code: 'NEW', effectiveFrom: new Date('2026-10-10'), ratePercent: 15 })],
+       'commission_partner', AT
+     )?.code === 'NEW');
+
+  ok('no rules at all resolves to null (the sweep then falls back to its default)',
+     pickActiveRule([], 'commission_partner', AT) === null);
+}
+
 console.log('\n--- summary ---');
 console.log(failures === 0 ? 'ALL COMMERCIAL MONEY RULES HOLD' : failures + ' CHECK(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

@@ -58,6 +58,15 @@ const checkEligibility = async ({ outlet, address, addressLocation }) => {
     }
   }
 
+  // Pincode serviceability (§6.19 location). When an outlet declares a
+  // serviceable pincode list, an address whose pincode is not in it is
+  // ineligible. An empty list means "no pincode restriction" (backward compat).
+  if (Array.isArray(outlet.servicePinCodes) && outlet.servicePinCodes.length > 0 && address && address.pincode) {
+    if (!outlet.servicePinCodes.includes(String(address.pincode).trim())) {
+      reasons.push('PINCODE_NOT_SERVICED');
+    }
+  }
+
   const now = new Date();
   const day = now.getDay();
   const hours = now.getHours();
@@ -120,8 +129,34 @@ const getNearbyOutlets = async ({ lat, lng, radiusKm = 10, limit = 20 }) => {
   }).limit(limit).lean();
 };
 
+/**
+ * Why an outlet can or cannot serve a saved address, in the customer's own words.
+ *
+ * The discovery screen only hides ineligible outlets; a customer whose address is
+ * outside one radius but inside another gets no explanation anywhere, so the support
+ * question "why can't I order from that store?" had no answer. This runs the same
+ * `checkEligibility` the ordering flow runs and returns the raw reason codes, so the
+ * reasons can never disagree with the gate.
+ */
+const getEligibilityReasons = async ({ outletId, addressId, userId }) => {
+  const StoreOutlet = mongoose.model('StoreOutlet');
+  const outlet = await StoreOutlet.findById(outletId).lean();
+  if (!outlet) throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
+
+  let address = null;
+  if (addressId) {
+    const addressFilter = { _id: addressId };
+    if (userId) addressFilter.user = userId;
+    address = await mongoose.model('UserAddress').findOne(addressFilter).lean();
+  }
+
+  const result = await checkEligibility({ outlet, address, addressLocation: address?.location });
+  return { outlet: { _id: outlet._id, name: outlet.name }, ...result };
+};
+
 module.exports = {
   checkEligibility,
   getNearbyOutlets,
+  getEligibilityReasons,
   calculateDistance,
 };

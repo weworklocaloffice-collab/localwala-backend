@@ -115,6 +115,7 @@ const storeOrderSchema = mongoose.Schema(
       city: String,
       locality: String,
       pincode: String,
+      gstin: String,
       location: {
         type: { type: String, enum: ['Point'] },
         coordinates: [Number],
@@ -146,6 +147,31 @@ const storeOrderSchema = mongoose.Schema(
     codAmount: { type: Number, default: 0 },
     paidAmount: { type: Number, default: 0 },
     refundedAmount: { type: Number, default: 0 },
+    // Legal tax invoice (§6.19). Issued once per order at creation; voided (not
+    // deleted) on cancellation so the number stays gapless.
+    invoice: {
+      invoiceNo: { type: String },
+      financialYear: { type: String },
+      issuedAt: { type: Date },
+      sellerGstin: { type: String },
+      buyerGstin: { type: String },
+      placeOfSupply: { type: String },
+      taxMode: { type: String, enum: ['inclusive', 'exclusive'], default: 'inclusive' },
+      format: { type: String, enum: ['tax_invoice', 'retail_receipt'], default: 'tax_invoice' },
+      isVoided: { type: Boolean, default: false },
+      voidedAt: { type: Date },
+      lines: [
+        {
+          hsn: String,
+          description: String,
+          taxableValue: { type: Number, default: 0 },
+          cgst: { type: Number, default: 0 },
+          sgst: { type: Number, default: 0 },
+          igst: { type: Number, default: 0 },
+          total: { type: Number, default: 0 },
+        },
+      ],
+    },
     promo: {
       promotion: {
         type: mongoose.SchemaTypes.ObjectId,
@@ -174,7 +200,7 @@ const storeOrderSchema = mongoose.Schema(
     paymentStatus: {
       type: String,
       default: 'pending',
-      enum: ['pending', 'paid', 'failed', 'partially_refunded', 'refunded'],
+      enum: ['pending', 'paid', 'collected', 'reconciled', 'failed', 'partially_refunded', 'refunded'],
     },
     paymentRef: { type: String },
     paidAt: { type: Date },

@@ -17,12 +17,18 @@
  */
 
 const express = require('express');
+const { storesLimiter } = require('../../../middlewares/rateLimiter');
 const validate = require('../../../middlewares/validate');
 const webAuth = require('../../../middlewares/webAuth');
 const controller = require('../controllers/stores.controller');
 const V = require('../validations/stores.validation');
 
 const router = express.Router();
+
+router.use((req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  return storesLimiter(req, res, next);
+});
 
 /**
  * The permission required to act on a local-stores application.

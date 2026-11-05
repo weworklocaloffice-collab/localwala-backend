@@ -220,6 +220,24 @@ const publicServices = catchAsync(async (req, res) => {
   const filter = { status: 'active' };
   if (req.query.category) filter.category = req.query.category;
   const rows = await Service.find(filter).lean();
+  // Attach avgRating from reviews (best-effort; missing data leaves 0).
+  const Booking = require('../models/localservice.booking.model');
+  const Review = require('../models/localservice.fulfilment.model').LocalServiceReview;
+  for (const svc of rows) {
+    try {
+      const bookings = await Booking.find({ service: svc._id }).select('_id').lean();
+      const ids = bookings.map((b) => b._id);
+      if (ids.length) {
+        const agg = await Review.aggregate([
+          { $match: { booking: { $in: ids } } },
+          { $group: { _id: null, avg: { $avg: '$rating' } } },
+        ]);
+        if (agg.length && agg[0].avg != null) svc.avgRating = Number(agg[0].avg.toFixed(2));
+      }
+    } catch (e) {
+      // best-effort
+    }
+  }
   res.status(httpStatus.OK).send({ results: rows });
 });
 

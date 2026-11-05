@@ -406,6 +406,14 @@ console.log('\n-- BR-19 and F-5 --');
      mk({ status: 'REFUNDED' }).isRefundedWithoutGatewayId() === true);
   ok('F-5: with a gatewayRefundId it is valid',
      mk({ status: 'REFUNDED', gatewayRefundId: 'rf_123' }).isRefundedWithoutGatewayId() === false);
+  ok('F-5: a manual settlement is valid only with its external reference',
+     mk({ status: 'REFUNDED', settlementRoute: 'manual', manualReference: 'UTR-1' })
+       .isRefundedWithoutGatewayId() === false
+     && mk({ status: 'REFUNDED', settlementRoute: 'manual' })
+       .isRefundedWithoutGatewayId() === true);
+  ok('F-5: COD/credit settlements need no gateway id',
+     mk({ status: 'REFUNDED', settlementRoute: 'cod' }).isRefundedWithoutGatewayId() === false
+     && mk({ status: 'REFUNDED', settlementRoute: 'credit' }).isRefundedWithoutGatewayId() === false);
 
   ok('REFUND_PENDING -> PROCESSING allowed', Refund.canTransition('REFUND_PENDING', 'PROCESSING'));
   ok('PROCESSING -> REFUNDED allowed', Refund.canTransition('PROCESSING', 'REFUNDED'));
@@ -413,6 +421,8 @@ console.log('\n-- BR-19 and F-5 --');
      Refund.canTransition('REFUNDED', 'REVERSED') === true);
   ok('FAILED -> PROCESSING allowed (a timeout is retryable)',
      Refund.canTransition('FAILED', 'PROCESSING') === true);
+  ok('FAILED -> REFUNDED allowed for an evidence-backed manual settlement',
+     Refund.canTransition('FAILED', 'REFUNDED') === true);
   ok('REFUNDED -> PROCESSING FORBIDDEN', Refund.canTransition('REFUNDED', 'PROCESSING') === false);
   ok('REVERSED is terminal', Refund.canTransition('REVERSED', 'REFUNDED') === false);
 }

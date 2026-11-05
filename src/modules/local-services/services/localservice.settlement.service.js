@@ -253,7 +253,59 @@ async function paySettlement(
     doc.settlementDate = new Date();
     if (note) doc.notes = note;
     await doc.save();
+    try {
+      const outbox = require('./localservice.outbox.service');
+      await outbox.enqueue({
+        aggregateType: 'settlement',
+        aggregateId: String(doc._id),
+        eventType: 'settlement.paid',
+        payload: { settlementId: String(doc._id), amount, method: 'wallet' },
+      });
+    } catch (e) {
+      console.error('LocalServices outbox enqueue failed:', e && e.message);
+    }
     return { settlement: doc, payout: { method: 'wallet', amount, reference: result.transactionId } };
+  }
+
+  // Gateway payout: auto-transfer via RazorpayX. The platform moves the funds
+  // to the provider's bank account; the settlement is only "settled" once the
+  // gateway confirms the payout id.
+  if (method === 'gateway') {
+    const Provider = ProviderModel || require('../models/localservice.provider.model');
+    const provider = await Provider.findOne({ business: doc.counterparty }).catch(() => null);
+    const fundAccountId = (provider && provider.fundAccountId) || (account && account.fundAccountId);
+    if (!fundAccountId) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Provider has no fund account configured for gateway payout');
+    }
+    const payout = require('./localservice.gateway.payout').payout;
+    const result = await payout({
+      gateway: 'razorpay',
+      fundAccountId,
+      amountPaise: Math.round(amount * 100),
+      referenceId: `SETTLEMENT-${doc.settlementNo}`,
+      narration: note || `Local Services settlement ${doc.settlementNo}`,
+      accountNumber: account && account.accountNumber,
+      credentials: account && account.credentials,
+    });
+    doc.payoutMethod = 'gateway';
+    doc.payoutDetails = { ...(doc.payoutDetails || {}), ...(account || {}), fundAccountId };
+    doc.gatewayReference = result.gatewayPayoutId || '';
+    doc.status = 'settled';
+    doc.settlementDate = new Date();
+    if (note) doc.notes = note;
+    await doc.save();
+    try {
+      const outbox = require('./localservice.outbox.service');
+      await outbox.enqueue({
+        aggregateType: 'settlement',
+        aggregateId: String(doc._id),
+        eventType: 'settlement.paid',
+        payload: { settlementId: String(doc._id), amount, method: 'gateway', reference: result.gatewayPayoutId },
+      });
+    } catch (e) {
+      console.error('LocalServices outbox enqueue failed:', e && e.message);
+    }
+    return { settlement: doc, payout: { method: 'gateway', amount, reference: result.gatewayPayoutId, status: result.status } };
   }
 
   // Bank payout: the platform records the instruction and the reference. The

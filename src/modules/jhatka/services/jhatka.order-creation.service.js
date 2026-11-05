@@ -53,6 +53,7 @@
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
 const orderPricing = require('./jhatka.order-pricing.service');
+const deliveryFeeArithmetic = require('../utils/delivery.fee.arithmetic');
 const { assertJhatkaOperational } = require('./jhatka.compliance-gate.service');
 const { asMoney } = require('../utils/money');
 
@@ -98,7 +99,7 @@ async function assertOutletMaySell(outlet, models, { now = new Date() } = {}) {
  *
  * @param {object} p
  * @param {object} p.models  `{ JhatkaOutlet, JhatkaCompliance, JhatkaVariant, JhatkaProduct,
- *                             JhatkaPriceOverride, JhatkaOrder, JhatkaAddress }`
+ *                             JhatkaPriceOverride, JhatkaOrder, UserAddress }`
  * @param {string} p.customerId from the ACCESS TOKEN, never from the body. §0.0.
  * @param {object} p.body      `{ outlet, items, address, instructions, fulfilmentMode,
  *                               paymentMode, promisedDeliveryAt }`
@@ -107,7 +108,7 @@ async function assertOutletMaySell(outlet, models, { now = new Date() } = {}) {
 async function placeOrder({ models, customerId, body }) {
   const {
     JhatkaOutlet, JhatkaVariant, JhatkaProduct,
-    JhatkaPriceOverride, JhatkaOrder, JhatkaAddress,
+    JhatkaPriceOverride, JhatkaOrder, UserAddress,
   } = models;
 
   const {
@@ -137,13 +138,26 @@ async function placeOrder({ models, customerId, body }) {
   if (!outlet) throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
   const compliance = await assertOutletMaySell(outlet, models);
 
+  // OD-12: pickup is per-outlet, opt-in. Refusing here (not at the counter) is
+  // what stops a customer walking to a shop that never offered collection.
+  if (fulfilmentMode === 'pickup' && outlet.orderConfig?.pickupEnabled !== true) {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      `Outlet ${outlet.name} does not offer counter pickup`,
+      true,
+      '',
+      { code: 'PICKUP_NOT_ENABLED' }
+    );
+  }
+
   // ---- address -----------------------------------------------------------
   let addressSnapshot;
+  let deliveryFeePaise = 0;
   if (fulfilmentMode === 'delivery') {
     if (!addressId) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'address is required for delivery');
     }
-    const address = await JhatkaAddress.findOne({ _id: addressId, user: customerId }).lean();
+    const address = await UserAddress.findOne({ _id: addressId, user: customerId }).lean();
     // Scoped by `user` so a customer's order cannot be delivered to somebody else's
     // saved address by passing its id. A 403 rather than a 404 because the address
     // existing is not this customer's business.
@@ -151,6 +165,25 @@ async function placeOrder({ models, customerId, body }) {
       throw new ApiError(httpStatus.FORBIDDEN, 'Address not found for this account');
     }
     addressSnapshot = address;
+
+    // Two-band delivery fee (OD-12 companion): free within the outlet's ring,
+    // flat fee in the outer band, refused beyond it. Distance is haversine from
+    // the outlet to the SAVED address's location; a missing location never
+    // charges (fallback: free).
+    const resolved = deliveryFeeArithmetic.resolveDeliveryFee({
+      outlet: outlet.toObject ? outlet.toObject() : outlet,
+      addressLocation: address.location,
+    });
+    if (!resolved.serviceable) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        "This address is outside the outlet's delivery area",
+        true,
+        '',
+        { code: resolved.reason || 'OUT_OF_SERVICE_AREA', distanceKm: resolved.distanceKm }
+      );
+    }
+    deliveryFeePaise = resolved.feePaise;
   }
 
   // ---- resolve the catalogue --------------------------------------------
@@ -181,7 +214,9 @@ async function placeOrder({ models, customerId, body }) {
   // is PAISE from the pricing service.
   const estimateTotalLocalPaise = priced.estimateTotalLocal;
   const codAmountPaise = orderPricing.codCeilingFor({
-    goodsPlusTaxPaise: estimateTotalLocalPaise,
+    // The collect ceiling includes the delivery fee — a rider who must be paid
+    // the fee cannot be sent out with a ceiling that does not cover it.
+    goodsPlusTaxPaise: estimateTotalLocalPaise + deliveryFeePaise,
     paymentMode,
   });
 
@@ -200,6 +235,7 @@ async function placeOrder({ models, customerId, body }) {
     items: priced.orderItems,
     // PAISE -> RUPEES at the moneyField boundary, ONCE, via `asMoney`.
     itemsSubtotal: asMoney(priced.itemsSubtotalPaise),
+    deliveryFee: deliveryFeePaise / 100,
     taxTotal: asMoney(priced.taxTotalPaise),
     // FROZEN. BR-06: this is what the customer paid and it can only ever fall.
     estimatedTotal: asMoney(estimateTotalLocalPaise),

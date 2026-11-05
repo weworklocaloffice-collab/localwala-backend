@@ -261,6 +261,11 @@ const importProductsValidation = {
   }),
 };
 
+/** Public outlet profile — params only, same id shape as the product detail. */
+const businessDetailValidation = {
+  params: Joi.object().keys({ id: Joi.string().custom(objectId).required() }),
+};
+
 module.exports = {
   UNITS,
   allValidation,
@@ -286,4 +291,5 @@ module.exports = {
   skuListValidation,
   treeValidation,
   importProductsValidation,
+  businessDetailValidation,
 };

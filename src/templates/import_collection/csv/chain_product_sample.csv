@@ -1,0 +1,2 @@
+name,category,subcategory,brand,description,images,videoUrl,basePrice,baseMrp,tax,taxPercentage,hsn,tags,searchTerms,isOrganic,warrantyMonths,warrantyProvider,warrantyType,status
+Noise Air Buds Pro,electronics,audio,Noise,True wireless earbuds with active noise cancellation,https://cdn.example.com/noise-air-buds-pro.jpg,,2499,2999,inclusive,18,85183000,earbuds|bluetooth|anc,noise air buds tws,false,12,Noise,manufacturer,active

@@ -37,10 +37,13 @@ const mongoose = require('mongoose');
 require('dotenv').config();
 
 const catalogService = require('../src/modules/stores/services/stores.catalog.service');
+const taxonomyService = require('../src/modules/stores/services/stores.admin.taxonomy.service');
 
 // The service resolves models through `mongoose.model(...)` at call time.
 require('../src/modules/stores/models/chain.product.model');
 require('../src/modules/stores/models/chain.product.variant.model');
+require('../src/modules/stores/models/store.brand.model');
+require('../src/modules/stores/models/store.brand.request.model');
 require('../src/modules/stores/models/store.subcategory.model');
 require('../src/modules/stores/models/store.category.model');
 require('../src/modules/stores/models/store.attribute.template.model');
@@ -50,6 +53,8 @@ const ChainProductVariant = mongoose.model('ChainProductVariant');
 const StoreSubcategory = mongoose.model('StoreSubcategory');
 const StoreCategory = mongoose.model('StoreCategory');
 const StoreAttributeTemplate = mongoose.model('StoreAttributeTemplate');
+const StoreBrand = mongoose.model('StoreBrand');
+const StoreBrandRequest = mongoose.model('StoreBrandRequest');
 
 let failures = 0;
 const ck = (label, condition, detail) => {
@@ -100,6 +105,8 @@ const cleanup = async () => {
   await StoreAttributeTemplate.deleteMany({ slug: /^verify-cat-/ });
   await StoreSubcategory.deleteMany({ _id: SUBCATEGORY });
   await StoreCategory.deleteMany({ _id: CATEGORY });
+  await StoreBrandRequest.deleteMany({ name: /^Verify Brand / });
+  await StoreBrand.deleteMany({ slug: /^verify-brand-/ });
 };
 
 const run = async () => {
@@ -274,6 +281,196 @@ const run = async () => {
     archivedTwice = e.statusCode === 404 || archivedTwice;
   }
   ck('archiving an already-archived product is not a second archive', archivedTwice || true);
+
+  console.log('\n=== brand picker: search matches canonical names and aliases ===\n');
+
+  const brandSlug = 'verify-brand-' + STAMP;
+  const aliasToken = 'verify-alias-' + STAMP;
+  await StoreBrand.create({
+    name: 'Verify Brand ' + STAMP,
+    slug: brandSlug,
+    aliases: [aliasToken],
+    status: 'approved',
+  });
+
+  const byAlias = await catalogService.listBrands({ search: aliasToken });
+  ck('searching an alias finds the approved brand', byAlias.some((b) => b.slug === brandSlug));
+  const aliasRow = byAlias.find((b) => b.slug === brandSlug);
+  ck('the picker payload carries aliases', Array.isArray(aliasRow?.aliases) && aliasRow.aliases.includes(aliasToken));
+
+  const byName = await catalogService.listBrands({ search: 'Verify Brand ' + STAMP });
+  ck('searching the canonical name still finds it', byName.some((b) => b.slug === brandSlug));
+
+  const noMatch = await catalogService.listBrands({ search: 'verify-no-match-' + STAMP });
+  ck('an unmatched search returns nothing', noMatch.length === 0);
+
+  const regexLike = await catalogService.listBrands({ search: 'Verify (' + STAMP });
+  ck('regex metacharacters are treated literally', regexLike.length === 0);
+
+  console.log('\n=== brand merge ===\n');
+
+  const duplicateCategory = new mongoose.Types.ObjectId();
+  const [canonical, duplicate] = await StoreBrand.create([
+    {
+      name: 'Verify Brand Canonical ' + STAMP,
+      slug: 'verify-brand-canonical-' + STAMP,
+      aliases: ['canonical-alias', 'Shared-Alias'],
+      categories: [CATEGORY],
+      certifications: [
+        { type: 'authorization_letter', number: 'CANON-1', status: 'approved' },
+      ],
+      rating: 4,
+      ratingCount: 2,
+      status: 'approved',
+      isVerified: true,
+    },
+    {
+      name: 'Verify Brand Duplicate ' + STAMP,
+      slug: 'verify-brand-duplicate-' + STAMP,
+      aliases: ['dup-alias', 'shared-alias'],
+      categories: [duplicateCategory],
+      certifications: [{ type: 'dealership', number: 'DUP-1', status: 'pending' }],
+      rating: 2,
+      ratingCount: 1,
+      status: 'approved',
+    },
+  ]);
+
+  const movingProduct = await makeProduct({ brand: duplicate._id });
+  await StoreBrandRequest.create({
+    name: 'Verify Brand Merge Request ' + STAMP,
+    slug: 'verify-brand-merge-request-' + STAMP,
+    requestedByChain: new mongoose.Types.ObjectId(),
+    requestedBy: new mongoose.Types.ObjectId(),
+    brand: duplicate._id,
+  });
+
+  const mergeResult = await taxonomyService.mergeBrand(duplicate._id, {
+    targetBrand: canonical._id,
+    note: 'verify merge',
+  });
+  ck('the merge reports the products it moved', mergeResult.movedProducts === 1, mergeResult.movedProducts);
+
+  const movedProduct = await ChainProduct.findById(movingProduct._id).lean();
+  ck('a duplicate product points at the canonical brand', String(movedProduct.brand) === String(canonical._id));
+
+  const movedRequest = await StoreBrandRequest.findOne({ name: /^Verify Brand Merge Request / }).lean();
+  ck('a brand request points at the canonical brand', String(movedRequest.brand) === String(canonical._id));
+
+  const mergedTarget = await StoreBrand.findById(canonical._id).lean();
+  ck('the duplicate name becomes an alias', mergedTarget.aliases.includes('Verify Brand Duplicate ' + STAMP));
+  ck('the duplicate alias is carried over', mergedTarget.aliases.includes('dup-alias'));
+  ck(
+    'aliases are deduped case-insensitively',
+    mergedTarget.aliases.filter((alias) => alias.toLowerCase() === 'shared-alias').length === 1
+  );
+  ck('categories are unioned', mergedTarget.categories.length === 2);
+  ck('certifications are unioned', mergedTarget.certifications.length === 2);
+  ck('ratings are combined by count', Math.abs(mergedTarget.rating - 10 / 3) < 0.0001, mergedTarget.rating);
+
+  const mergedSource = await StoreBrand.findById(duplicate._id).lean();
+  ck('the duplicate is archived', mergedSource.status === 'archived');
+  ck('the duplicate points at its survivor', String(mergedSource.mergedInto) === String(canonical._id));
+  ck('the duplicate records when it was merged', !!mergedSource.mergedAt);
+
+  let selfMerge = null;
+  try {
+    await taxonomyService.mergeBrand(canonical._id, { targetBrand: canonical._id });
+  } catch (error) {
+    selfMerge = error.statusCode;
+  }
+  ck('a brand cannot merge into itself', selfMerge === 400, selfMerge);
+
+  let mergedAgain = null;
+  try {
+    await taxonomyService.mergeBrand(duplicate._id, { targetBrand: canonical._id });
+  } catch (error) {
+    mergedAgain = error.statusCode;
+  }
+  ck('an already-merged brand cannot be merged again', mergedAgain === 409, mergedAgain);
+
+  const pendingTarget = await StoreBrand.create({
+    name: 'Verify Brand Pending Target ' + STAMP,
+    slug: 'verify-brand-pending-target-' + STAMP,
+    status: 'pending',
+  });
+  const pendingSource = await StoreBrand.create({
+    name: 'Verify Brand Pending Source ' + STAMP,
+    slug: 'verify-brand-pending-source-' + STAMP,
+    status: 'approved',
+  });
+  let pendingMerge = null;
+  try {
+    await taxonomyService.mergeBrand(pendingSource._id, { targetBrand: pendingTarget._id });
+  } catch (error) {
+    pendingMerge = error.statusCode;
+  }
+  ck('a merge target must be approved', pendingMerge === 422, pendingMerge);
+  ck(
+    'merge derives verification from valid certifications',
+    mergedTarget.isVerified === true,
+    mergedTarget.isVerified
+  );
+
+  console.log('\n=== brand certification review and expiry ===\n');
+
+  const certBrand = await StoreBrand.create({
+    name: 'Verify Brand Certifications ' + STAMP,
+    slug: 'verify-brand-certifications-' + STAMP,
+    categories: [CATEGORY],
+    status: 'approved',
+    isVerified: false,
+  });
+
+  const addedCert = await taxonomyService.addBrandCertification(certBrand._id, {
+    type: 'authorization_letter',
+    number: 'CERT-' + STAMP,
+    validFrom: new Date(Date.now() - 86400000),
+    validTo: new Date(Date.now() + 86400000),
+    document: 'https://example.test/authorization.pdf',
+  });
+  ck('a new certification starts pending', addedCert.brand.certifications[addedCert.index].status === 'pending');
+  ck('a pending certification does not grant the badge', addedCert.brand.isVerified === false);
+
+  const reviewedCert = await taxonomyService.reviewBrandCertification(
+    certBrand._id,
+    addedCert.index,
+    { status: 'approved', by: new mongoose.Types.ObjectId() }
+  );
+  ck('approving a valid certification grants the badge', reviewedCert.isVerified === true);
+  ck('the reviewer is recorded', !!reviewedCert.certifications[addedCert.index].verifiedBy);
+
+  const expiredCertBrand = await StoreBrand.create({
+    name: 'Verify Brand Expired Certification ' + STAMP,
+    slug: 'verify-brand-expired-certification-' + STAMP,
+    categories: [CATEGORY],
+    status: 'approved',
+  });
+  const expiredAdded = await taxonomyService.addBrandCertification(expiredCertBrand._id, {
+    type: 'dealership',
+    number: 'EXPIRED-' + STAMP,
+    validTo: new Date(Date.now() - 86400000),
+  });
+  let expiredApproval = null;
+  try {
+    await taxonomyService.reviewBrandCertification(expiredCertBrand._id, expiredAdded.index, {
+      status: 'approved',
+      by: new mongoose.Types.ObjectId(),
+    });
+  } catch (error) {
+    expiredApproval = error.statusCode;
+  }
+  ck('an expired certification cannot be approved', expiredApproval === 422, expiredApproval);
+
+  const liveCertBrand = await StoreBrand.findById(certBrand._id);
+  liveCertBrand.certifications[addedCert.index].validTo = new Date(Date.now() - 1000);
+  await liveCertBrand.save();
+
+  const sweep = await taxonomyService.expireBrandCertifications();
+  const sweptBrand = await StoreBrand.findById(certBrand._id).lean();
+  ck('the sweep expires a lapsed certification', sweptBrand.certifications[0].status === 'expired');
+  ck('the sweep clears the verified badge', sweptBrand.isVerified === false);
+  ck('the sweep reports what it expired', sweep.expired >= 1, sweep.expired);
 
   console.log('\n=== slug handling ===\n');
 

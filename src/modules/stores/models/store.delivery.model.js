@@ -46,6 +46,10 @@ const storeDeliverySchema = mongoose.Schema(
       default: 'assigned',
       enum: ['assigned', 'accepted', 'picked_up', 'out_for_delivery', 'delivered', 'failed', 'cancelled'],
     },
+    codAmount: {
+      type: Number,
+      default: 0,
+    },
     codCollected: {
       type: Number,
       default: 0,
@@ -54,6 +58,16 @@ const storeDeliverySchema = mongoose.Schema(
       type: String,
       default: 'pending',
       enum: ['pending', 'collected', 'reconciled'],
+    },
+    codCollectedAt: {
+      type: Date,
+    },
+    otpVerified: {
+      type: Boolean,
+      default: false,
+    },
+    otpVerifiedAt: {
+      type: Date,
     },
     otpHash: {
       type: String,

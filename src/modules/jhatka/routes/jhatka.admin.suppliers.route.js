@@ -123,7 +123,13 @@ router.get('/suppliers', webAuth('jhatka_procurement_read'), async (req, res, ne
       JhatkaSupplier.countDocuments(query),
     ]);
 
-    return res.json({ suppliers, page: Number(page), limit: Number(limit), total, count: suppliers.length });
+    return res.json({
+      suppliers: suppliers.map((s) => ({ ...s, id: String(s._id) })),
+      page: Number(page),
+      limit: Number(limit),
+      total,
+      count: suppliers.length,
+    });
   } catch (error) {
     return next(error);
   }
@@ -147,7 +153,7 @@ router.get('/suppliers/:supplier', webAuth('jhatka_procurement_read'), validate(
     );
 
     return res.json({
-      supplier,
+      supplier: { ...supplier, id: String(supplier._id) },
       documents,
       compliant: blockingFailures.length === 0,
       blockingFailures: blockingFailures.map((d) => ({

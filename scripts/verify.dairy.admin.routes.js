@@ -49,6 +49,7 @@ const {
   Locality,
   Business,
   DairyJoiningRequest,
+  DairyPartner,
 } = require('../src/models');
 const tokenService = require('../src/services/token.service');
 const registrationService = require('../src/modules/dairy/services/dairy.registration.service');
@@ -104,7 +105,7 @@ const run = async () => {
   });
 
   const stamp = Date.now().toString().slice(-7);
-  const created = { categories: [], subCategories: [], brands: [], products: [], users: [], businesses: [], joiningRequests: [] };
+  const created = { categories: [], subCategories: [], brands: [], products: [], users: [], businesses: [], joiningRequests: [], partners: [] };
 
   const server = app.listen(0);
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -510,6 +511,117 @@ const run = async () => {
     res = await request('GET', '/v1/dairy/admin/joining-requests?status=nonsense', { token });
     check('a bad status filter is rejected', res.status === 400, `got ${res.status}`);
 
+    console.log('\n12b. The outlet directory and agreement creation');
+
+    // The governance screen used to read `/admin/partners`, so it could only ever
+    // show outlets that already had an agreement — and the franchise create dialog
+    // inherited the same bug. The directory is the missing read: every dairy
+    // outlet, with its agreement attached when it has one.
+    const outletSearch = encodeURIComponent(`Queue Outlet ${stamp}`);
+    res = await request('GET', `/v1/dairy/admin/outlets?search=${outletSearch}`, { token });
+    check('the outlet directory is readable', res.status === 200, `got ${res.status}`);
+    check('it returns an outlets array', Array.isArray(res.body && res.body.outlets));
+    check('with a totalResults count', typeof (res.body && res.body.totalResults) === 'number');
+    check('and a governance summary', Boolean(res.body && res.body.summary)
+      && typeof res.body.summary.total === 'number');
+
+    const ourOutlet = (res.body && res.body.outlets ? res.body.outlets : []).find(
+      (outlet) => String(outlet._id) === String(applicantBusiness)
+    );
+    check('the approved outlet appears in the directory', Boolean(ourOutlet));
+    check('it is reported as a direct outlet',
+      Boolean(ourOutlet && ourOutlet.businessModel === 'direct'),
+      ourOutlet && ourOutlet.businessModel);
+    check('with its city populated',
+      Boolean(ourOutlet && ourOutlet.city && ourOutlet.city.name === city.name),
+      ourOutlet && ourOutlet.city ? ourOutlet.city.name : 'no city');
+    check('with its owner populated',
+      Boolean(ourOutlet && ourOutlet.owner && ourOutlet.owner.firstName === 'Queue'),
+      ourOutlet && ourOutlet.owner ? ourOutlet.owner.firstName : 'no owner');
+    check('with the owner id the partner dialog posts',
+      Boolean(ourOutlet && ourOutlet.owner && ourOutlet.owner._id));
+    check('and with no agreement yet',
+      Boolean(ourOutlet && ourOutlet.partner === null && ourOutlet.franchise === null));
+
+    res = await request(
+      'GET',
+      `/v1/dairy/admin/outlets?availableFor=commission_partner&limit=100&search=${outletSearch}`,
+      { token }
+    );
+    const eligible = (res.body && res.body.outlets ? res.body.outlets : []).some(
+      (outlet) => String(outlet._id) === String(applicantBusiness)
+    );
+    check('an unagreed outlet is offered to the commission picker', eligible);
+
+    res = await request('GET', `/v1/dairy/admin/outlets?model=direct&search=${outletSearch}`, { token });
+    const direct = (res.body && res.body.outlets ? res.body.outlets : []).some(
+      (outlet) => String(outlet._id) === String(applicantBusiness)
+    );
+    check('the model filter finds it', direct);
+
+    res = await request('GET', '/v1/dairy/admin/outlets?model=nonsense', { token });
+    check('a bad model filter is rejected', res.status === 400, `got ${res.status}`);
+
+    res = await request('GET', '/v1/dairy/admin/outlets', {});
+    check('the directory is refused without authentication', res.status === 401, `got ${res.status}`);
+
+    // Create the agreement through the same route the panel uses, then prove both
+    // sides moved: the outlet's model, and the directory row the screen renders.
+    const partnerCode = `DIR-${stamp}`;
+    res = await request('POST', '/v1/dairy/admin/partners', {
+      token,
+      body: {
+        business: applicantBusiness,
+        user: registration.user._id,
+        partnerCode,
+        name: `Queue Partner ${stamp}`,
+        commissionPercentage: 10,
+        commissionBasis: 'product_only',
+        payoutMethod: 'wallet',
+        agreement: { startDate: new Date().toISOString(), minimumGuarantee: 0 },
+      },
+    });
+    check('a commission partner can be created from an approved outlet',
+      res.status === 200, `got ${res.status} ${res.body && res.body.message}`);
+    const newPartner = res.body && res.body.partner;
+    const newPartnerId = newPartner && (newPartner.id || newPartner._id);
+    check('the agreement is returned', Boolean(newPartnerId));
+    if (newPartnerId) {
+      created.partners.push(newPartnerId);
+    }
+    check('the commission rate round-trips as a percentage',
+      Boolean(newPartner && newPartner.commissionPercentage === 10),
+      newPartner && newPartner.commissionPercentage);
+
+    const agreedBusiness = await Business.findById(applicantBusiness).lean();
+    check('the outlet flips to commission_partner',
+      Boolean(agreedBusiness && agreedBusiness.businessModel === 'commission_partner'),
+      agreedBusiness && agreedBusiness.businessModel);
+
+    res = await request(
+      'GET',
+      `/v1/dairy/admin/outlets?model=commission_partner&search=${outletSearch}`,
+      { token }
+    );
+    const agreedRow = (res.body && res.body.outlets ? res.body.outlets : []).find(
+      (outlet) => String(outlet._id) === String(applicantBusiness)
+    );
+    check('the directory now reports the commission agreement',
+      Boolean(agreedRow && agreedRow.partner && agreedRow.partner.commissionPercentage === 10),
+      agreedRow && agreedRow.partner ? agreedRow.partner.commissionPercentage : 'no partner');
+    check('the agreement row carries the id the edit dialog uses',
+      Boolean(agreedRow && agreedRow.partner && agreedRow.partner._id));
+
+    res = await request(
+      'GET',
+      `/v1/dairy/admin/outlets?availableFor=commission_partner&limit=100&search=${outletSearch}`,
+      { token }
+    );
+    const stillEligible = (res.body && res.body.outlets ? res.body.outlets : []).some(
+      (outlet) => String(outlet._id) === String(applicantBusiness)
+    );
+    check('an agreed outlet is no longer offered to the picker', !stillEligible);
+
     console.log('\n9b. A location-less outlet cannot be approved');
 
     // Registration has required a city and locality for a while, so a request
@@ -727,6 +839,7 @@ const run = async () => {
       }
       await DairyJoiningRequest.deleteMany({ _id: { $in: created.joiningRequests } });
       await DairyJoiningRequest.deleteMany({ business: { $in: created.businesses } });
+      await DairyPartner.deleteMany({ _id: { $in: created.partners } });
       await Business.deleteMany({ _id: { $in: created.businesses } });
       await User.deleteMany({ _id: { $in: created.users } });
     } catch (error) {

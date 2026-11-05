@@ -99,7 +99,7 @@ router.get('/compliance/overview', webAuth('jhatka_compliance_read'), async (req
       return {
         id: String(r._id),
         outlet: r.outlet,
-        outletId: String(r.outlet),
+        outletId: String(r.outlet?._id || r.outlet),
         licenceNumber: r.fssai?.licenceNumber,
         category: r.fssai?.category,
         expiresAt: r.fssai?.expiresAt,
@@ -136,13 +136,16 @@ router.get('/compliance/overview', webAuth('jhatka_compliance_read'), async (req
           recall: openRecalls.filter((r) => r.severity === 'recall').length,
         },
         recalls: openRecalls.map((r) => ({
+          id: String(r._id),
           recallNo: r.recallNo,
-          outlet: r.outlet?.name || String(r.outlet),
-          batch: r.batch?.batchNo,
+          outlet: r.outlet,
+          batch: r.batch,
           severity: r.severity,
           status: r.status,
           reason: r.reason,
           initiatedAt: r.initiatedAt,
+          notifiedCount: r.notifiedCount,
+          acknowledgedCount: r.acknowledgedCount,
           affectedOrderCount: r.affectedOrderItems?.count ?? null,
         })),
       },
@@ -167,6 +170,7 @@ router.get('/compliance/records', webAuth('jhatka_compliance_read'), async (req,
     return res.json({
       records: records.map((r) => ({
         ...r,
+        id: String(r._id),
         derivedStatus: deriveStatus(r.fssai?.expiresAt),
       })),
       count: records.length,
@@ -354,6 +358,7 @@ router.get('/compliance/recalls', webAuth('jhatka_recall_read'), async (req, res
     return res.json({
       recalls: recalls.map((r) => ({
         ...r,
+        id: String(r._id),
         // §5.4: `acknowledgedCount < notifiedCount` is the number that stays open.
         unacknowledged: Math.max(0, (r.notifiedCount || 0) - (r.acknowledgedCount || 0)),
       })),

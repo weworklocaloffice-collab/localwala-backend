@@ -31,16 +31,6 @@ const idParam = {
   }),
 };
 
-const payoutGenerateBody = {
-  body: Joi.object()
-    .keys({
-      periodStart: Joi.date().required(),
-      periodEnd: Joi.date().required(),
-      driverIds: Joi.array().items(objectId),
-    })
-    .unknown(true),
-};
-
 const payBody = {
   body: Joi.object()
     .keys({
@@ -50,28 +40,7 @@ const payBody = {
     .unknown(true),
 };
 
-const commissionRuleBody = {
-  body: Joi.object()
-    .keys({
-      // Rate is BASIS POINTS here (100 bps = 1%) — not the percent the
-      // admin taxonomy endpoint takes. Mixing the two is a 100x payout bug.
-      type: Joi.string().required(),
-      rateBps: Joi.number().integer().min(0).required(),
-      minOrderValuePaise: Joi.number().integer().min(0),
-      maxOrderValuePaise: Joi.number().integer().min(0),
-      outlet: objectId,
-      variant: objectId,
-      priority: Joi.number().integer(),
-      validFrom: Joi.date(),
-      validUntil: Joi.date(),
-      description: Joi.string(),
-    })
-    .unknown(true),
-};
-
 module.exports = {
   idParam,
-  payoutGenerateBody,
   payBody,
-  commissionRuleBody,
 };

@@ -1,28 +1,4 @@
-/**
- * LocalWala – Local Commerce & Delivery Platform
- * (NodeJS, MongoDB, Angular & Flutter)
- *
- * Copyright © 2026 WeWorkLocal Private Limited
- * https://weworklocal.in/
- *
- * WeWorkLocal Private Limited
- *
- * This source code is confidential.
- * Unauthorized copying, redistribution, resale, publication,
- * modification, or use of this source code in any public or
- * commercial repository is strictly prohibited.
- *
- * Ownership Fingerprint:
- * LWL|WWL|2026|LOCALWALA|NODE
- */
-
 const cron = require('node-cron');
-
-/**
- * local-services cron — own node-cron (stores/jhatka pattern), never in the
- * shared scheduler unless non-throwing. Every sweep is idempotent and safe
- * to retry; functions are exported for unit tests.
- */
 
 async function activateScheduledRules(now = new Date(), { RuleModel } = {}) {
   const Rule = RuleModel || require('./models/localservice.revenue.rule.model');
@@ -61,11 +37,6 @@ async function expirePendingQuotes(now = new Date(), { QuoteModel } = {}) {
   return { expired: res.modifiedCount || 0 };
 }
 
-/**
- * Stuck-booking alert (read-only). Transient states older than the threshold
- * are reported for operator triage — never auto-transitioned (money states
- * must move by explicit action, not by clock).
- */
 const STUCK_THRESHOLDS_HOURS = Object.freeze({ PENDING_PROVIDER: 24, PAYMENT_PENDING: 2, IN_PROGRESS: 48 });
 
 async function findStuckBookings(now = new Date(), { BookingModel } = {}) {
@@ -84,26 +55,24 @@ async function notifyProvidersOfNewRequests({ BookingModel, ProviderModel, Notif
   const Provider = ProviderModel || require('./models/localservice.provider.model');
   const Notify = NotifyModel || require('../../../models/notification.list.model');
   const out = { scanned: 0, notified: 0 };
-  // REQUESTED bookings with no provider: broadcast to eligible providers.
   const open = await Booking.find({ status: 'REQUESTED', provider: null }).lean();
   out.scanned = open.length;
   for (const b of open) {
     if (!b.serviceKey) continue;
-      const offeringProviders = await Provider.find({ status: 'ACTIVE', bookable: true }).lean();
-      for (const p of offeringProviders) {
-        try {
-          await Notify.create({
-            user: p.owner,
-            title: 'New service request',
-            content: `A new ${b.serviceKey} request is available — ${b.bookingCode}`,
-            payload: { bookingId: String(b._id), kind: 'local_service_request' },
-          });
-          out.notified += 1;
-        } catch (err) {
-          // best-effort
-          void err;
-        }
+    const offeringProviders = await Provider.find({ status: 'ACTIVE', bookable: true }).lean();
+    for (const p of offeringProviders) {
+      try {
+        await Notify.create({
+          user: p.owner,
+          title: 'New service request',
+          content: `A new ${b.serviceKey} request is available — ${b.bookingCode}`,
+          payload: { bookingId: String(b._id), kind: 'local_service_request' },
+        });
+        out.notified += 1;
+      } catch (err) {
+        void err;
       }
+    }
   }
   return out;
 }
@@ -111,7 +80,6 @@ async function notifyProvidersOfNewRequests({ BookingModel, ProviderModel, Notif
 async function reconcileGatewayPayments({ PaymentInitiationModel } = {}) {
   const PaymentInitiation = PaymentInitiationModel || require('../../../models/payment.initiation.model');
   const out = { scanned: 0, reconciled: 0 };
-  // Initiated payments older than 10 minutes that never got a callback.
   const cutoff = new Date(Date.now() - 10 * 60 * 1000);
   const stuck = await PaymentInitiation.find({
     paymentFrom: 'localServiceBooking',
@@ -119,10 +87,6 @@ async function reconcileGatewayPayments({ PaymentInitiationModel } = {}) {
     createdAt: { $lte: cutoff },
   }).lean();
   out.scanned = stuck.length;
-  // Reconciliation is a report, not an auto-pay: a payment that never
-  // verified at the gateway must not be marked paid. We log them for the
-  // operator to chase; the gateway sweep in the shared controller already
-  // handles the captured-but-unverified case.
   for (const p of stuck) {
     console.warn('LocalServices unreconciled payment:', p._id, p.localServiceBookingId);
   }
@@ -133,7 +97,6 @@ async function sendBookingReminders({ BookingModel, NotifyModel } = {}) {
   const Booking = BookingModel || require('./models/localservice.booking.model');
   const Notify = NotifyModel || require('../../../models/notification.list.model');
   const out = { scanned: 0, reminded: 0 };
-  // CONFIRMED bookings starting in the next 24 hours get one reminder.
   const now = new Date();
   const horizon = new Date(now.getTime() + 24 * 3600000);
   const upcoming = await Booking.find({
@@ -151,15 +114,41 @@ async function sendBookingReminders({ BookingModel, NotifyModel } = {}) {
       });
       out.reminded += 1;
     } catch (e) {
-      // best-effort
       void e;
     }
   }
   return out;
 }
 
+async function reconcileRevenue({ BookingModel, RevenueEntryModel } = {}) {
+  const Booking = BookingModel || require('./models/localservice.booking.model');
+  const Entry = RevenueEntryModel || require('./models/localservice.revenue.entry.model');
+  const out = { scanned: 0, missing: 0, orphaned: 0 };
+  const completed = await Booking.find({ status: 'COMPLETED' }).select('_id').lean();
+  out.scanned = completed.length;
+  for (const b of completed) {
+    const exists = await Entry.findOne({ bookingId: String(b._id) }).lean();
+    if (!exists) out.missing += 1;
+  }
+  const orphanedEntries = await Entry.find({ bookingId: { $ne: null } }).lean();
+  for (const e of orphanedEntries) {
+    const b = await Booking.findById(e.bookingId).lean().catch(() => null);
+    if (!b) out.orphaned += 1;
+  }
+  if (out.missing > 0 || out.orphaned > 0) {
+    console.warn('LocalServices revenue reconciliation:', JSON.stringify(out));
+  }
+  return out;
+}
+
+async function processOutbox({ OutboxModel } = {}) {
+  const { processPending } = require('./services/localservice.outbox.service');
+  const out = await processPending({ OutboxModel });
+  if (out.failed > 0) console.warn('LocalServices outbox:', out);
+  return out;
+}
+
 function startLocalServicesCron() {
-  // Every 15 min: activation/expiry. Idempotent — re-running changes nothing.
   cron.schedule('*/15 * * * *', async () => {
     try {
       const now = new Date();
@@ -169,7 +158,6 @@ function startLocalServicesCron() {
       console.error('LocalServices rule sweep failed:', error.message);
     }
   });
-  // Every 5 min: capacity + quote hygiene. Never blocks a slot forever.
   cron.schedule('*/5 * * * *', async () => {
     try {
       const now = new Date();
@@ -179,16 +167,38 @@ function startLocalServicesCron() {
       console.error('LocalServices hold/quote sweep failed:', error.message);
     }
   });
-  // Daily 03:00: recurring occurrences (idempotent, advances either way).
   cron.schedule('0 3 * * *', async () => {
     try {
       const { generateDueOccurrences } = require('./services/localservice.recurring.service');
-      await generateDueOccurrences(new Date());
+      const Booking = require('./models/localservice.booking.model');
+      const Service = require('./models/localservice.service.model');
+      const bookingService = require('./services/localservice.booking.service');
+      const buildBooking = async (ag, occDate) => {
+        const svc = ag.service ? await Service.findById(ag.service).lean() : null;
+        const code = bookingService.buildBookingCode();
+        const doc = await Booking.create({
+          bookingCode: code,
+          customer: ag.customer,
+          provider: ag.provider || undefined,
+          service: ag.service || undefined,
+          serviceKey: svc ? svc.key : undefined,
+          categoryKey: svc ? svc.categoryKey : undefined,
+          pricingMode: svc ? svc.pricingMode : undefined,
+          bookingMode: 'INSTANT',
+          status: 'DRAFT',
+          scheduledAt: occDate,
+          labourAmount: ag.labourAmount || 0,
+          partsAmount: ag.partsAmount || 0,
+          serviceValue: Number(ag.labourAmount || 0) + Number(ag.partsAmount || 0),
+          paymentMode: 'gateway',
+        });
+        return doc;
+      };
+      await generateDueOccurrences(new Date(), { buildBooking });
     } catch (error) {
       console.error('LocalServices recurring sweep failed:', error.message);
     }
   });
-  // Every 10 min: notify providers of new requests (best-effort broadcast).
   cron.schedule('*/10 * * * *', async () => {
     try {
       const r = await notifyProvidersOfNewRequests(new Date());
@@ -197,8 +207,6 @@ function startLocalServicesCron() {
       console.error('LocalServices new-request notify failed:', error.message);
     }
   });
-  // Every 30 min: gateway reconciliation report (initiated payments that
-  // never got a callback). Never auto-pays; operator chases them.
   cron.schedule('*/30 * * * *', async () => {
     try {
       const r = await reconcileGatewayPayments(new Date());
@@ -207,7 +215,6 @@ function startLocalServicesCron() {
       console.error('LocalServices gateway reconcile failed:', error.message);
     }
   });
-  // Every hour: booking reminders for the next 24 hours.
   cron.schedule('0 * * * *', async () => {
     try {
       const r = await sendBookingReminders(new Date());
@@ -216,8 +223,6 @@ function startLocalServicesCron() {
       console.error('LocalServices reminder sweep failed:', error.message);
     }
   });
-
-  // Hourly: stuck-booking alert (read-only report for operator triage).
   cron.schedule('0 * * * *', async () => {
     try {
       const stuck = await findStuckBookings(new Date());
@@ -225,6 +230,22 @@ function startLocalServicesCron() {
       if (total > 0) console.warn('LocalServices stuck bookings:', JSON.stringify(stuck));
     } catch (error) {
       console.error('LocalServices stuck sweep failed:', error.message);
+    }
+  });
+  cron.schedule('0 */2 * * *', async () => {
+    try {
+      const r = await reconcileRevenue(new Date());
+      if (r.missing > 0 || r.orphaned > 0) console.warn('LocalServices revenue reconcile:', r);
+    } catch (error) {
+      console.error('LocalServices revenue reconcile failed:', error.message);
+    }
+  });
+  cron.schedule('* * * * *', async () => {
+    try {
+      const r = await processOutbox({});
+      if (r.failed > 0) console.warn('LocalServices outbox:', r);
+    } catch (error) {
+      console.error('LocalServices outbox failed:', error.message);
     }
   });
 }
@@ -239,5 +260,7 @@ module.exports = {
   reconcileGatewayPayments,
   sendBookingReminders,
   STUCK_THRESHOLDS_HOURS,
+  reconcileRevenue,
+  processOutbox,
   startLocalServicesCron,
 };

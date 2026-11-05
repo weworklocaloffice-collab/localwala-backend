@@ -56,6 +56,14 @@ const errorHandler = (err, req, res, _next) => {
 
   if (config.env === 'development') {
     logger.error(err);
+  } else {
+    // Production: always record the failure for observability; operational
+    // errors are expected (validation/auth) and logged at warn level.
+    if (err.isOperational) {
+      logger.warn(`${req.method} ${req.originalUrl} -> ${statusCode} ${message}`);
+    } else {
+      logger.error(err);
+    }
   }
 
   res.status(statusCode).json(response);

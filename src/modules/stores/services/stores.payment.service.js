@@ -40,6 +40,7 @@
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
+const logger = require('../../../config/logger');
 const orderService = require('./stores.order.service');
 const subscriptionService = require('./stores.subscription.service');
 const notifyService = require('./stores.notify.service');
@@ -71,7 +72,7 @@ const applyStoreOrderPayment = async (payment) => {
   const StoreOrder = mongoose.model('StoreOrder');
   const order = await StoreOrder.findById(payment.storeOrder);
   if (!order) {
-    console.error(`storeOrders callback for missing order ${payment.storeOrder}`);
+    logger.error(`storeOrders callback for missing order ${payment.storeOrder}`);
     return;
   }
   // Replay-safe: the second delivery of the same callback changes nothing.
@@ -93,7 +94,7 @@ const applyStoreSubscriptionPayment = async (payment) => {
   const StoreSubscription = mongoose.model('StoreSubscription');
   const row = await StoreSubscriptionPayment.findById(payment.storeSubscriptionPayment);
   if (!row) {
-    console.error(`storeSubscription callback for missing payment row ${payment.storeSubscriptionPayment}`);
+    logger.error(`storeSubscription callback for missing payment row ${payment.storeSubscriptionPayment}`);
     return;
   }
   if (row.status === 'success') return; // webhook replay
@@ -112,7 +113,7 @@ const applyStoreSubscriptionPayment = async (payment) => {
     if (allowed.includes('active')) {
       await subscriptionService.transitionSubscription(sub._id, 'active', { notes: 'gateway payment received' });
     } else {
-      console.error(`storeSubscription ${sub._id} paid while in ${sub.status}; left for admin review`);
+      logger.error(`storeSubscription ${sub._id} paid while in ${sub.status}; left for admin review`);
     }
   }
   if (sub) {

@@ -67,7 +67,6 @@ const completeRunValidation = {
   }),
   body: Joi.object().keys({
     cansReturned: Joi.number().integer().min(0).required(),
-    amountCollected: Joi.number().integer().min(0).default(0),
     adjustmentReason: Joi.string().allow('', null),
     forceClose: Joi.boolean().default(false),
   }),

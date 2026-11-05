@@ -47,7 +47,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const APP_ROOT = path.join(__dirname, '..', '..', 'DairyPartner_app');
+// The dairy partner app lives in `Partner_app`; `DairyPartner_app` only holds
+// build output. Point the contract check at the source tree that actually
+// exists, otherwise this suite fails on a missing file rather than a drifted
+// endpoint.
+const APP_ROOT = path.join(__dirname, '..', '..', 'Partner_app');
 const FLUTTER_ENDPOINTS = path.join(
   APP_ROOT,
   'lib',

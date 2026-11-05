@@ -171,6 +171,11 @@ function assessRecallScope(allocations) {
         order: a.order,
         orderItem: a.orderItem,
         outlet: a.outlet,
+        // The customer MUST survive the order-level collapse. Without it the
+        // delivered set still has rows, but every row has `customer: undefined`,
+        // so the fan-out filters them all out and notifies nobody while the
+        // recall looks scoped.
+        customer: a.customer || a.customerId || null,
         qty: 0,
         lifecycle: a.orderLifecycle || null,
       });

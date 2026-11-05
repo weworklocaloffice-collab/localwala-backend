@@ -94,6 +94,42 @@ async function descendantIds(categoryId, maxDepth = 12) {
   return out;
 }
 
+router.get('/taxonomy/stats', webAuth('jhatka_catalog_read'), async (req, res, next) => {
+  try {
+    const [
+      categories,
+      rootCategories,
+      products,
+      activeProducts,
+      variants,
+      activeVariants,
+    ] = await Promise.all([
+      JhatkaCategory.countDocuments({}),
+      JhatkaCategory.countDocuments({
+        $or: [{ parent: { $exists: false } }, { parent: null }],
+      }),
+      JhatkaProduct.countDocuments({}),
+      JhatkaProduct.countDocuments({ status: true }),
+      JhatkaVariant.countDocuments({}),
+      JhatkaVariant.countDocuments({ status: true }),
+    ]);
+
+    return res.json({
+      categories,
+      rootCategories,
+      subCategories: categories - rootCategories,
+      products,
+      activeProducts,
+      inactiveProducts: products - activeProducts,
+      variants,
+      activeVariants,
+      inactiveVariants: variants - activeVariants,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 /**
  * GET /v1/jhatka/admin/taxonomy
  *

@@ -60,10 +60,14 @@ const {
   JhatkaBatchAllocation,
   JhatkaInventoryItem,
   JhatkaInventoryMovement,
+  JhatkaProduct,
   JhatkaRecall,
   JhatkaOrder,
+  JhatkaOutlet,
   JhatkaWastage,
 } = require('../../../models');
+const notifyService = require('../services/jhatka.notify.service');
+const recallService = require('../services/jhatka.recall.service');
 
 const router = express.Router();
 const validate = require('../../../middlewares/validate');
@@ -109,6 +113,7 @@ router.get('/inventory/batches', webAuth('jhatka_inventory_read'), async (req, r
     return res.json({
       batches: batches.map((b) => ({
         ...b,
+        id: String(b._id),
         isExpired: b.expiresAt ? new Date(b.expiresAt).getTime() < now : false,
         isSellable: LIVE_BATCH_STATUS.includes(b.status) && (!b.expiresAt || new Date(b.expiresAt).getTime() >= now),
         daysToExpiry: b.expiresAt
@@ -181,9 +186,11 @@ router.get('/inventory/stock', webAuth('jhatka_inventory_read'), async (req, res
 /**
  * POST /v1/jhatka/admin/inventory/batches/:batch/quarantine
  *
- * Quarantine writes a `RECALL_FREEZE` movement, so the freeze is in the ledger rather
- * than only in a status flag. A quarantine with no movement is indistinguishable from
- * one that was lifted.
+ * Quarantine fences every stock line on the batch (available quantity moves
+ * into the `quarantined` counter, so the stock cannot be sold) and writes a
+ * `RECALL_FREEZE` movement per line, so the freeze is in the ledger rather than
+ * only in a status flag. A quarantine with no movement is indistinguishable
+ * from one that was lifted.
  */
 router.post('/inventory/batches/:batch/quarantine', webAuth('jhatka_inventory_read'), validate(V.namedParam('batch')), async (req, res, next) => {
   try {
@@ -207,13 +214,15 @@ router.post('/inventory/batches/:batch/quarantine', webAuth('jhatka_inventory_re
     batch.quarantineReason = req.body.reason;
     await batch.save();
 
-    // Freeze every item backed by this batch.
-    await JhatkaInventoryItem.updateMany(
-      { batch: batch._id },
-      { $inc: { quarantined: 1 } }
-    );
-
+    // Fence every item backed by this batch, and put the freeze in the ledger.
     await writeRecallFreeze(batch, req.user, 'quarantine');
+
+    const product = await JhatkaProduct.findById(batch.product).select('name').lean();
+    await notifyService.notifyOutlet(batch.outlet, 'batch_quarantined', {
+      batchNo: batch.batchNo,
+      productName: product?.name || batch.rawSku,
+      reason: req.body.reason,
+    });
 
     return res.json({ batch: batch.toObject() });
   } catch (error) {
@@ -229,15 +238,62 @@ router.post('/inventory/batches/:batch/release', webAuth('jhatka_inventory_read'
     if (batch.status !== 'quarantined') {
       throw new ApiError(httpStatus.CONFLICT, `Batch is ${batch.status}, not quarantined`);
     }
+    // A recalled batch is frozen by its recall, not by an operational quarantine.
+    // Lifting that is the recall process's decision, not this route's.
+    if ((batch.recalls || []).length > 0) {
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        `Batch ${batch.batchNo} has a recall against it and is released through the recall process, not the quarantine release route`,
+        true, '', { code: 'RECALL_BATCH' }
+      );
+    }
+    // Stock that expired while fenced must be written off, not released: the
+    // expiry sweep does not flip quarantined batches, so this route is the only
+    // thing standing between expired meat and the availability recompute below.
+    if (batch.expiresAt && new Date(batch.expiresAt).getTime() <= Date.now()) {
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        `Batch ${batch.batchNo} expired while quarantined — write it off, do not release it back on sale`,
+        true, '', { code: 'EXPIRED_BATCH' }
+      );
+    }
 
-    batch.status = 'opened';
+    batch.status = batch.consumedQty > 0 ? 'opened' : 'source';
     batch.releasedAt = new Date();
+    batch.quarantineReason = undefined;
     await batch.save();
 
-    await JhatkaInventoryItem.updateMany(
-      { batch: batch._id, quarantined: { $gt: 0 } },
-      { $inc: { quarantined: -1 } }
-    );
+    // Unfence: everything still in `quarantined` goes back on sale, recomputed
+    // from the invariant so stock written off while fenced cannot resurrect.
+    // The admin console posts no reason; the movement records the actor.
+    const reason = reasonGiven(req.body?.reason) ? req.body.reason : 'Quarantine release';
+    const items = await JhatkaInventoryItem.find({ batch: batch._id });
+    for (const item of items) {
+      if (Number(item.quarantined || 0) > 0) {
+        item.quarantined = 0;
+        item.availableQty = Math.max(0, Number(item.onHand || 0) - Number(item.reserved || 0));
+      }
+      const movementSeq = (item.movementSeq || 0) + 1;
+      await JhatkaInventoryMovement.create({
+        outlet: batch.outlet,
+        inventoryItem: item._id,
+        kind: item.kind,
+        movementType: 'QUARANTINE_RELEASE',
+        qtyDelta: 0,
+        reservedDelta: 0,
+        onHandAfter: item.onHand,
+        reservedAfter: item.reserved,
+        availableAfter: item.availableQty,
+        reason,
+        referenceType: 'JhatkaBatch',
+        referenceId: batch._id,
+        movementSeq,
+        performedBy: req.user._id,
+        performedByName: req.user.name,
+      });
+      item.movementSeq = movementSeq;
+      await item.save();
+    }
 
     return res.json({ batch: batch.toObject(), released: true });
   } catch (error) {
@@ -277,70 +333,37 @@ router.post('/inventory/recalls', webAuth('jhatka_recall_manage'), async (req, r
     const batch = await JhatkaBatch.findById(batchId);
     if (!batch) throw new ApiError(httpStatus.NOT_FOUND, 'Batch not found');
 
-    const existing = await JhatkaRecall.findOne({ batch: batch._id, status: { $ne: 'closed' } });
-    if (existing) {
-      throw new ApiError(
-        httpStatus.CONFLICT,
-        'An open recall already exists for this batch',
-        true, '',
-        { code: 'RECALL_EXISTS', recallId: String(existing._id) }
-      );
-    }
-
-    // THE POINT OF -11: who is affected.
-    const affected = await affectedOrdersForBatch(batch._id);
-
-    const recall = await JhatkaRecall.create({
-      recallNo: nextRecallNo(),
-      batch: batch._id,
-      outlet: batch.outlet,
-      business: batch.business,
-      supplier: batch.supplier || undefined,
+    // ONE recall path. This route used to write the recall, flip the batch and
+    // fence stock by hand, which skipped the customer fan-out, left `batch.recalls`
+    // empty (so quarantine release could unlock a recalled batch), and incremented
+    // `quarantined` by 1 BEFORE the fence. The service owns all of it now.
+    const result = await recallService.openRecall({
+      models: {
+        JhatkaBatch,
+        JhatkaInventoryItem,
+        JhatkaInventoryMovement,
+        JhatkaRecall,
+        JhatkaOutlet,
+        JhatkaBatchAllocation,
+        JhatkaOrder,
+      },
+      outletId: batch.outlet,
+      actor: { _id: req.user._id, name: req.user.name },
+      nextNumber: () => nextRecallNo(),
+      batch: batchId,
       severity,
       reason,
-      status: 'open',
-      initiatedBy: req.user._id,
-      initiatedByName: req.user.name,
-      initiatedAt: new Date(),
-      // The REAL model shape. An earlier draft wrote `affectedOrderCount` /
-      // `affectedCustomerCount` / `notes`, none of which exist — Mongoose would have
-      // dropped all three silently and the recall would have carried no customer set
-      // at all, which is the entire purpose of -11.
-      affectedOrderItems: {
-        queriedAt: new Date(),
-        count: affected.orderItemCount,
-        // A SAMPLE, not the full set: a batch can be on tens of thousands of order
-        // lines and embedding them all would make the recall document unreadable and
-        // slow to open. The authoritative set is re-queried by `affectedOrderItems`.
-        sampleOrderItemIds: affected.sampleOrderItemIds,
-      },
-      // One row per CUSTOMER, with their orders nested, because -5.4 counts
-      // notifications per person, not per order. Each nested entry is an OBJECT
-      // `{order, deliveredAt}`, not a bare id — the model requires `order` inside it,
-      // and a bare id fails with "Path `order` is required" from two levels down.
-      affectedCustomers: affected.customers.map((c) => ({
-        customer: c.customer,
-        orders: c.orders,
-      })),
     });
 
-    // `advisory` deliberately does NOT freeze. An advisory that quietly stopped
-    // selling stock would make the severity label meaningless.
-    if (severity !== 'advisory') {
-      batch.status = 'quarantined';
-      batch.quarantinedAt = new Date();
-      batch.quarantineReason = `Recall ${recall.recallNo}: ${reason}`;
-      await batch.save();
-
-      await JhatkaInventoryItem.updateMany({ batch: batch._id }, { $inc: { quarantined: 1 } });
-      await writeRecallFreeze(batch, req.user, `recall:${recall.recallNo}`);
-    }
+    const recall = await JhatkaRecall.findById(result.recall.id);
+    const affected = await affectedOrdersForBatch(batch._id);
 
     return res.status(201).json({
       recall: recall.toObject(),
       frozen: severity !== 'advisory',
       affectedOrders: affected.orders,
       affectedCustomers: affected.customers,
+      scope: result.scope,
     });
   } catch (error) {
     return next(error);
@@ -367,7 +390,10 @@ router.get('/inventory/recalls', webAuth('jhatka_recall_read'), async (req, res,
       .limit(200)
       .lean();
 
-    return res.json({ recalls, count: recalls.length });
+    return res.json({
+      recalls: recalls.map((r) => ({ ...r, id: String(r._id) })),
+      count: recalls.length,
+    });
   } catch (error) {
     return next(error);
   }
@@ -537,9 +563,23 @@ async function affectedOrdersForBatch(batchId, sampleSize = 50) {
 }
 
 /** Write the RECALL_FREEZE movement so a freeze is provable, not just flagged. */
+/**
+ * Fence every stock line on `batch` and write one `RECALL_FREEZE` movement per
+ * line. Fencing moves the available quantity into the `quarantined` counter —
+ * `availableQty = onHand - reserved - quarantined` keeps holding and FEFO
+ * cannot offer the stock. The old version only wrote movements with a hardcoded
+ * `availableAfter: 0` while the route bumped `quarantined` by 1, which left a
+ * "frozen" line mostly still on sale and the invariant broken.
+ */
 async function writeRecallFreeze(batch, user, reason) {
-  const items = await JhatkaInventoryItem.find({ batch: batch._id }).lean();
+  const items = await JhatkaInventoryItem.find({ batch: batch._id });
   for (const item of items) {
+    const fence = Math.max(0, Number(item.availableQty || 0));
+    if (fence > 0) {
+      item.quarantined = Number(item.quarantined || 0) + fence;
+      item.availableQty = 0;
+    }
+    const movementSeq = (item.movementSeq || 0) + 1;
     await JhatkaInventoryMovement.create({
       outlet: batch.outlet,
       inventoryItem: item._id,
@@ -549,15 +589,16 @@ async function writeRecallFreeze(batch, user, reason) {
       reservedDelta: 0,
       onHandAfter: item.onHand,
       reservedAfter: item.reserved,
-      availableAfter: 0,
+      availableAfter: item.availableQty,
       reason,
       referenceType: 'JhatkaBatch',
       referenceId: batch._id,
-      movementSeq: (item.movementSeq || 0) + 1,
+      movementSeq,
       performedBy: user._id,
       performedByName: user.name,
     });
-    await JhatkaInventoryItem.updateOne({ _id: item._id }, { movementSeq: (item.movementSeq || 0) + 1 });
+    item.movementSeq = movementSeq;
+    await item.save();
   }
 }
 

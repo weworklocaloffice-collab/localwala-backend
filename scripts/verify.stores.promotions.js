@@ -29,16 +29,16 @@
  *   money  a discount never exceeds what it discounts. `fixed_off` is capped at the cart
  *          (`Math.min`); every type must hold the same invariant
  *
- * ## Two findings recorded here, one fixed and one open
+ * ## Two findings recorded here, both fixed
  *
  *   1. `product_discount` returned `promo.value` FLAT, with no cap against the cart. A 500
  *      discount on a 100 cart discounted 500 — five times the sale. `fixed_off` already
  *      had the `Math.min` guard; `product_discount` simply lacked it. Fixed, and the
  *      `capped at the cart` block below is the regression guard.
- *   2. `perCustomerLimit` is stored (model, service default, Joi) but never ENFORCED —
- *      nothing reads it. A "once per customer" code is reusable forever. Recorded as a
- *      loud FAIL rather than silently assumed, pending a business decision about where
- *      per-customer usage is tracked.
+ *   2. `perCustomerLimit` was stored (model, service default, Joi) but never enforced.
+ *      It is now enforced against StoreOrder rows for the same customer and promotion,
+ *      excluding cancelled/failed orders. The block below inserts a redemption row and
+ *      proves a second use by the same customer is refused while another customer passes.
  */
 
 const mongoose = require('mongoose');
@@ -48,8 +48,10 @@ const promotionService = require('../src/modules/stores/services/stores.promotio
 
 // The service resolves models through `mongoose.model(...)` at call time.
 require('../src/modules/stores/models/store.promotion.model');
+require('../src/modules/stores/models/store.order.model');
 
 const StorePromotion = mongoose.model('StorePromotion');
+const StoreOrder = mongoose.model('StoreOrder');
 
 let failures = 0;
 const ck = (label, condition, detail) => {
@@ -63,6 +65,8 @@ const ck = (label, condition, detail) => {
 
 const OUTLET = new mongoose.Types.ObjectId();
 const CHAIN = new mongoose.Types.ObjectId();
+const CUSTOMER_A = new mongoose.Types.ObjectId();
+const CUSTOMER_B = new mongoose.Types.ObjectId();
 const STAMP = Date.now();
 
 const makePromo = async (overrides = {}) =>
@@ -79,6 +83,7 @@ const makePromo = async (overrides = {}) =>
   });
 
 const cleanup = async () => {
+  await StoreOrder.deleteMany({ customer: { $in: [CUSTOMER_A, CUSTOMER_B] } });
   await StorePromotion.deleteMany({ outlet: OUTLET });
   await StorePromotion.deleteMany({ chain: CHAIN });
 };
@@ -171,21 +176,43 @@ const run = async () => {
   }
   ck('an exhausted usage limit is a 409', exhausted);
 
-  console.log('\n=== perCustomerLimit is stored but never enforced ===\n');
+  console.log('\n=== perCustomerLimit is enforced against the order ledger ===\n');
 
-  // `perCustomerLimit` is written on create (model, service default, Joi) but nothing in the
-  // codebase reads it — a "once per customer" code is reusable forever. That is a missing
-  // feature, not a broken invariant: enforcing it needs a decision about where per-customer
-  // usage lives (a new collection keyed by customer+promotion, or a usage ledger). Recorded
-  // as a warning so the next person to touch promotions reads this paragraph first, not as
-  // a failure, because no contract promises it today.
+  // StoreOrder is the redemption ledger in V1. Insert the minimum row the count reads,
+  // bypassing order validation because this suite is testing the promotion gate, not
+  // checkout. Cancelled/failed/rejected rows are deliberately excluded by the service.
   const perCust = await makePromo({ code: 'JUSTME', outlet: OUTLET, perCustomerLimit: 1 });
-  void perCust;
-  const first = await promotionService.validatePromotion({ chain: CHAIN, outlet: OUTLET, code: 'JUSTME', cartAmount: 1000, customerId: new mongoose.Types.ObjectId() });
-  const second = await promotionService.validatePromotion({ chain: CHAIN, outlet: OUTLET, code: 'JUSTME', cartAmount: 1000, customerId: new mongoose.Types.ObjectId() });
-  if (first && second) {
-    console.log('  WARN  perCustomerLimit is stored but never enforced — a second use is accepted. Needs a business decision, not a code fix.');
+  const first = await promotionService.validatePromotion({
+    chain: CHAIN, outlet: OUTLET, code: 'JUSTME', cartAmount: 1000, customerId: CUSTOMER_A,
+  });
+  ck('the first use passes before any redemption exists', !!first);
+
+  await StoreOrder.collection.insertOne({
+    customer: CUSTOMER_A,
+    outlet: OUTLET,
+    chain: CHAIN,
+    orderNo: STAMP,
+    lifecycle: 'created',
+    promo: { promotion: perCust._id },
+    grandTotal: 1000,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  let reused = false;
+  try {
+    await promotionService.validatePromotion({
+      chain: CHAIN, outlet: OUTLET, code: 'JUSTME', cartAmount: 1000, customerId: CUSTOMER_A,
+    });
+  } catch (e) {
+    reused = e.statusCode === 409;
   }
+  ck('a second use by the same customer is a 409', reused);
+
+  const other = await promotionService.validatePromotion({
+    chain: CHAIN, outlet: OUTLET, code: 'JUSTME', cartAmount: 1000, customerId: CUSTOMER_B,
+  });
+  ck('another customer can still use it', !!other);
 
   console.log('\n=== applyPromotion counts usage ===\n');
 

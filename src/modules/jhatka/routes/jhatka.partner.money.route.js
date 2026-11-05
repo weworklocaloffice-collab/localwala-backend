@@ -29,92 +29,67 @@ const express = require('express');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
 const { jhatkaAuth, requireActiveOutlet, requireRole } = require('../middlewares/jhatka.tenant');
-const profileService = require('../services/jhatka.profile.service');
 const validate = require('../../../middlewares/validate');
 const V = require('../validations/jhatka.partner.money.validation');
-const { JhatkaCommissionRule, JhatkaOperatorPayout, JhatkaSupplierPayable, JhatkaSettlement, JhatkaOrder, JhatkaDelivery, JhatkaDriver, JhatkaOutlet } = require('../../../models');
-const { computeRefund } = require('../utils/commercial.arithmetic');
+const { JhatkaCommissionRule, JhatkaOperatorPayout, JhatkaSupplierPayable, JhatkaSettlement, JhatkaOutlet } = require('../../../models');
 
 const router = express.Router();
 
 const moneyAuth = [jhatkaAuth(), requireActiveOutlet];
 
 /**
- * GET /jhatka/partner/commission-rules
+ * GET /jhatka/partner/commission-terms — the terms THIS outlet operates under.
  *
- * Commission rules for this outlet's business.
+ * ## What happened to the old commission-rules endpoints here
+ *
+ * This file used to carry GET + POST `/commission-rules` — a partner-facing
+ * WRITE path for commission rules. Both were dead: the POST wrote a field
+ * vocabulary (`type`, `rateBps`, `priority`, `validFrom`) that
+ * `JhatkaCommissionRule` does not define, against a required `code` it never
+ * set — every call died in validation (500); the GET queried a `business`
+ * field that does not exist, so it always returned empty. Worst of all, they
+ * ADVERTISED authority partners do not have: commission is a commercial term
+ * set by LocalWala's admin (`/v1/jhatka/admin/settlements/commission-rules`),
+ * never by the partner whose payout it governs.
+ *
+ * Replaced by this read-only view of the outlet's own effective terms, read
+ * from the partner-side ledger of truth: the admin rules table (by business
+ * model) for the rate structure, plus the latest payout's frozen ruleSnapshot.
  */
-router.get('/commission-rules', moneyAuth, requireRole('manager', 'owner'), async (req, res, next) => {
+router.get('/commission-terms', moneyAuth, requireRole('manager', 'owner'), async (req, res, next) => {
   try {
-    const outlet = await JhatkaOutlet.findById(req.outletId).select('business').lean();
+    const outlet = await JhatkaOutlet.findById(req.outletId).lean();
     if (!outlet) {
       throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
     }
 
-    const rules = await JhatkaCommissionRule.find({ business: outlet.business })
-      .sort({ priority: -1, createdAt: -1 })
+    const payoutModel = outlet.businessModel === 'franchise' ? 'franchise' : 'commission_partner';
+    const activeRule = await JhatkaCommissionRule.findOne({
+      businessModel: payoutModel,
+      status: 'active',
+    })
+      .sort({ effectiveFrom: -1 })
       .lean();
 
-    res.json({
-      commissionRules: rules.map((r) => ({
-        ...r,
-        id: String(r._id),
-        business: String(r.business),
-        outlet: r.outlet ? String(r.outlet) : null,
-        variant: r.variant ? String(r.variant) : null,
-      })),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+    const lastPayout = await JhatkaOperatorPayout.findOne({ outlet: req.outletId })
+      .sort({ createdAt: -1 })
+      .select('ruleSnapshot period status')
+      .lean();
 
-/**
- * POST /jhatka/partner/commission-rules
- *
- * Create a commission rule.
- * Body: { type, rateBps, minOrderValuePaise, maxOrderValuePaise, outlet, variant, priority, validFrom, validUntil, description }
- * Role: owner only
- */
-router.post('/commission-rules', moneyAuth, requireRole('owner'), validate(V.commissionRuleBody), async (req, res, next) => {
-  try {
-    const outlet = await JhatkaOutlet.findById(req.outletId).select('business').lean();
-    if (!outlet) {
-      throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
-    }
-
-    const { type, rateBps, minOrderValuePaise, maxOrderValuePaise, outlet: ruleOutlet, variant, priority, validFrom, validUntil, description } = req.body;
-
-    if (!type || rateBps === undefined) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'type and rateBps required');
-    }
-
-    // Validate outlet if provided
-    if (ruleOutlet) {
-      const o = await JhatkaOutlet.findById(ruleOutlet);
-      if (!o || String(o.business) !== String(outlet.business)) {
-        throw new ApiError(httpStatus.FORBIDDEN, 'Outlet not in your business');
-      }
-    }
-
-    const rule = new JhatkaCommissionRule({
-      business: outlet.business,
-      type,
-      rateBps: Number(rateBps),
-      minOrderValuePaise: Number(minOrderValuePaise || 0),
-      maxOrderValuePaise: maxOrderValuePaise ? Number(maxOrderValuePaise) : null,
-      outlet: ruleOutlet || null,
-      variant: variant || null,
-      priority: Number(priority || 0),
-      validFrom: validFrom ? new Date(validFrom) : new Date(),
-      validUntil: validUntil ? new Date(validUntil) : null,
-      description,
-      createdBy: req.user._id,
-    });
-    await rule.save();
-
-    res.status(httpStatus.CREATED).json({
-      commissionRule: { id: String(rule._id), type: rule.type, rateBps: rule.rateBps },
+    return res.json({
+      businessModel: payoutModel,
+      activeRule: activeRule
+        ? {
+            code: activeRule.code,
+            name: activeRule.name,
+            basis: activeRule.basis,
+            platformFeePercent: activeRule.platformFeePercent,
+            ratePercent: activeRule.ratePercent,
+            effectiveFrom: activeRule.effectiveFrom,
+          }
+        : null,
+      lastAppliedSnapshot: lastPayout?.ruleSnapshot || null,
+      lastPayoutPeriod: lastPayout?.period || null,
     });
   } catch (error) {
     next(error);
@@ -196,133 +171,11 @@ router.get('/payouts/:id', moneyAuth, requireRole('owner'), validate(V.idParam),
   }
 });
 
-/**
- * POST /jhatka/partner/payouts/generate
- *
- * Generate payouts for a period.
- * Body: { periodStart, periodEnd, driverIds? }
- * Role: owner only
- */
-router.post('/payouts/generate', moneyAuth, requireRole('owner'), validate(V.payoutGenerateBody), async (req, res, next) => {
-  try {
-    const { periodStart, periodEnd, driverIds } = req.body;
-
-    if (!periodStart || !periodEnd) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'periodStart and periodEnd required');
-    }
-
-    const start = new Date(periodStart);
-    const end = new Date(periodEnd);
-
-    // Get drivers for this outlet
-    let drivers = await JhatkaDriver.find({
-      outlet: req.outletId,
-      status: { $in: ['active', 'on_delivery'] },
-    }).select('_id name phone vehicle').lean();
-
-    if (driverIds && driverIds.length) {
-      drivers = drivers.filter((d) => driverIds.includes(String(d._id)));
-    }
-
-    const generated = [];
-
-    for (const driver of drivers) {
-      // Find completed deliveries in period
-      const deliveries = await JhatkaDelivery.find({
-        driver: driver._id,
-        status: 'delivered',
-        deliveredAt: { $gte: start, $lte: end },
-      }).populate('order').lean();
-
-      if (!deliveries.length) continue;
-
-      let grossEarningsPaise = 0;
-      const items = [];
-
-      for (const d of deliveries) {
-        const commission = d.order.payment.driverCommissionPaise || 0;
-        grossEarningsPaise += commission;
-        items.push({
-          delivery: d._id,
-          order: d.order._id,
-          commissionPaise: commission,
-        });
-      }
-
-      // Platform fee (from commission rules or default 10%)
-      const platformFeeBps = 1000; // 10% default
-      const platformFeePaise = Math.round(grossEarningsPaise * platformFeeBps / 10000);
-      const netPayablePaise = grossEarningsPaise - platformFeePaise;
-
-      const payout = new JhatkaOperatorPayout({
-        outlet: req.outletId,
-        driver: driver._id,
-        periodStart: start,
-        periodEnd: end,
-        grossEarningsPaise,
-        platformFeePaise,
-        netPayablePaise,
-        items,
-        status: 'pending',
-        generatedBy: req.user._id,
-      });
-      await payout.save();
-      generated.push(payout);
-    }
-
-    res.status(httpStatus.CREATED).json({
-      payouts: generated.map((p) => ({
-        id: String(p._id),
-        driver: String(p.driver),
-        grossEarningsPaise: p.grossEarningsPaise,
-        platformFeePaise: p.platformFeePaise,
-        netPayablePaise: p.netPayablePaise,
-      })),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * POST /jhatka/partner/payouts/:id/pay
- *
- * Mark payout as paid.
- * Body: { paymentReference, notes }
- * Role: owner only
- */
-router.post('/payouts/:id/pay', moneyAuth, requireRole('owner'), validate(V.idParam), validate(V.payBody), async (req, res, next) => {
-  try {
-    const payout = await JhatkaOperatorPayout.findById(req.params.id);
-    if (!payout) {
-      throw new ApiError(httpStatus.NOT_FOUND, 'Payout not found');
-    }
-    if (String(payout.outlet) !== req.outletId) {
-      throw new ApiError(httpStatus.FORBIDDEN, 'Payout not in this outlet');
-    }
-    if (payout.status === 'paid') {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Payout already paid');
-    }
-
-    const { paymentReference, notes } = req.body;
-
-    payout.status = 'paid';
-    payout.paidAt = new Date();
-    payout.paidBy = req.user._id;
-    payout.paymentReference = paymentReference;
-    payout.notes = notes;
-    await payout.save();
-
-    // Update driver
-    await JhatkaDriver.findByIdAndUpdate(payout.driver, {
-      $inc: { totalEarningsPaidPaise: payout.netPayablePaise },
-    });
-
-    res.json({ payout: { id: String(payout._id), status: payout.status, paidAt: payout.paidAt } });
-  } catch (error) {
-    next(error);
-  }
-});
+// Operator payouts are generated and settled by LocalWala finance. The old
+// partner `/payouts/generate` and `/payouts/:id/pay` endpoints wrote the wrong
+// document shape (`driver`, `pending`, per-driver earnings) and let the payee
+// settle its own statement. They were removed rather than left as a second,
+// unaudited money path.
 
 /**
  * GET /jhatka/partner/payables

@@ -127,7 +127,10 @@ const checkoutQuoteBody = {
   body: Joi.object()
     .keys({
       outlet: objectId.required(),
-      address: Joi.object().unknown(true),
+      // The SAVED-address id, so the quote can price the delivery band
+      // (free ring vs paid ring) for this address. Optional: without it the
+      // quote still prices, with deliveryFee 0 and no band promise.
+      address: objectId,
     })
     .unknown(true),
 };
@@ -138,7 +141,17 @@ const orderCreateBody = {
       outlet: objectId.required(),
       items: Joi.array().min(1).required(),
       paymentMode: Joi.string().valid('gateway', 'cod'),
-      address: Joi.object().unknown(true),
+      // OD-12: allow-listed a second time here even though `.unknown(true)`
+      // would pass it through — the checkout contract deserves to be explicit.
+      fulfilmentMode: Joi.string().valid('delivery', 'pickup'),
+      // The SAVED-address id, not an inline object: the service resolves it
+      // against UserAddress scoped by the token's user. Used to be typed
+      // Joi.object(), which rejected every real request — invisible because the
+      // delivery path was never exercised (the suite placed pickup orders).
+      address: objectId,
+      // Optional cart id. The order route empties this cart after a successful
+      // placement, filtered by customer + outlet, so a foreign id clears nothing.
+      cart: objectId,
     })
     .unknown(true),
 };

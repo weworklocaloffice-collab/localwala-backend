@@ -155,4 +155,7 @@ chainProductVariantSchema.statics.findByProduct = async function (productId) {
   return this.find({ product: productId, status: 'active' }).sort({ name: 1 });
 };
 
+chainProductVariantSchema.index({ product: 1, status: 1 });
+chainProductVariantSchema.index({ product: 1, facetKeys: 1 });
+
 module.exports = mongoose.model('ChainProductVariant', chainProductVariantSchema);

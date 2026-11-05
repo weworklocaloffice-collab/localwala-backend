@@ -136,21 +136,19 @@ const adjustStock = async ({ outlet, chain, variant, product, type, quantity, re
 // matches when the cached availableQty (or allowNegativeStock) allows the
 // quantity, so two parallel reserve calls cannot both pass a shared balance.
 // `availableQty` is kept consistent arithmetically: +reserved => -availableQty.
-const reserveStock = async ({ outlet, chain, variant, product, order, quantity, expiresAt }) => {
+const reserveStock = async ({ outlet, chain, variant, product, order, quantity, expiresAt, session = null }) => {
   const StoreOutletStockItem = mongoose.model('StoreOutletStockItem');
   const StoreStockReservation = mongoose.model('StoreStockReservation');
 
-  // 1. Claim the reservation first. The unique (order, variant) index makes a
-  //    parallel double-reserve a no-op instead of a double increment.
   let reservation;
   try {
-    reservation = await StoreStockReservation.create({
+    reservation = await StoreStockReservation.create([{
       outlet, chain, variant, product, order, quantity, status: 'held', expiresAt,
-    });
+    }], session ? { session } : {}).then(r => r[0]);
   } catch (e) {
     if (e.code === 11000) {
-      const existing = await StoreStockReservation.findOne({ order, variant });
-      if (existing) return { item: await StoreOutletStockItem.findOne({ outlet, variant }), reservation: existing };
+      const existing = await StoreStockReservation.findOne({ order, variant }).session(session);
+      if (existing) return { item: await StoreOutletStockItem.findOne({ outlet, variant }).session(session), reservation: existing };
       throw e;
     }
     throw e;
@@ -164,15 +162,14 @@ const reserveStock = async ({ outlet, chain, variant, product, order, quantity, 
       $or: [{ allowNegativeStock: true }, { availableQty: { $gte: quantity } }],
     },
     { $inc: { reserved: quantity, availableQty: -quantity, movementSeq: 1 } },
-    { new: true }
+    { new: true, session }
   );
 
   if (!item) {
-    // Stock moved between the claim and the update (or never existed).
     await StoreStockReservation.updateOne({ _id: reservation._id }, {
       status: 'released', releasedAt: new Date(), releasedReason: 'manual',
-    });
-    const probe = await StoreOutletStockItem.findOne({ outlet, variant }).select('availableQty allowNegativeStock');
+    }, session ? { session } : {});
+    const probe = await StoreOutletStockItem.findOne({ outlet, variant }).select('availableQty allowNegativeStock').session(session);
     if (!probe) throw new ApiError(httpStatus.NOT_FOUND, 'Stock item not found');
     throw new ApiError(httpStatus.CONFLICT, `INSUFFICIENT_STOCK: available ${probe.availableQty}, requested ${quantity}`);
   }
@@ -284,6 +281,125 @@ const getMovements = async ({ outlet, variant, limit = 50 }) => {
   return StoreInventoryMovement.find(filter).sort({ createdAt: -1 }).limit(limit).lean();
 };
 
+/**
+ * §6.5: the reconciliation sweep.
+ *
+ * `availableQty` guards oversell in the QUERY (see `reserveStock` above), so a drifted
+ * cached number is not a display bug — it is either a phantom oversell block or a
+ * silent oversell window. Drift has two reachable causes: a release whose
+ * `reserved: { $gte: quantity }` guard lost the race, or a cron release that ran while
+ * the item row was in a different state.
+ *
+ * This sweep realigns `reserved` to the LIVE sum of held reservations, downward only:
+ * downward repair can never sell the same unit twice, because live holds still lower
+ * the sellable count. Raising `reserved` toward a larger hold sum is NOT automatic —
+ * a held reservation promises stock to a customer and silently raising it may
+ * double-book a unit; those rows are reported instead.
+ */
+const reconcileStock = async ({ performedBy, performedByName = 'system-cron' } = {}) => {
+  const StoreOutletStockItem = mongoose.model('StoreOutletStockItem');
+  const StoreStockReservation = mongoose.model('StoreStockReservation');
+
+  const held = await StoreStockReservation.aggregate([
+    { $match: { status: 'held' } },
+    { $group: {
+      _id: { outlet: '$outlet', variant: '$variant' },
+      qty: { $sum: '$quantity' },
+      holds: { $sum: 1 },
+    } },
+  ]);
+  const heldMap = new Map(held.map((heldRow) => [`${heldRow._id.outlet}|${heldRow._id.variant}`, heldRow]));
+
+  const items = await StoreOutletStockItem.find({})
+    .select('outlet chain variant product onHand reserved damaged availableQty allowNegativeStock')
+    .lean();
+
+  const summary = {
+    scanned: items.length,
+    heldGroups: held.length,
+    corrected: [],
+    uncorrectable: [],
+  };
+
+  for (const item of items) {
+    const key = `${String(item.outlet)}|${String(item.variant)}`;
+    const heldRow = heldMap.get(key);
+    if (heldRow) heldMap.delete(key);
+
+    const heldQty = heldRow ? heldRow.qty : 0;
+    const expectedAvailable = item.onHand - heldQty - item.damaged;
+
+    if (item.reserved === heldQty && item.availableQty === expectedAvailable) continue;
+
+    if (item.reserved > heldQty) {
+      // Auto-repair downward: these reserved units have no live hold behind them.
+      await StoreOutletStockItem.updateOne(
+        { _id: item._id },
+        { $set: { reserved: heldQty, availableQty: expectedAvailable }, $inc: { movementSeq: 1 } }
+      );
+      await logMovement({
+        outlet: item.outlet,
+        chain: item.chain,
+        variant: item.variant,
+        product: item.product,
+        type: 'RECONCILED',
+        reservedDelta: heldQty - item.reserved,
+        onHandAfter: item.onHand,
+        reservedAfter: heldQty,
+        damagedAfter: item.damaged,
+        reason: 'Reconciliation: reserved count exceeded live holds',
+        referenceType: 'system',
+        movementSeq: (item.movementSeq || 0) + 1,
+        performedBy,
+        performedByName,
+      });
+      summary.corrected.push({
+        outlet: item.outlet,
+        variant: item.variant,
+        reserved: { from: item.reserved, to: heldQty },
+        availableQty: { from: item.availableQty, to: expectedAvailable },
+      });
+      continue;
+    }
+
+    if (item.reserved < heldQty) {
+      // Refusing to auto-raise: raising could double-book stock against live holds.
+      summary.uncorrectable.push({
+        outlet: item.outlet,
+        variant: item.variant,
+        reserved: item.reserved,
+        heldQty,
+        reason: 'reserved_lower_than_live_holds',
+      });
+      continue;
+    }
+
+    // reserved agrees; only the cached availability arithmetic drifted.
+    await StoreOutletStockItem.updateOne(
+      { _id: item._id },
+      { $set: { availableQty: expectedAvailable } }
+    );
+    summary.corrected.push({
+      outlet: item.outlet,
+      variant: item.variant,
+      availableQty: { from: item.availableQty, to: expectedAvailable },
+    });
+  }
+
+  // Live holds pointing at no stock row at all: unrepaired by definition, reported.
+  for (const [key, heldRow] of heldMap) {
+    const [outletId, variantId] = key.split('|');
+    summary.uncorrectable.push({
+      outlet: outletId,
+      variant: variantId,
+      heldQty: heldRow.qty,
+      reason: 'holds_without_stock_item',
+    });
+  }
+
+  return summary;
+};
+
 module.exports = {
   adjustStock,
   reserveStock,
@@ -292,5 +408,6 @@ module.exports = {
   getStockForOutlet,
   getLowStockItems,
   getMovements,
+  reconcileStock,
   recalculateAvailable,
 };

@@ -75,6 +75,12 @@ const listReturns = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(result);
 });
 
+const listExchanges = catchAsync(async (req, res) => {
+  const filter = pick(req.query, ['status', 'page', 'limit']);
+  const result = await returnService.listExchanges({ ...filter, outlet: req.outletId });
+  res.status(httpStatus.OK).send(result);
+});
+
 module.exports = {
   createReturnRequest,
   transitionReturn,
@@ -83,4 +89,5 @@ module.exports = {
   transitionExchange,
   getReturnRequest,
   listReturns,
+  listExchanges,
 };

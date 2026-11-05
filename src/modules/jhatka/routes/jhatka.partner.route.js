@@ -28,11 +28,12 @@
 const express = require('express');
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
-const { jhatkaScope, jhatkaAuth, requireActiveOutlet, requireComplianceCurrent } = require('../middlewares/jhatka.tenant');
+const appAuth = require('../../../middlewares/appAuth');
+const { jhatkaScope, jhatkaAuth, requireActiveOutlet } = require('../middlewares/jhatka.tenant');
 const profileService = require('../services/jhatka.profile.service');
+const profileController = require('../controllers/jhatka.profile.controller');
 const {
   JhatkaOutlet,
-  JhatkaCompliance,
   JhatkaSubscription,
   JhatkaOrder,
   JhatkaDriver,
@@ -51,8 +52,30 @@ const dispatchService = require('../services/jhatka.dispatch.service');
 const priceOverrideService = require('../services/jhatka.price-override.service');
 const validate = require('../../../middlewares/validate');
 const V = require('../validations/jhatka.partner.validation');
+const authV = require('../validations/jhatka.auth.validation');
 
 const router = express.Router();
+
+/**
+ * Profile is shared by partners and riders, and neither has an outlet yet at
+ * this point - `appAuth` checks the platform right, not tenancy. Mounted under
+ * the partner surface because §15.2 has no shared actor prefix; the URL is not
+ * an authorisation boundary, the right is.
+ */
+router.get('/profile/me', appAuth('jhatka_profile'), profileController.profileMe);
+
+router.get(
+  '/profile/available_roles',
+  appAuth('jhatka_available_roles'),
+  profileController.availableRoles
+);
+
+router.patch(
+  '/profile/switch_role',
+  appAuth('jhatka_switch_role'),
+  validate(authV.switchRoleBody),
+  profileController.switchRole
+);
 
 /**
  * POST /jhatka/partner/outlets
@@ -72,8 +95,6 @@ router.post('/outlets', jhatkaScope(), async (req, res, next) => {
       .lean();
 
     const now = new Date();
-     
-    const { deriveComplianceStatus } = require('../utils/compliance.arithmetic');
     const Compliance = require('../../../models').JhatkaCompliance;
 
     const complianceByOutlet = await Compliance.find({ outlet: { $in: req.permittedOutletIds } })
@@ -184,14 +205,18 @@ router.post('/session/outlet', jhatkaAuth(), validate(V.sessionOutletBody), asyn
 router.get('/scope', jhatkaScope(), async (req, res, next) => {
   try {
     const scope = await profileService.resolveActorScope(req.user._id);
+    const groups = Object.entries(scope.groups || {}).flatMap(([outletId, roles]) =>
+      (Array.isArray(roles) ? roles : [roles]).map((role) => ({
+        outletId: String(outletId),
+        role,
+        isPrimary: String(scope.assignment?.outlet || '') === String(outletId),
+      }))
+    );
+
     res.json({
       permittedOutletIds: (scope.permittedOutletIds || []).map(String),
       role: scope.role,
-      groups: (scope.groups || []).map((g) => ({
-        outletId: String(g.outletId),
-        role: g.role,
-        isPrimary: g.isPrimary,
-      })),
+      groups,
       isDriver: scope.isDriver === true,
       driver: scope.driver ? {
         id: String(scope.driver._id),

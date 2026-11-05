@@ -23,9 +23,16 @@ const appAuth = require('../../../middlewares/appAuth');
 const controller = require('../controllers/stores.controller');
 const V = require('../validations/stores.validation');
 const { storeAuth, storeAuthSuspendedOk, storeScope, requireRole } = require('../middlewares/stores.tenant');
+const { storesLimiter } = require('../../../middlewares/rateLimiter');
 const { assertCan } = require('../services/stores.profile.service');
 
 const router = express.Router();
+
+// Rate-limit all mutation methods (POST/PATCH/PUT/DELETE) under /v1/stores.
+router.use((req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  return storesLimiter(req, res, next);
+});
 
 /**
  * Partner and applicant routes.

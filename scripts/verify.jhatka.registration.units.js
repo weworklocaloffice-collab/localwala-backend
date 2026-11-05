@@ -208,7 +208,9 @@ const preExisting = registered.length - jhatkaRegistered.length;
 const jhatkaExported = Object.keys(models).filter((k) => k.startsWith('Jhatka'));
 
 console.log('-- counts --');
-const JHATKA_MODEL_COUNT = 45;
+// 45 → 47: + JhatkaSupplyRequest and JhatkaPartnerLedger (OD-12 companion, supply flow).
+// 47 → 48: + JhatkaAreaChangeRequest (partner-proposed delivery-area changes).
+const JHATKA_MODEL_COUNT = 48;
 ok(`${JHATKA_MODEL_COUNT} jhatka models are registered in mongoose`,
    jhatkaRegistered.length === JHATKA_MODEL_COUNT, String(jhatkaRegistered.length));
 ok(`${JHATKA_MODEL_COUNT} jhatka models are exported from models/index.js`,
@@ -233,6 +235,8 @@ const JHATKA_REQUIRED_EXPORTS = [
   'JhatkaCommissionRule', 'JhatkaOperatorPayout', 'JhatkaSupplierPayable', 'JhatkaSettlement',
   'JhatkaCompliance', 'JhatkaComplaint', 'JhatkaReview', 'JhatkaPromotion',
   'JhatkaSettings',
+  'JhatkaSupplyRequest', 'JhatkaPartnerLedger',
+  'JhatkaAreaChangeRequest',
 ];
 const absentExports = JHATKA_REQUIRED_EXPORTS.filter((k) => !jhatkaExported.includes(k));
 ok(`all ${JHATKA_REQUIRED_EXPORTS.length} expected jhatka exports are present`,

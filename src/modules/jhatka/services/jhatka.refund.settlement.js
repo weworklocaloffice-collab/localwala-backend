@@ -39,6 +39,9 @@
  * outcome FAILED and then retrying with a fresh key is how a customer is refunded twice.
  */
 
+const { status: httpStatus } = require('http-status');
+
+const ApiError = require('../../../utils/ApiError');
 const gateway = require('./jhatka.refund.gateway');
 const { toPaiseAmount, asMoney } = require('../utils/money');
 const lifecycleService = require('./jhatka.order-lifecycle.service');
@@ -104,7 +107,7 @@ function settleRoute(refund, { collectionKind }) {
  * The sync is best-effort BY DESIGN: a failure to move the order must never un-settle
  * the refund. Money moved is a fact; lifecycle is a view of the fact.
  */
-async function settleRefund(refund, { collectionKind, client, models } = {}) {
+async function settleRefund(refund, { collectionKind, transport, credentials, environment, models } = {}) {
   const sync = async () => {
     if (!models || !refund.order) return;
     try {
@@ -118,13 +121,6 @@ async function settleRefund(refund, { collectionKind, client, models } = {}) {
 
   if (refund.status === 'REFUNDED' || refund.status === 'REVERSED') {
     await sync();
-    return refund; // already settled; nothing to do
-  }
-
-  if (refund.status === 'FAILED' && (refund.attempts || 0) >= MAX_ATTEMPTS) {
-    return refund; // parked for a human
-  }
-  if (refund.status === 'REFUNDED' || refund.status === 'REVERSED') {
     return refund; // already settled; nothing to do
   }
 
@@ -182,13 +178,26 @@ async function settleRefund(refund, { collectionKind, client, models } = {}) {
   await refund.save();
 
   try {
+    // Credentials come from the SAME PaymentConfig row that took the payment, read
+    // now so a rotated key is used and no secret is ever copied onto the refund.
+    // Explicit credentials are only for tests; production always resolves from the DB.
+    let gatewayCredentials = credentials;
+    let gatewayEnvironment = environment;
+    if (!gatewayCredentials && models) {
+      const resolved = await resolveGatewayCredentials({ models, orderId: refund.order });
+      gatewayCredentials = resolved.credentials;
+      gatewayEnvironment = resolved.environment;
+    }
+
     const result = await gateway.refundPayment({
       gateway: provider,
       gatewayPaymentId: paymentId,
       amountPaise: toPaiseAmount(refund.amount),
       idempotencyKey,
       reason: refund.reason,
-      client,
+      credentials: gatewayCredentials,
+      environment: gatewayEnvironment,
+      transport,
     });
 
     refund.gatewayRefundId = result.gatewayRefundId;
@@ -207,7 +216,10 @@ async function settleRefund(refund, { collectionKind, client, models } = {}) {
     // A TIMEOUT is not a refusal. The provider may well have taken the money. Marking
     // it FAILED invites a fresh-key retry that pays twice, so it stays PROCESSING and
     // the next sweep re-issues with the SAME idempotency key.
-    const isUnknown = isTimeoutError(error);
+    //
+    // A 409 is the same story: Razorpay answers 409 while a previous request with the
+    // same idempotency key is still being processed. Retrying is explicitly allowed.
+    const isUnknown = isTimeoutError(error) || error.status === 409;
 
     refund.status = isUnknown ? 'PROCESSING' : 'FAILED';
     refund.failureReason = isUnknown
@@ -242,13 +254,48 @@ async function settleRefund(refund, { collectionKind, client, models } = {}) {
  */
 function isTimeoutError(error) {
   if (!error) return false;
-  const code = error.code || error.statusCode || error.type;
+  const code = error.code || error.statusCode || error.status || error.type;
   const msg = String(error.message || '').toLowerCase();
 
   if (['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 504].includes(code)) {
     return true;
   }
   return /timeout|timed out|socket hang up|network|unavailable|econn/.test(msg);
+}
+
+/**
+ * Load the gateway credentials from the payment's own `PaymentConfig` row.
+ *
+ * The refund document keeps the audit trail (slug + charge id) stamped at raise
+ * time, but the secrets are deliberately NOT copied onto it. They are re-read when
+ * money moves, which also picks up a rotated key without a migration.
+ *
+ * Returns `{}` when there is nothing to resolve (no order/initiation/config); the
+ * adapter then falls back to env where it can, or fails with an actionable
+ * `GATEWAY_NOT_CONFIGURED` error instead of a missing-module stack trace.
+ *
+ * @returns {Promise<{credentials?: object, environment?: boolean}>}
+ */
+async function resolveGatewayCredentials({ models, orderId }) {
+  const { JhatkaOrder, PaymentInitiation, PaymentConfig } = models || {};
+  if (!JhatkaOrder || !PaymentInitiation || !PaymentConfig || !orderId) return {};
+
+  const order = await JhatkaOrder.findById(orderId).select('payment').lean();
+  if (!order || !order.payment) return {};
+
+  const initiation = await PaymentInitiation.findById(order.payment).select('payment').lean();
+  if (!initiation || !initiation.payment) return {};
+
+  // A disabled config must still be able to refund: money already moved through it.
+  const config = await PaymentConfig.findById(initiation.payment)
+    .select('credentials environment')
+    .lean();
+  if (!config) return {};
+
+  return {
+    credentials: config.credentials || undefined,
+    environment: config.environment,
+  };
 }
 
 /**
@@ -306,12 +353,16 @@ async function resolveRefundGateway({ models, order }) {
     ? initiation.payResponse
     : {};
 
-  const gatewayPaymentId =
-    body.id ||
-    body.razorpay_payment_id ||
-    body.payment_id ||
-    body.charge ||
-    null;
+  const gatewayPaymentId = gateway === 'cashfree'
+    // Cashfree refunds are addressed by ORDER id; `id` may be a link id, so it is
+    // only a last resort and never preferred over `order_id`.
+    ? body.order_id || body.orderId || body.id || null
+    : body.id ||
+      body.razorpay_payment_id ||
+      body.payment_id ||
+      body.charge ||
+      body.order_id ||
+      null;
 
   return {
     gateway,
@@ -398,6 +449,7 @@ async function syncOrderRefundState({ models, orderId } = {}) {
 
     if (moved.moved) {
       await notifyService.notifyCustomer(order.customer, 'order_refund_completed', {
+        orderId: String(order._id),
         orderNo: order.orderNo,
       });
     }
@@ -556,7 +608,7 @@ async function processRefundQueue({ models, collectionKindFor, limit = 25 }) {
         ],
       },
       { $set: { status: 'PROCESSING' } },
-      { sort: { createdAt: 1 }, new: true }
+      { sort: { createdAt: 1 }, returnDocument: 'after' }
     );
 
     if (!claimed) break;
@@ -577,6 +629,210 @@ async function processRefundQueue({ models, collectionKindFor, limit = 25 }) {
   return { processed: processed.length, settled, failed };
 }
 
+/**
+ * Derive the settlement route from the ORDER, not from the refund.
+ *
+ * A refund's own `fundingSource` says who bears the loss, not whether money was ever
+ * collected. The order's payment mode is the only reliable source. Returns null when
+ * the order is missing so callers do not default a deleted gateway order to "credit"
+ * and mark money as returned when it never moved.
+ *
+ * @returns {Promise<'online'|'cod'|'none'|null>}
+ */
+async function collectionKindForRefund({ models, refund } = {}) {
+  const { JhatkaOrder } = models || {};
+  if (!JhatkaOrder || !refund?.order) return null;
+
+  const order = await JhatkaOrder.findById(refund.order).select('paymentMode').lean();
+  if (!order) return null;
+  if (order.paymentMode === 'gateway') return 'online';
+  if (order.paymentMode === 'cod') return 'cod';
+  return 'none';
+}
+
+/**
+ * Retry a refund that has failed or is stuck PROCESSING.
+ *
+ * This is deliberately NOT a fresh refund: the same document and therefore the same
+ * provider idempotency key are reused. Resetting `attempts` only lifts the automatic
+ * parking brake; it must never let a second payment be created for the first one.
+ *
+ * Only an operator with settlement-write rights reaches this function. That is a
+ * human decision because a parked refund means either the provider refused or the
+ * data is incomplete, and the right answer differs case by case.
+ *
+ * @returns {Promise<object>} the updated refund document
+ */
+async function retryRefund({
+  models, refundId, actor, note, transport, credentials, environment,
+} = {}) {
+  const { JhatkaRefund } = models || {};
+  if (!JhatkaRefund || !refundId) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'refundId is required');
+  }
+
+  const existing = await JhatkaRefund.findById(refundId)
+    .select('status attempts parkedAt order')
+    .lean();
+  if (!existing) throw new ApiError(httpStatus.NOT_FOUND, 'Refund not found');
+
+  if (!['FAILED', 'PROCESSING'].includes(existing.status)) {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      `Refund is ${existing.status}; only a FAILED or stuck PROCESSING refund can be retried`,
+      true,
+      '',
+      { code: 'REFUND_NOT_RETRYABLE', status: existing.status }
+    );
+  }
+
+  const collectionKind = await collectionKindForRefund({ models, refund: existing });
+  if (!collectionKind) {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      'The refund order is missing; its collection route cannot be determined. Resolve this refund manually with a reference.',
+      true,
+      '',
+      { code: 'REFUND_ORDER_MISSING' }
+    );
+  }
+
+  const retryAt = new Date();
+  const refund = await JhatkaRefund.findOneAndUpdate(
+    { _id: refundId, status: { $in: ['FAILED', 'PROCESSING'] } },
+    {
+      $set: {
+        status: 'PROCESSING',
+        attempts: 0,
+        parkedAt: null,
+        lastAttemptAt: retryAt,
+      },
+      $push: {
+        timeline: {
+          status: 'PROCESSING',
+          at: retryAt,
+          by: actor?._id,
+          byName: actor?.name || 'admin',
+          note: note
+            ? `Operator retry requested: ${note}`
+            : 'Operator retry requested; attempt counter reset',
+        },
+      },
+    },
+    { new: true }
+  );
+
+  if (!refund) {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      'Refund changed while the retry was being claimed; reload and try again',
+      true,
+      '',
+      { code: 'REFUND_RETRY_RACE' }
+    );
+  }
+
+  return settleRefund(refund, {
+    collectionKind, transport, credentials, environment, models,
+  });
+}
+
+/**
+ * Close a FAILED refund that finance settled outside the automatic gateway queue.
+ *
+ * This is the escape hatch for the real-world case the 03:30 sweep cannot solve: a
+ * provider dashboard refund, a bank transfer, or a provider that is simply not
+ * programmed. It intentionally accepts only FAILED rows — a PROCESSING row may be
+ * mid-flight at the provider, and marking it paid could pay twice.
+ *
+ * A reference is mandatory and is stored separately from `gatewayRefundId`, so an
+ * audit can tell a provider refund from a manual one. The operator and their note are
+ * appended to the timeline; a manual close without a human is not possible.
+ *
+ * @returns {Promise<object>} the updated refund document
+ */
+async function resolveRefundManually({
+  models, refundId, actor, paymentReference, note,
+} = {}) {
+  const { JhatkaRefund } = models || {};
+  if (!JhatkaRefund || !refundId) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'refundId is required');
+  }
+
+  const reference = String(paymentReference || '').trim();
+  if (reference.length < 3) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'paymentReference is required (at least 3 characters)',
+      true,
+      '',
+      { code: 'REFERENCE_REQUIRED' }
+    );
+  }
+
+  const resolutionNote = String(note || '').trim();
+  if (resolutionNote.length < 5) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'A note of at least 5 characters is required to close a refund manually',
+      true,
+      '',
+      { code: 'RESOLUTION_NOTE_REQUIRED' }
+    );
+  }
+
+  const now = new Date();
+  const refund = await JhatkaRefund.findOneAndUpdate(
+    { _id: refundId, status: 'FAILED' },
+    {
+      $set: {
+        status: 'REFUNDED',
+        settlementRoute: 'manual',
+        manualReference: reference,
+        settledAt: now,
+        settledBy: actor?._id,
+        settledByName: actor?.name || 'admin',
+        parkedAt: null,
+      },
+      $push: {
+        timeline: {
+          status: 'REFUNDED',
+          at: now,
+          by: actor?._id,
+          byName: actor?.name || 'admin',
+          note: `Manual settlement ${reference}: ${resolutionNote}`,
+        },
+      },
+    },
+    { new: true }
+  );
+
+  if (!refund) {
+    const existing = await JhatkaRefund.findById(refundId).select('status').lean();
+    if (!existing) throw new ApiError(httpStatus.NOT_FOUND, 'Refund not found');
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      `Refund is ${existing.status}; only a FAILED refund can be closed manually`,
+      true,
+      '',
+      { code: 'REFUND_NOT_MANUALLY_RESOLVABLE', status: existing.status }
+    );
+  }
+
+  if (refund.order) {
+    try {
+      await syncOrderRefundState({ models, orderId: refund.order });
+    } catch (error) {
+      // Money being recorded as returned is the fact; the order lifecycle is a view.
+      console.error(
+        `[jhatka.refund] manually settled ${refund._id} but could not sync order ${refund.order}: ${error.message}`
+      );
+    }
+  }
+
+  return refund;
+}
+
 module.exports = {
   settleRefund,
   processRefundQueue,
@@ -584,6 +840,10 @@ module.exports = {
   isTimeoutError,
   MAX_ATTEMPTS,
   resolveRefundGateway,
+  resolveGatewayCredentials,
   syncOrderRefundState,
   raiseOrderRefund,
+  collectionKindForRefund,
+  retryRefund,
+  resolveRefundManually,
 };

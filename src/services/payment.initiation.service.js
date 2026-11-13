@@ -86,6 +86,22 @@ const initiatePayment = async (param) => {
       param && param.localServiceBooking && param.localServiceBooking !== null && param.localServiceBooking !== ''
         ? param.localServiceBooking
         : null,
+    localServiceCampaignId:
+      param && param.localServiceCampaignId && param.localServiceCampaignId !== null && param.localServiceCampaignId !== ''
+        ? param.localServiceCampaignId
+        : null,
+    localServiceCampaign:
+      param && param.localServiceCampaign && param.localServiceCampaign !== null && param.localServiceCampaign !== ''
+        ? param.localServiceCampaign
+        : null,
+    localServiceSubscriptionId:
+      param && param.localServiceSubscriptionId && param.localServiceSubscriptionId !== null && param.localServiceSubscriptionId !== ''
+        ? param.localServiceSubscriptionId
+        : null,
+    localServiceSubscription:
+      param && param.localServiceSubscription && param.localServiceSubscription !== null && param.localServiceSubscription !== ''
+        ? param.localServiceSubscription
+        : null,
     // Jhatka subjects. Additive only: every existing caller leaves these undefined
     // and is unaffected. Jhatka writes these rows through
     // modules/jhatka/services/jhatka.payment.service (the stores pattern), so the
@@ -101,6 +117,14 @@ const initiatePayment = async (param) => {
     jhatkaSubscription:
       param && param.jhatkaSubscription && param.jhatkaSubscription !== null && param.jhatkaSubscription !== ''
         ? param.jhatkaSubscription
+        : null,
+    dairyCampaign:
+      param && param.dairyCampaign && param.dairyCampaign !== null && param.dairyCampaign !== ''
+        ? param.dairyCampaign
+        : null,
+    dairyFranchise:
+      param && param.dairyFranchise && param.dairyFranchise !== null && param.dairyFranchise !== ''
+        ? param.dairyFranchise
         : null,
     paymentRef: param && param.ref && param.ref !== null && param.ref !== '' ? param.ref : '',
     amount:
@@ -199,6 +223,12 @@ const paymentInfo = async (id) => {
         storeSubscriptionPayment: 1,
         localServiceBookingId: 1,
         localServiceBooking: 1,
+        localServiceCampaignId: 1,
+        localServiceCampaign: 1,
+        localServiceSubscriptionId: 1,
+        localServiceSubscription: 1,
+        dairyCampaign: 1,
+        dairyFranchise: 1,
         from: 1,
         redirect: 1,
       },

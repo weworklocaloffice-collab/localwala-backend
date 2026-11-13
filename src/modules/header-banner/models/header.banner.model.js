@@ -519,6 +519,12 @@ const headerBannerSchema = mongoose.Schema(
       required: false,
       default: null,
     },
+    vertical: {
+      type: String,
+      required: false,
+      default: null,
+      trim: true,
+    },
     // Lower number wins. Single winner, so the app bar always has exactly one
     // colour to paint.
     priority: {

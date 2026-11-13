@@ -274,6 +274,7 @@ app.get('/', (req, res) => {
   `);
 });
 
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() }));
 app.use('/v1', routes);
 
 // Payment Views //

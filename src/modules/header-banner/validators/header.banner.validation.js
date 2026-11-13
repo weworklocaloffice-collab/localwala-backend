@@ -112,6 +112,7 @@ const bannerFields = {
   repeat: Joi.string().allow(null, ''),
 
   city: Joi.string().custom(objectId).allow(null, ''),
+  vertical: Joi.string().allow(null, ''),
   priority: Joi.number().integer().allow(null, ''),
   status: Joi.boolean().allow(null, ''),
   isActive: Joi.boolean().allow(null, ''),

@@ -447,17 +447,21 @@ const run = async () => {
       password: 'Queueapp@123',
       role: 'dairyPartner',
       businessName: `Queue Outlet ${stamp}`,
-      businessModel: 'direct',
-      address: '12 Test Lane',
+      requestedBusinessModel: 'commission_partner',
       city: city._id,
       locality: locality._id,
-      ownDeliveryPartner: false,
     });
     check('the applicant is created by the real registration service',
       Boolean(registration && registration.business), JSON.stringify(registration).slice(0, 120));
+    check('registration leaves the physical address and map pin for post-approval setup',
+      Boolean(registration && registration.business && !registration.business.address && !registration.business.location?.coordinates?.length));
 
     const applicantBusiness = registration && registration.business ? registration.business._id : null;
     check('registration returns the business', Boolean(applicantBusiness));
+    check('self-registration leaves the final model unassigned',
+      Boolean(registration && registration.business && !registration.business.businessModel));
+    check('registration stores the requested model separately',
+      registration && registration.request && registration.request.requestedBusinessModel === 'commission_partner');
     if (applicantBusiness) {
       // Tracked so the queue test leaves nothing behind.
       created.businesses.push(applicantBusiness);
@@ -492,6 +496,8 @@ const run = async () => {
 
     const approvedBusiness = await Business.findById(applicantBusiness);
     check('the outlet is now verified', approvedBusiness && approvedBusiness.verified === true);
+    check('approval does not copy a registration address or pin onto the outlet',
+      approvedBusiness && !approvedBusiness.address && !approvedBusiness.location?.coordinates?.length);
 
     res = await request('GET', '/v1/dairy/admin/joining-requests?status=pending', { token });
     const stillQueued = (res.body && res.body.results ? res.body.results : []).find(

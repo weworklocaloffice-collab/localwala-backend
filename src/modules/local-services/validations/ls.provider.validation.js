@@ -21,11 +21,19 @@ const { objectId: objectIdCustom } = require('../../../validations/custom.valida
 
 const objectId = Joi.string().custom(objectIdCustom);
 
+const gstin = Joi.string()
+  .uppercase()
+  .pattern(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/)
+  .allow('', null);
+const stateCode = Joi.string().pattern(/^\d{2}$/).allow('', null);
+
 const providerBody = {
   body: Joi.object()
     .keys({
       businessName: Joi.string().max(200).required(),
       businessAddress: Joi.string().max(500).allow('', null),
+      gstin,
+      stateCode,
       contactName: Joi.string().max(200).allow('', null),
       contactPhone: Joi.string().max(20).allow('', null),
       providerType: Joi.string().valid('independent', 'business', 'salon', 'hotel', 'rental', 'trainer', 'multi_location'),
@@ -40,6 +48,8 @@ const updateProviderBody = {
     .keys({
       businessName: Joi.string().max(200),
       businessAddress: Joi.string().max(500).allow('', null),
+      gstin,
+      stateCode,
       contactName: Joi.string().max(200).allow('', null),
       contactPhone: Joi.string().max(20).allow('', null),
       providerType: Joi.string().valid('independent', 'business', 'salon', 'hotel', 'rental', 'trainer', 'multi_location'),
@@ -54,6 +64,7 @@ const offeringBody = {
     .keys({
       service: objectId.required(),
       variant: objectId.allow(null),
+      image: Joi.string().max(1000).allow('', null),
       price: Joi.number().min(0).max(10000000).required(),
       durationMinutes: Joi.number().min(0),
     })
@@ -64,6 +75,7 @@ const updateOfferingBody = {
   params: Joi.object().keys({ id: objectId.required() }),
   body: Joi.object()
     .keys({
+      image: Joi.string().max(1000).allow('', null),
       price: Joi.number().min(0).max(10000000),
       durationMinutes: Joi.number().min(0),
     })

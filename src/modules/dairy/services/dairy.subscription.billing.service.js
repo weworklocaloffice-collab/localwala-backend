@@ -63,6 +63,7 @@ const canService = require('./dairy.can.service');
 const deliveryHooks = require('../../../kernel/delivery/delivery.hooks');
 const { toPaise, debitMoneyField, creditMoneyField } = require('../../../utils/money');
 const logger = require('../../../config/logger');
+const dairyInventoryLotService = require('./dairy.inventory.lot.service');
 
 const nextOrderNo = async () => {
   const latest = await DairyOrder.findOne().sort({ orderNo: -1 }).select('orderNo');
@@ -91,17 +92,43 @@ const recordHistory = async (order, param) => {
  * @returns {Promise<boolean>} whether the stock was taken
  */
 const reserveOccurrenceStock = async (occurrence) => {
-  const result = await DairySku.updateOne(
-    { _id: occurrence.sku, availableQty: { $gte: occurrence.quantity } },
-    { $inc: { availableQty: -occurrence.quantity } }
-  );
-
-  if (result.matchedCount === 0) {
-    return false;
+  let reservation;
+  try {
+    reservation = await dairyInventoryLotService.reserveSkuStock({
+      skuId: occurrence.sku,
+      businessId: occurrence.business,
+      quantity: occurrence.quantity,
+      sourceType: 'recurring_order',
+      sourceId: occurrence._id,
+      actorId: occurrence.user,
+      requiredThrough: (() => {
+        const deliveryDate = new Date(occurrence.occurrenceDate);
+        deliveryDate.setUTCHours(23, 59, 59, 999);
+        return deliveryDate;
+      })(),
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.statusCode === httpStatus.BAD_REQUEST) return false;
+    throw error;
   }
 
   occurrence.stockReserved = true;
-  await occurrence.save();
+  occurrence.inventoryLotAllocations = reservation.allocations;
+  try {
+    await occurrence.save();
+  } catch (error) {
+    await dairyInventoryLotService.releaseSkuStock({
+      skuId: occurrence.sku,
+      businessId: occurrence.business,
+      quantity: occurrence.quantity,
+      allocations: reservation.allocations,
+      sourceType: 'recurring_order',
+      sourceId: occurrence._id,
+      actorId: occurrence.user,
+      reason: 'Recurring delivery reservation compensation.',
+    });
+    throw error;
+  }
   return true;
 };
 
@@ -118,12 +145,19 @@ const releaseOccurrenceStock = async (occurrence) => {
     return false;
   }
 
-  await DairySku.updateOne(
-    { _id: occurrence.sku },
-    { $inc: { availableQty: occurrence.quantity } }
-  );
+  await dairyInventoryLotService.releaseSkuStock({
+    skuId: occurrence.sku,
+    businessId: occurrence.business,
+    quantity: occurrence.quantity,
+    allocations: occurrence.inventoryLotAllocations || [],
+    sourceType: 'recurring_order',
+    sourceId: occurrence._id,
+    actorId: occurrence.user,
+    reason: 'Recurring delivery reservation released.',
+  });
 
   occurrence.stockReserved = false;
+  occurrence.inventoryLotAllocations = [];
   await occurrence.save();
   return true;
 };
@@ -232,6 +266,7 @@ const billOccurrence = async (occurrence, subscription) => {
         packSize: sku.packSize,
         quantity,
         price: unitPrice,
+        inventoryLotAllocations: occurrence.inventoryLotAllocations || [],
       },
     ],
     itemTotal: amount,

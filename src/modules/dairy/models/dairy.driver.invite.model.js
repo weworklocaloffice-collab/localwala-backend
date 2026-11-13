@@ -35,7 +35,7 @@
  * ## Lifecycle
  *
  *   pending  → the outlet is waiting for this rider to sign up
- *   accepted → the rider registered and is on the fleet
+ *   accepted → the rider registered and is awaiting (or has received) owner review
  *   expired  → past `expiresAt`; the rider never joined
  *   revoked  → the outlet withdrew it
  *
@@ -77,6 +77,16 @@ const dairyDriverInviteSchema = mongoose.Schema(
     mobile: {
       type: Number,
       required: true,
+    },
+    /**
+     * SHA-256 of the one-time onboarding code. The raw code is returned only
+     * when the partner creates or renews the invitation; it is never stored or
+     * included in invitation-list responses.
+     */
+    inviteCodeHash: {
+      type: String,
+      required: false,
+      select: false,
     },
     status: {
       type: String,
@@ -135,6 +145,7 @@ dairyDriverInviteSchema.index(
 );
 
 dairyDriverInviteSchema.index({ mobile: 1, status: 1 });
+dairyDriverInviteSchema.index({ inviteCodeHash: 1 }, { sparse: true });
 
 /**
  * @typedef DairyDriverInvite

@@ -31,6 +31,7 @@ const router = express.Router();
 router.route('/bookings').get(webAuth('localservices_catalog_read'), controller.adminListBookings);
 router.route('/bookings/:id').get(webAuth('localservices_catalog_read'), validate(V.bookingIdParam), controller.adminGetBooking);
 router.route('/bookings/:id/invoice/void').post(webAuth('localservices_revenue_approve'), validate(V.bookingIdParam), controller.voidInvoice);
+router.route('/bookings/:id/invoice/pdf').get(webAuth('localservices_revenue_read'), validate(V.bookingIdParam), controller.adminInvoicePdf);
 router.route('/complaints').get(webAuth('localservices_catalog_read'), controller.listAllComplaints);
 router.route('/complaints/:id/resolve').post(webAuth('localservices_catalog_read'), validate(V.bookingIdParam), controller.resolveComplaint);
 router.route('/refunds').get(webAuth('localservices_revenue_approve'), controller.adminListRefunds);

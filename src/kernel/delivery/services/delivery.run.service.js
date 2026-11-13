@@ -18,10 +18,49 @@
 
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
-const { DeliveryRun, DeliveryStop, DeliveryPOD, Business, DairyDriver } = require('../../../models');
+const { DeliveryRun, DeliveryStop, DeliveryPOD, DeliveryAudit, Business, DairyDriver } = require('../../../models');
 const ApiError = require('../../../utils/ApiError');
 const { withOptionalTransaction } = require('../../../utils/optionalTransaction');
 const deliveryHooks = require('../delivery.hooks');
+
+const getDriverMetrics = async (agentId, fromDate, toDate) => {
+  const from = startOfDay(fromDate || new Date());
+  const to = new Date(startOfDay(toDate || fromDate || new Date()).getTime() + 24 * 60 * 60 * 1000);
+  const runs = await DeliveryRun.find({
+    agent: new mongoose.Types.ObjectId(agentId),
+    serviceDate: { $gte: from, $lt: to },
+    status: { $ne: 'cancelled' },
+  }).select('_id status totals');
+  const runIds = runs.map((r) => r._id);
+  const stops = await DeliveryStop.aggregate([
+    { $match: { run: { $in: runIds } } },
+    { $group: { _id: '$status', count: { $sum: 1 }, cansOut: { $sum: '$cansOut' }, cansIn: { $sum: '$cansIn' } } },
+  ]);
+  const byStatus = {};
+  for (const row of stops) byStatus[row._id] = row;
+  return {
+    range: { from, to },
+    runCount: runs.length,
+    completedRuns: runs.filter((r) => r.status === 'completed').length,
+    stops: byStatus,
+  };
+};
+
+const recordAudit = async (action, { agentId, runId, stopId, metadata }) => {
+  try {
+    await DeliveryAudit.create({
+      agent: agentId,
+      action,
+      entityType: stopId ? 'DeliveryStop' : 'DeliveryRun',
+      entityId: stopId || runId,
+      run: runId,
+      stop: stopId,
+      metadata,
+    });
+  } catch (error) {
+    // Audit must never break the primary action.
+  }
+};
 
 /**
  * Delivery run lifecycle.
@@ -64,6 +103,24 @@ const geoPoint = (location) => {
     return undefined;
   }
   return { type: 'Point', coordinates: location.coordinates };
+};
+
+/**
+ * The HTTP delivery contract carries an optional `latitude,longitude` string.
+ * Convert valid arrival coordinates to the stop's indexed GeoJSON location.
+ */
+const pointFromLatLng = (value) => {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const [latitude, longitude] = value.split(',').map((coordinate) => Number(coordinate.trim()));
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 || latitude > 90 ||
+    longitude < -180 || longitude > 180
+  ) {
+    return undefined;
+  }
+  return { type: 'Point', coordinates: [longitude, latitude] };
 };
 
 /**
@@ -255,6 +312,20 @@ const getRunForAgentAndDate = async (agentId, serviceDate) => {
   return run;
 };
 
+/** All non-cancelled runs for an agent on a date (multi-run support). */
+const getRunsForAgentAndDate = async (agentId, serviceDate) => {
+  const dayStart = startOfDay(serviceDate);
+  const runs = await DeliveryRun.find({
+    agent: new mongoose.Types.ObjectId(agentId),
+    serviceDate: dayStart,
+    status: { $ne: 'cancelled' },
+  })
+    .sort({ createdAt: 1 })
+    .populate('business', 'name businessModel ownDeliveryPartner')
+    .populate('agent', 'payoutMode canCapacity vehicleType business');
+  return runs;
+};
+
 const getRunDetail = async (runId, agentId, businessId) => {
   const run = await DeliveryRun.findById(runId)
     .populate('business', 'name businessModel ownDeliveryPartner driverPayoutMode')
@@ -342,11 +413,18 @@ const getStops = async (runId, agentId) => {
         slot: 1,
         cansOut: 1,
         cansIn: 1,
-        amountDue: 1,
-        amountCollected: 1,
+        plannedEmptyCans: 1,
+        // Stored in paise, but every other rider-facing amount is in rupees
+        // (Mongoose getters do not run on aggregation results).
+        amountDue: { $divide: [{ $ifNull: ['$amountDue', 0] }, 100] },
+        amountCollected: {
+          $divide: [{ $ifNull: ['$amountCollected', 0] }, 100],
+        },
         paymentMode: 1,
         status: 1,
         skipReason: 1,
+        shortfallReason: 1,
+        items: 1,
       },
     },
   ]);
@@ -397,6 +475,8 @@ const startRun = async (runId, agentId, param) => {
   };
   await run.save();
 
+  await recordAudit('run.started', { agentId, runId: run._id, metadata: { cansLoaded, cansLoadedForReturn } });
+
   return { run, stopCount };
 };
 
@@ -419,6 +499,10 @@ const startRun = async (runId, agentId, param) => {
 const completeRun = async (runId, agentId, param) => {
   const run = await getRunDetail(runId, agentId);
 
+  // Idempotent retry: a duplicate complete returns the finished run.
+  if (run.status === 'completed') {
+    return run;
+  }
   if (run.status !== 'in_progress') {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Run has not started');
   }
@@ -463,6 +547,8 @@ const completeRun = async (runId, agentId, param) => {
 
     stillRunning.status = 'completed';
     stillRunning.endedAt = new Date();
+
+    await recordAudit('run.completed', { agentId, runId: stillRunning._id, metadata: { cansReturned: param.cansReturned, forceClose: param.forceClose } });
     stillRunning.returnLeg = {
       completedAt: new Date(),
       cansReturned,
@@ -481,13 +567,21 @@ const completeRun = async (runId, agentId, param) => {
 const arriveStop = async (stopId, agentId, param) => {
   const stop = await getOwnedStop(stopId, agentId);
 
+  // Idempotent retry: a second arrive after the first succeeded is a no-op.
+  if (stop.status === 'arrived' || stop.status === 'delivered') {
+    return stop;
+  }
   if (stop.status !== 'pending') {
     throw new ApiError(httpStatus.BAD_REQUEST, `Stop is already ${stop.status}`);
   }
 
   stop.status = 'arrived';
-  stop.slot = { ...stop.slot, arrivedAt: new Date(), location: param.location };
+  stop.slot = { ...stop.slot, arrivedAt: new Date() };
+  const location = pointFromLatLng(param.location);
+  if (location) stop.arrivalLocation = location;
   await stop.save();
+
+  await recordAudit('stop.arrived', { agentId, runId: stop.run, stopId: stop._id, metadata: { location: param.location } });
 
   return stop;
 };
@@ -502,14 +596,25 @@ const arriveStop = async (stopId, agentId, param) => {
 const deliverStop = async (stopId, agentId, param) => {
   const stop = await getOwnedStop(stopId, agentId);
 
+  // Idempotent retry: a duplicate deliver returns the already-completed stop.
   if (stop.status === 'delivered') {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Stop already delivered');
+    return stop;
+  }
+
+  const plannedCans = stop.cansOut ?? 0;
+  const deliveredCans = param.cansDelivered ?? plannedCans;
+  if (deliveredCans < plannedCans && !param.shortfallReason) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'A reason is required when fewer cans are delivered than planned'
+    );
   }
 
   stop.status = 'delivered';
-  stop.cansOut = param.cansDelivered || stop.cansOut;
-  stop.cansIn = param.emptyCansCollected || 0;
-  stop.amountCollected = param.amountCollected || 0;
+  stop.cansOut = deliveredCans;
+  stop.cansIn = param.emptyCansCollected ?? 0;
+  stop.amountCollected = param.amountCollected ?? 0;
+  stop.shortfallReason = param.shortfallReason || undefined;
   stop.slot = { ...stop.slot, completedAt: new Date() };
   await stop.save();
 
@@ -529,6 +634,8 @@ const deliverStop = async (stopId, agentId, param) => {
 
   await recomputeTotals(stop.run);
 
+  await recordAudit('stop.delivered', { agentId, runId: stop.run, stopId: stop._id, metadata: { cansDelivered: param.cansDelivered, amountCollected: param.amountCollected } });
+
   // Let whichever vertical owns this stop settle its own books. The kernel does
   // not know or care what that is — see delivery.hooks.js.
   await deliveryHooks.emit('stop.delivered', { stop, agentId, param });
@@ -536,10 +643,26 @@ const deliverStop = async (stopId, agentId, param) => {
   return stop;
 };
 
+/** Records the rider's latest location for a run (telemetry). */
+const pingLocation = async (runId, agentId, param) => {
+  const run = await getRunDetail(runId, agentId);
+  const location = pointFromLatLng(param.location);
+  if (location) {
+    run.lastLocation = `${location.coordinates[1]},${location.coordinates[0]}`;
+    run.lastLocationAt = new Date();
+    await run.save();
+  }
+  return run;
+};
+
 /** Marks a stop skipped or failed, both requiring a reason. */
 const markStop = async (stopId, agentId, status, reason) => {
   const stop = await getOwnedStop(stopId, agentId);
 
+  // Idempotent retry for skip/fail.
+  if (stop.status === status) {
+    return stop;
+  }
   if (stop.status === 'delivered') {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Stop already delivered');
   }
@@ -554,8 +677,10 @@ const markStop = async (stopId, agentId, status, reason) => {
 
   await recomputeTotals(stop.run);
 
+  await recordAudit(`stop.${status}`, { agentId, runId: stop.run, stopId: stop._id, metadata: { reason } });
+
   // A stop that was dropped is not a delivery, so nothing downstream is owed an
-  // update — but the vertical still gets told, in case it holds prepaid money.
+  // update - but the vertical still gets told, in case it holds prepaid money.
   await deliveryHooks.emit('stop.not_delivered', { stop, agentId, status, reason });
 
   return stop;
@@ -700,16 +825,19 @@ module.exports = {
   recomputeTotals,
   createRun,
   getRunForAgentAndDate,
+  getRunsForAgentAndDate,
   getRunDetail,
   getStops,
   startRun,
   completeRun,
   arriveStop,
+  pingLocation,
   deliverStop,
   markStop,
   getOwnedStop,
   getBusinessRuns,
   getAgentRuns,
+  getDriverMetrics,
   getDriverIdForUser,
   cancelRun,
 };

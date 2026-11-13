@@ -93,6 +93,7 @@ const WRITABLE_FIELDS = [
   'timezone',
   'repeat',
   'city',
+  'vertical',
   'priority',
   'status',
   'isActive',
@@ -142,6 +143,15 @@ const normalizePayload = (param) => {
     return payload;
   }
   payload.city = String(payload.city);
+
+  // Null/empty vertical means "global/all". Keep empty as null for consistent
+  // filtering in the resolver.
+  if (payload.vertical === undefined) return payload;
+  if (payload.vertical === null || payload.vertical === '') {
+    payload.vertical = null;
+    return payload;
+  }
+  payload.vertical = String(payload.vertical).trim();
   return payload;
 };
 

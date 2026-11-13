@@ -26,6 +26,7 @@ const {
   Complaints,
   CannedResponse,
   PaymentInitiation,
+  DairyOrder,
 } = require('../models');
 
 // Rule-based intent detection (no LLM dependency for v1).
@@ -122,6 +123,24 @@ const getLiveSnapshot = async (type, typeId) => {
         restaurantName: o.restaurant?.name || null,
         updatedAt: o.updatedAt,
         payment,
+      };
+    }
+    if (type === 'dairy_orders') {
+      const order = await DairyOrder.findById(id)
+        .select('orderNo status grandTotal paymentMode paymentStatus createdAt deliveredAt business')
+        .populate('business', 'name')
+        .lean();
+      if (!order) return null;
+      return {
+        kind: 'dairy_orders',
+        orderNo: order.orderNo,
+        status: order.status,
+        total: paiseToRs(order.grandTotal),
+        paymentMode: order.paymentMode || null,
+        paymentStatus: order.paymentStatus || null,
+        outletName: order.business && order.business.name ? order.business.name : null,
+        createdAt: order.createdAt,
+        deliveredAt: order.deliveredAt || null,
       };
     }
     if (type === 'dining') {
@@ -443,7 +462,17 @@ const buildBotReply = async ({ intent, snapshot, locale = 'en' }) => {
 const handleBotTurn = async ({ roomId, userMessage, type, typeId, locale = 'en' }) => {
   const { intent, confidence } = detectIntent(userMessage);
   const snapshot = await getLiveSnapshot(type, typeId);
-  const reply = await buildBotReply({ intent, snapshot, locale });
+  const dairyContext = ['dairy', 'dairy_orders', 'dairy_partner'].includes(type);
+  const reply = dairyContext
+    ? intent === 'handover'
+      ? { text: 'I’m connecting you with the Dairy support team and sharing this conversation with the agent.', actions: [], resolved: false }
+      : intent === 'where_is_my_order' && snapshot
+        ? { text: `Dairy order #${snapshot.orderNo} is currently ${String(snapshot.status || 'being processed').replaceAll('_', ' ')}.${snapshot.outletName ? ` Outlet: ${snapshot.outletName}.` : ''}`, actions: ['track_order', 'talk_to_human'], resolved: false }
+        : { text: type === 'dairy_partner'
+          ? 'Dairy Partner Support can help with outlet operations, products, inventory, orders, payments and account access. Tell us what you need, or ask for an agent.'
+          : 'Dairy Support can help with orders, deliveries, subscriptions, product quality and payments. Tell us what happened, or ask for an agent.',
+          actions: ['talk_to_human'], resolved: false }
+    : await buildBotReply({ intent, snapshot, locale });
 
   const room = await SupportChatRoom.findById(roomId);
   if (room && snapshot) {

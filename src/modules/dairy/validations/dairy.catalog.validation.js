@@ -120,7 +120,9 @@ const brandUpdateValidation = {
  * flat sub-category list (see `DairySubCategory`'s header note).
  */
 const productBody = {
-  business: Joi.string().custom(objectId).required(),
+  // Partner routes derive ownership from the access token. This remains
+  // optional in the body for older clients, but the controller overrides it.
+  business: Joi.string().custom(objectId).optional(),
   category: Joi.string().custom(objectId).required(),
   subCategory: Joi.string().custom(objectId).allow('', null),
   brand: Joi.string().custom(objectId).allow('', null),
@@ -142,7 +144,7 @@ const productCreateValidation = { body: Joi.object().keys(productBody) };
 
 const productUpdateValidation = {
   params: Joi.object().keys({ id: Joi.string().custom(objectId).required() }),
-  body: Joi.object().keys(productBody).fork('business', (schema) => schema.optional()).min(1),
+  body: Joi.object().keys(productBody).fork(Object.keys(productBody), (schema) => schema.optional()).min(1),
 };
 
 const productListValidation = {
@@ -164,6 +166,7 @@ const productDetailValidation = {
 
 const searchValidation = {
   query: Joi.object().keys({
+    address: Joi.string().custom(objectId),
     business: Joi.string().custom(objectId),
     category: Joi.string().custom(objectId),
     subCategory: Joi.string().custom(objectId),
@@ -199,6 +202,7 @@ const skuBody = {
   mrp: Joi.number().min(0).default(0),
   taxPercentage: Joi.number().min(0).default(0),
   availableQty: Joi.number().integer().min(0).default(0),
+  stockAlertThreshold: Joi.number().integer().min(0).max(100000).default(10),
   inStock: Joi.boolean().default(true),
   shelfLifeHours: Joi.number().min(0).allow('', null),
   isVeg: Joi.boolean().default(true),
@@ -211,7 +215,7 @@ const skuUpdateValidation = {
   params: Joi.object().keys({ id: Joi.string().custom(objectId).required() }),
   body: Joi.object()
     .keys(skuBody)
-    .fork('product', (schema) => schema.optional())
+    .fork(Object.keys(skuBody), (schema) => schema.optional())
     .min(1),
 };
 
@@ -225,12 +229,28 @@ const stockAdjustValidation = {
   }),
 };
 
+const skuLotsValidation = {
+  params: Joi.object().keys({ id: Joi.string().custom(objectId).required() }),
+};
+
+const lotReceiveValidation = {
+  params: Joi.object().keys({ id: Joi.string().custom(objectId).required() }),
+  body: Joi.object().keys({
+    lotNo: Joi.string().trim().min(1).max(80).required(),
+    quantity: Joi.number().integer().min(1).max(1000000).required(),
+    receivedAt: Joi.date().max('now'),
+    expiry: Joi.date().greater('now').required(),
+    notes: Joi.string().trim().max(500).allow('', null),
+  }),
+};
+
 const skuListValidation = {
   query: allValidation.query.keys({
     business: Joi.string().custom(objectId),
     product: Joi.string().custom(objectId),
     inStock: Joi.string().valid('true', 'false'),
     reusableContainer: Joi.string().valid('true', 'false'),
+    includeInactive: Joi.boolean(),
   }),
 };
 
@@ -288,6 +308,8 @@ module.exports = {
   skuCreateValidation,
   skuUpdateValidation,
   stockAdjustValidation,
+  skuLotsValidation,
+  lotReceiveValidation,
   skuListValidation,
   treeValidation,
   importProductsValidation,

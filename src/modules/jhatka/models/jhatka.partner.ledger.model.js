@@ -17,7 +17,7 @@
  */
 
 const mongoose = require('mongoose');
-const toJSON = require('../../../models/plugins/tojson.plugin');
+const toJSON = require('../../../models/plugins/toJSON.plugin');
 
 /**
  * JhatkaPartnerLedger — the partner/franchisee account record.

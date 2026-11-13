@@ -73,10 +73,16 @@ const supportChatRoomValidation = {
         'tiffin_subscription',
         'complaints',
         'reports',
-        'restaurant_complaints'
+        'restaurant_complaints',
+        'dairy',
+        'dairy_orders'
       )
       .required(),
-    typeId: Joi.string().custom(objectId).required(),
+    typeId: Joi.alternatives().conditional('type', {
+      is: 'dairy',
+      then: Joi.string().allow('', null).optional(),
+      otherwise: Joi.string().custom(objectId).required(),
+    }),
     limit: Joi.number().required(),
     page: Joi.number().required(),
   }),
@@ -134,9 +140,13 @@ const botStartValidation = {
   body: Joi.object().keys({
     user: Joi.string().custom(objectId).required(),
     type: Joi.string()
-      .valid('orders', 'dining', 'tiffin_subscription', 'complaints', 'reports', 'restaurant_complaints')
+      .valid('orders', 'dining', 'tiffin_subscription', 'complaints', 'reports', 'restaurant_complaints', 'dairy', 'dairy_orders')
       .required(),
-    typeId: Joi.string().custom(objectId).required(),
+    typeId: Joi.alternatives().conditional('type', {
+      is: 'dairy',
+      then: Joi.string().allow('', null).optional(),
+      otherwise: Joi.string().custom(objectId).required(),
+    }),
     locale: Joi.string().max(10),
   }),
 };

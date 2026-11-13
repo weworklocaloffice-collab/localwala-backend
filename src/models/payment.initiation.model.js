@@ -100,6 +100,32 @@ localServiceBooking: {
       ref: 'LocalServiceBooking',
       required: false,
     },
+    // Local Services sponsored marketing campaign purchase.
+    // paymentFrom 'localServiceCampaign' routes side-effects to
+    // localservice.marketing.payment.service.
+    localServiceCampaignId: {
+      type: String,
+      required: false,
+      trim: true,
+    },
+    localServiceCampaign: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'LocalServiceMarketingCampaign',
+      required: false,
+    },
+    // Local Services paid subscription (plan purchase/renewal).
+    // paymentFrom 'localServiceSubscription' routes side-effects to
+    // localservice.subscription.payment.service.
+    localServiceSubscriptionId: {
+      type: String,
+      required: false,
+      trim: true,
+    },
+    localServiceSubscription: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'LocalServiceSubscription',
+      required: false,
+    },
     // Jhatka subjects (§2.1 — fresh meat / butcher).
     //
     // `jhatkaOrder` is the thing a one-off customer order pays for. `jhatkaOccurrence`
@@ -130,6 +156,18 @@ localServiceBooking: {
     jhatkaSupplyRequest: {
       type: mongoose.SchemaTypes.ObjectId,
       ref: 'JhatkaSupplyRequest',
+      required: false,
+    },
+    // Dairy-sponsored placement booking, routed by the dedicated Dairy callback.
+    dairyCampaign: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'DairyMarketingCampaign',
+      required: false,
+    },
+    // Dairy franchise joining fee; additive to the shared gateway subjects.
+    dairyFranchise: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'DairyFranchise',
       required: false,
     },
     amount: {

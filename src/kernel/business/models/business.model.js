@@ -39,8 +39,11 @@ const businessSchema = mongoose.Schema(
     },
     businessModel: {
       type: String,
-      required: true,
-      default: 'direct', // direct, franchise, commission_partner
+      required: false,
+      // Deliberately unset during an external vendor's application. Direct is
+      // reserved for Admin-provisioned LocalWala outlets; an external outlet
+      // receives its final model only when Admin creates an agreement.
+      enum: ['direct', 'franchise', 'commission_partner'],
     },
     name: {
       type: String,
@@ -66,6 +69,14 @@ const businessSchema = mongoose.Schema(
       type: String,
       required: false,
       trim: true,
+    },
+    // Physical outlet address, separate from its administrative locality and
+    // the delivery localities it elects to serve.
+    address: {
+      type: String,
+      required: false,
+      trim: true,
+      maxlength: 500,
     },
     city: {
       type: mongoose.SchemaTypes.ObjectId,
@@ -183,6 +194,52 @@ const businessSchema = mongoose.Schema(
           required: false,
         },
       },
+    },
+    /** Approved customer-delivery localities; kept separate from franchise territory. */
+    deliveryCoverage: {
+      activeLocalities: {
+        type: [{ type: mongoose.SchemaTypes.ObjectId, ref: 'Locality' }],
+        default: undefined,
+      },
+      updatedAt: { type: Date, required: false },
+      updatedBy: { type: mongoose.SchemaTypes.ObjectId, ref: 'User', required: false },
+    },
+    /**
+     * Dairy outlet operational controls. Kept vertical-scoped so changes never
+     * affect restaurants, stores, or other business types sharing this model.
+     * Localities in serviceableLocalities must always be admin-approved coverage.
+     */
+    dairyOperations: {
+      acceptingOrders: { type: Boolean, default: true },
+      timezone: { type: String, default: 'Asia/Kolkata' },
+      operatingHours: [
+        {
+          _id: false,
+          day: { type: Number, min: 0, max: 6 }, // 0 = Sunday
+          isOpen: { type: Boolean, default: false },
+          opensAt: { type: String }, // HH:mm, 24-hour local time
+          closesAt: { type: String },
+        },
+      ],
+      // Date-specific exceptions override weekly hours for that local calendar day.
+      specialHours: [
+        {
+          _id: false,
+          date: { type: String, required: true }, // YYYY-MM-DD in dairyOperations.timezone
+          isClosed: { type: Boolean, default: false },
+          opensAt: { type: String },
+          closesAt: { type: String },
+          orderCutoffTime: { type: String },
+          label: { type: String, trim: true, maxlength: 100 },
+        },
+      ],
+      orderCutoffTime: { type: String, default: null }, // HH:mm local time
+      serviceableLocalities: {
+        type: [{ type: mongoose.SchemaTypes.ObjectId, ref: 'Locality' }],
+        default: undefined, // missing means all currently approved localities
+      },
+      updatedAt: { type: Date },
+      updatedBy: { type: mongoose.SchemaTypes.ObjectId, ref: 'User' },
     },
     /**
      * Milk acceptance thresholds for the procurement slice.

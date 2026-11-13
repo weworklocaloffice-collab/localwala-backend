@@ -167,6 +167,31 @@ const dairyDriverSchema = mongoose.Schema(
       required: false,
       default: false,
     },
+    /** Partner review of a newly invited rider. Existing riders default to
+     * approved; registrations created from an invite explicitly start pending.
+     */
+    approvalStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      required: false,
+      default: 'approved',
+      index: true,
+    },
+    approvalReviewedAt: {
+      type: Date,
+      required: false,
+    },
+    approvalReviewedBy: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'User',
+      required: false,
+    },
+    approvalReason: {
+      type: String,
+      required: false,
+      trim: true,
+      maxlength: 500,
+    },
     offlineReason: {
       type: mongoose.SchemaTypes.ObjectId,
       ref: 'DriverOfflineMessages',

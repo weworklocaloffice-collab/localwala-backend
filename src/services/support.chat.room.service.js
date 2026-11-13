@@ -29,6 +29,7 @@ const {
   Restaurant,
   RestaurantComplaints,
   SupportChatConversion,
+  DairyOrder,
 } = require('../models');
 const supportChatConversionService = require('./support.chat.conversion.service');
 const ApiError = require('../utils/ApiError');
@@ -101,6 +102,9 @@ const mySupportChat = async (userID) => {
         booking: 1,
         purchaseSubscription: 1,
         restaurantComplaints: 1,
+        dairyOrders: 1,
+        business: 1,
+        vertical: 1,
         complaints: 1,
         reportIssue: 1,
         status: 1,
@@ -204,6 +208,9 @@ const filterChatList = async (options) => {
         reportIssue: 1,
         supportType: 1,
         restaurantComplaints: 1,
+        dairyOrders: 1,
+        business: 1,
+        vertical: 1,
         status: 1,
         updatedAt: 1,
         customer: {
@@ -276,6 +283,9 @@ const info = await SupportChatRoom.findById(options.roomId, {
     reportIssue: 1,
     createdAt: 1,
     restaurantComplaints: 1,
+    dairyOrders: 1,
+    business: 1,
+    vertical: 1,
 // Enterprise fields. The workspace header renders handover stage, priority,
 // the SLA countdown and the bot's order card straight from this — omitting
 // them here left every one of those permanently blank. `audit` feeds the
@@ -289,6 +299,7 @@ const info = await SupportChatRoom.findById(options.roomId, {
     audit: 1,
     pendingTransfer: 1,
   })
+    .populate('business', 'name')
     .populate('assignedAgent', 'firstName lastName image')
     .populate('pendingTransfer.toAgent', 'firstName lastName image')
     .populate('pendingTransfer.byAgent', 'firstName lastName image')
@@ -303,6 +314,7 @@ const info = await SupportChatRoom.findById(options.roomId, {
   let reportInfo = null;
   let restaurantId = null;
   let restaurantComplaintInfo = null;
+  let dairyOrderInfo = null;
 
   if (info && info.supportType !== null && info.supportType === 'orders') {
     orderInfo = await Orders.findById(info.orders, {
@@ -314,6 +326,16 @@ const info = await SupportChatRoom.findById(options.roomId, {
     });
     if (orderInfo && orderInfo !== null && orderInfo.id !== null && orderInfo.id !== '') {
       restaurantId = orderInfo.restaurant;
+    }
+  }
+
+  if (info && info.supportType === 'dairy_orders' && info.dairyOrders) {
+    dairyOrderInfo = await DairyOrder.findById(info.dairyOrders)
+      .select('orderNo status grandTotal paymentMode paymentStatus createdAt deliveredAt business')
+      .populate('business', 'name')
+      .lean();
+    if (dairyOrderInfo && dairyOrderInfo.grandTotal != null) {
+      dairyOrderInfo.grandTotal = Number((Number(dairyOrderInfo.grandTotal) / 100).toFixed(2));
     }
   }
 
@@ -542,6 +564,7 @@ const info = await SupportChatRoom.findById(options.roomId, {
   return Promise.all([
     info,
     orderInfo,
+    dairyOrderInfo,
     bookingInfo,
     packageInfo,
     complaintInfo,
@@ -555,6 +578,7 @@ const info = await SupportChatRoom.findById(options.roomId, {
     const result = {
       info,
       orderInfo,
+      dairyOrderInfo,
       bookingInfo,
       packageInfo,
       complaintInfo,
@@ -588,6 +612,8 @@ const createOrGetBotRoom = async (user, type, typeId) => {
     complaints: 'complaints',
     reports: 'reportIssue',
     restaurant_complaints: 'restaurantComplaints',
+    dairy_orders: 'dairyOrders',
+    dairy_partner: 'business',
   };
   const activeField = ENTITY_FIELD[type] || null;
 
@@ -595,6 +621,9 @@ const createOrGetBotRoom = async (user, type, typeId) => {
   // so `findOne({orders:null})` can never match an unrelated room.
   const filter = { userId, supportType: type };
   if (activeField) filter[activeField] = typeOid;
+  if (type === 'dairy' || type === 'dairy_orders' || type === 'dairy_partner') {
+    filter.status = { $ne: 'resolved' };
+  }
 
   const setFields = {
     userId,
@@ -608,6 +637,7 @@ const createOrGetBotRoom = async (user, type, typeId) => {
     ...Object.fromEntries(Object.values(ENTITY_FIELD).map((f) => [f, null])),
   };
   if (activeField) setFields[activeField] = typeOid;
+  if (type === 'dairy' || type === 'dairy_orders' || type === 'dairy_partner') setFields.vertical = 'dairy';
 
   return SupportChatRoom.findOneAndUpdate(filter, { $setOnInsert: setFields }, {
     new: true,
@@ -1152,6 +1182,9 @@ const supportTeamChat = async (teamId, options) => {
         reportIssue: 1,
         supportType: 1,
         restaurantComplaints: 1,
+        dairyOrders: 1,
+        business: 1,
+        vertical: 1,
         status: 1,
         updatedAt: 1,
         customer: {
@@ -1237,6 +1270,9 @@ const adminSupportChatList = async (options) => {
         booking: 1,
         purchaseSubscription: 1,
         restaurantComplaints: 1,
+        dairyOrders: 1,
+        business: 1,
+        vertical: 1,
         complaints: 1,
         reportIssue: 1,
         status: 1,
@@ -1330,6 +1366,9 @@ const cityzenSupportChatList = async (masterId, options) => {
         booking: 1,
         purchaseSubscription: 1,
         restaurantComplaints: 1,
+        dairyOrders: 1,
+        business: 1,
+        vertical: 1,
         complaints: 1,
         reportIssue: 1,
         status: 1,
@@ -1387,6 +1426,9 @@ const exportCollection = async () => {
         booking: 1,
         purchaseSubscription: 1,
         restaurantComplaints: 1,
+        dairyOrders: 1,
+        business: 1,
+        vertical: 1,
         complaints: 1,
         reportIssue: 1,
         status: 1,

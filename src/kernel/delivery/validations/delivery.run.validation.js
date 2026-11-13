@@ -88,7 +88,8 @@ const deliverStopValidation = {
   body: Joi.object().keys({
     cansDelivered: Joi.number().integer().min(0).required(),
     emptyCansCollected: Joi.number().integer().min(0).default(0),
-    amountCollected: Joi.number().integer().min(0).default(0),
+    amountCollected: Joi.number().min(0).precision(2).default(0),
+    shortfallReason: Joi.string().allow('', null),
     clientRef: Joi.string().allow('', null),
     proof: Joi.object().keys({
       photo: Joi.string().allow('', null),

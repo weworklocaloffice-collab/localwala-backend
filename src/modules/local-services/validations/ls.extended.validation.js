@@ -72,6 +72,25 @@ const featuredBody = {
     .unknown(false),
 };
 
+const planSubscribeBody = {
+  body: Joi.object()
+    .keys({
+      plan: objectId.required(),
+      paymentConfig: objectId.allow(null),
+    })
+    .unknown(false),
+};
+
+const subscriptionPayBody = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object()
+    .keys({
+      paymentConfig: objectId.allow(null),
+      paymentRef: Joi.string().trim().max(120).allow('', null),
+    })
+    .unknown(false),
+};
+
 const planStatusBody = {
   params: Joi.object().keys({ id: objectId.required() }),
   body: Joi.object()
@@ -94,6 +113,8 @@ module.exports = {
   recurringBody,
   leadBody,
   planBody,
+  planSubscribeBody,
+  subscriptionPayBody,
   featuredBody,
   planStatusBody,
   featuredStatusBody,

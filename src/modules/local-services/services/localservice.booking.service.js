@@ -92,6 +92,31 @@ function buildBookingCode() {
   return `LS${ymd}${suffix}`;
 }
 
+function stateCodeOf(value) {
+  const match = String(value || '').trim().match(/^(\d{2})/);
+  return match ? match[1] : '';
+}
+
+function buildAddressSnapshot(address) {
+  if (!address) return undefined;
+  const gstin = String(address.gstin || '').trim().toUpperCase();
+  const stateCode =
+    stateCodeOf(address.stateCode) || stateCodeOf(gstin) || stateCodeOf(address.state);
+  const line = [address.flatHouse, address.locality, address.pincode].filter(Boolean).join(', ');
+  return {
+    name: address.receiverName || '',
+    phone: address.receiverContact || '',
+    address: line,
+    line1: address.flatHouse || '',
+    locality: address.locality || '',
+    city: address.city || '',
+    pincode: address.pincode || '',
+    state: address.state || '',
+    stateCode,
+    gstin,
+  };
+}
+
 async function transitionBooking(bookingId, to, { reason, actorType, actorId } = {}, { BookingModel, HistoryModel, revenueHook } = {}) {
   const Booking = BookingModel || require('../models/localservice.booking.model');
   const History = HistoryModel || require('../models/localservice.status.history.model');
@@ -158,21 +183,10 @@ async function transitionBooking(bookingId, to, { reason, actorType, actorId } =
     booking.revenueEntry = revenue.entry._id || revenue.entry.idempotencyKey;
     booking.revenueAppliedAt = new Date();
     await booking.save();
-    // Invoice: frozen bill from items (or amounts fallback). Never regenerated.
+    // Invoice: frozen GST bill from items (or amounts fallback). Never regenerated.
     try {
-      const { LocalServiceInvoice } = require('../models/localservice.fulfilment.model');
-      const lines = (booking.items || []).length
-        ? booking.items.map((i) => ({ label: i.label, amount: i.lineTotal }))
-        : [
-            { label: 'Labour', amount: booking.labourAmount },
-            { label: 'Parts', amount: booking.partsAmount },
-          ];
-      const total = Number(lines.reduce((s, l) => s + Number(l.amount || 0), 0).toFixed(2));
-      await LocalServiceInvoice.findOneAndUpdate(
-        { booking: booking._id },
-        { booking: booking._id, lines, total, status: 'issued' },
-        { upsert: true, new: true }
-      );
+      const { issueInvoiceForBooking } = require('./localservice.invoice.service');
+      await issueInvoiceForBooking({ bookingId: booking._id });
     } catch (e) {
       console.error('LocalServices invoice failed:', e.message);
     }
@@ -259,4 +273,13 @@ async function transitionBooking(bookingId, to, { reason, actorType, actorId } =
   return { booking, revenue, refundRequest };
 }
 
-module.exports = { canTransition, assertTransition, canActorTransition, assertActorTransition, ACTOR_TRANSITIONS, buildBookingCode, transitionBooking };
+module.exports = {
+  canTransition,
+  assertTransition,
+  canActorTransition,
+  assertActorTransition,
+  ACTOR_TRANSITIONS,
+  buildBookingCode,
+  buildAddressSnapshot,
+  transitionBooking,
+};

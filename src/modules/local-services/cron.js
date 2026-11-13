@@ -37,6 +37,16 @@ async function expirePendingQuotes(now = new Date(), { QuoteModel } = {}) {
   return { expired: res.modifiedCount || 0 };
 }
 
+async function sweepMarketingCampaigns(now = new Date(), { CampaignModel } = {}) {
+  const { sweepCampaigns } = require('./services/localservice.marketing.service');
+  return sweepCampaigns(now, { CampaignModel });
+}
+
+async function sweepSubscriptionRenewals(now = new Date(), { SubscriptionModel } = {}) {
+  const { expireSubscriptions } = require('./services/localservice.subscription.payment.service');
+  return expireSubscriptions(now, { SubscriptionModel });
+}
+
 const STUCK_THRESHOLDS_HOURS = Object.freeze({ PENDING_PROVIDER: 24, PAYMENT_PENDING: 2, IN_PROGRESS: 48 });
 
 async function findStuckBookings(now = new Date(), { BookingModel } = {}) {
@@ -163,6 +173,8 @@ function startLocalServicesCron() {
       const now = new Date();
       await releaseExpiredReservations(now);
       await expirePendingQuotes(now);
+      await sweepMarketingCampaigns(now);
+      await sweepSubscriptionRenewals(now);
     } catch (error) {
       console.error('LocalServices hold/quote sweep failed:', error.message);
     }
@@ -255,6 +267,8 @@ module.exports = {
   expireActiveRules,
   releaseExpiredReservations,
   expirePendingQuotes,
+  sweepMarketingCampaigns,
+  sweepSubscriptionRenewals,
   findStuckBookings,
   notifyProvidersOfNewRequests,
   reconcileGatewayPayments,

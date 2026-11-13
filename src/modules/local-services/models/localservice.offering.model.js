@@ -30,6 +30,7 @@ const localServiceOfferingSchema = mongoose.Schema(
     provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceProvider', required: true },
     service: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceService', required: true },
     variant: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceVariant', required: false },
+    image: { type: String, required: false, trim: true, default: null },
     price: moneyField(0),
     durationMinutes: { type: Number, required: false, default: 60, min: 0 },
     configVersion: { type: Number, required: false, default: 1 },

@@ -99,7 +99,7 @@ const collectSettleableOrders = async (businessId, from, to) => {
     status: 'delivered',
     paymentStatus: 'paid',
     deliveredAt: { $gte: from, $lt: to },
-  }).select('orderNo itemTotal depositTotal serviceCharge grandTotal deliveredAt');
+  }).select('orderNo itemTotal discountAmount taxAmount depositTotal serviceCharge grandTotal couponCode deliveredAt');
 };
 
 /**
@@ -137,6 +137,9 @@ const createCommissionSettlement = async (param) => {
 
   // Read via the getters so figures are in rupees, not paise.
   const grossSales = orders.reduce((sum, o) => sum + Number(o.itemTotal), 0);
+  const discounts = orders.reduce((sum, o) => sum + Number(o.discountAmount || 0), 0);
+  const netSales = Number((grossSales - discounts).toFixed(2));
+  const taxes = orders.reduce((sum, o) => sum + Number(o.taxAmount || 0), 0);
   const deliveryCharges = orders.reduce((sum, o) => sum + Number(o.serviceCharge), 0);
 
   const includeDelivery = partner.commissionBasis === 'product_and_delivery';
@@ -157,6 +160,9 @@ const createCommissionSettlement = async (param) => {
     totals: {
       orderCount: orders.length,
       grossSales,
+      discounts,
+      netSales,
+      taxes,
       deliveryCharges,
       refunds: 0,
       commissionBase,
@@ -171,6 +177,12 @@ const createCommissionSettlement = async (param) => {
       orderNo: o.orderNo,
       orderId: o._id,
       grossSales: Number(o.itemTotal),
+      discounts: Number(o.discountAmount || 0),
+      netSales: Number((Number(o.itemTotal) - Number(o.discountAmount || 0)).toFixed(2)),
+      deliveryCharges: Number(o.serviceCharge || 0),
+      taxes: Number(o.taxAmount || 0),
+      customerPaid: Number(o.grandTotal || 0),
+      couponCode: o.couponCode || '',
       deliveredAt: o.deliveredAt,
     })),
     payoutMethod: partner.payoutMethod,
@@ -214,6 +226,9 @@ const createFranchiseSettlement = async (param) => {
   const orders = await collectSettleableOrders(franchise.business, from, to);
 
   const grossSales = orders.reduce((sum, o) => sum + Number(o.itemTotal), 0);
+  const discounts = orders.reduce((sum, o) => sum + Number(o.discountAmount || 0), 0);
+  const netSales = Number((grossSales - discounts).toFixed(2));
+  const taxes = orders.reduce((sum, o) => sum + Number(o.taxAmount || 0), 0);
   const deliveryCharges = orders.reduce((sum, o) => sum + Number(o.serviceCharge), 0);
 
   const includeDelivery = franchise.revenueShareBasis === 'product_and_delivery';
@@ -225,10 +240,9 @@ const createFranchiseSettlement = async (param) => {
   // Royalty is a flat fee, not a proportion, so it is not scaled by the period.
   const royalty = Number(franchise.royalty || 0);
 
-  // The joining fee is charged once, in the period the agreement starts.
-  const isFirstPeriod =
-    new Date(franchise.agreement.startDate) >= from && new Date(franchise.agreement.startDate) < to;
-  const joiningFee = isFirstPeriod ? Number(franchise.joiningFee || 0) : 0;
+  // Joining fees are collected upfront through the payment gateway and must
+  // never be charged again in a periodic settlement.
+  const joiningFee = 0;
 
   // Franchisee owes the platform, so the amounts subtract.
   const netAmount = Number((-(shareAmount + royalty + joiningFee)).toFixed(2));
@@ -245,6 +259,9 @@ const createFranchiseSettlement = async (param) => {
     totals: {
       orderCount: orders.length,
       grossSales,
+      discounts,
+      netSales,
+      taxes,
       deliveryCharges,
       refunds: 0,
       commissionBase: shareBase,
@@ -258,6 +275,12 @@ const createFranchiseSettlement = async (param) => {
       orderNo: o.orderNo,
       orderId: o._id,
       grossSales: Number(o.itemTotal),
+      discounts: Number(o.discountAmount || 0),
+      netSales: Number((Number(o.itemTotal) - Number(o.discountAmount || 0)).toFixed(2)),
+      deliveryCharges: Number(o.serviceCharge || 0),
+      taxes: Number(o.taxAmount || 0),
+      customerPaid: Number(o.grandTotal || 0),
+      couponCode: o.couponCode || '',
       deliveredAt: o.deliveredAt,
     })),
     payoutMethod: 'wallet',
@@ -420,6 +443,9 @@ const previewSettlement = async (param) => {
 
   const orders = await collectSettleableOrders(agreement.business, from, to);
   const grossSales = orders.reduce((sum, o) => sum + Number(o.itemTotal), 0);
+  const discounts = orders.reduce((sum, o) => sum + Number(o.discountAmount || 0), 0);
+  const netSales = Number((grossSales - discounts).toFixed(2));
+  const taxes = orders.reduce((sum, o) => sum + Number(o.taxAmount || 0), 0);
   const deliveryCharges = orders.reduce((sum, o) => sum + Number(o.serviceCharge), 0);
 
   const isPartner = !!param.partnerId;
@@ -435,6 +461,9 @@ const previewSettlement = async (param) => {
     to,
     orderCount: orders.length,
     grossSales,
+    discounts,
+    netSales,
+    taxes,
     deliveryCharges,
     includesDelivery: includeDelivery,
     commissionBase: base,

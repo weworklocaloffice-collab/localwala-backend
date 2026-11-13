@@ -72,6 +72,14 @@ const citySchema = mongoose.Schema(
       required: false,
       default: null,
     },
+    // Suggestion radius only. Approved locality IDs remain the actual boundary.
+    dairyDeliveryMaxRadiusKm: {
+      type: Number,
+      required: false,
+      default: 5,
+      min: 1,
+      max: 50,
+    },
   },
   {
     timestamps: true,

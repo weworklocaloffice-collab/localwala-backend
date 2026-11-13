@@ -29,6 +29,7 @@ const adminBookingRoute = require('./routes/ls.admin.booking.route');
 const adminReportRoute = require('./routes/ls.admin.report.route');
 const adminAuditRoute = require('./routes/ls.admin.audit.route');
 const extendedRoute = require('./routes/ls.extended.route');
+const marketingRoute = require('./routes/ls.marketing.route');
 
 const router = express.Router();
 
@@ -45,5 +46,6 @@ router.use('/partner', partnerProviderRoute);
 router.use('/partner', partnerStaffRoute);
 router.use('/public', catalogPublicRoute);
 router.use('/', extendedRoute);
+router.use('/', marketingRoute);
 
 module.exports = router;

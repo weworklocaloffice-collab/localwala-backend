@@ -114,6 +114,23 @@ locality: {
       trim: true,
     },
 
+    /**
+     * GST state for the delivery address. Optional so existing addresses keep
+     * working; when present it becomes the invoice place-of-supply instead of
+     * falling back to the seller's state.
+     */
+    state: {
+      type: String,
+      required: false,
+      trim: true,
+    },
+    stateCode: {
+      type: String,
+      required: false,
+      trim: true,
+      match: /^\d{2}$/,
+    },
+
     gstin: {
       type: String,
       required: false,

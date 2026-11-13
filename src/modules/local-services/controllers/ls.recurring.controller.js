@@ -66,4 +66,20 @@ const listOccurrences = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(await Occurrence.paginate(filter, options));
 });
 
-module.exports = { createAgreement, listAgreements, setAgreementStatus, listOccurrences };
+const adminListAgreements = catchAsync(async (req, res) => {
+  const filter = pick(req.query, ['status', 'provider', 'customer']);
+  const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  res.status(httpStatus.OK).send(await Agreement.paginate(filter, options));
+});
+
+const adminSetAgreementStatus = catchAsync(async (req, res) => {
+  const allowed = ['paused', 'cancelled', 'active'];
+  if (!allowed.includes(req.params.status)) throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid agreement status');
+  const doc = await Agreement.findById(req.params.id);
+  if (!doc) throw new ApiError(httpStatus.NOT_FOUND, 'Agreement not found');
+  doc.status = req.params.status;
+  await doc.save();
+  res.status(httpStatus.OK).send({ agreement: doc });
+});
+
+module.exports = { createAgreement, listAgreements, setAgreementStatus, listOccurrences, adminListAgreements, adminSetAgreementStatus };

@@ -762,6 +762,90 @@ orderIds: [],
     // a partner who can pay another outlet's rider can drain their own wallet.
     console.log('\n12. Partner fleet management');
 
+    const ownerCreatedMobile = nextMobile(6);
+    const ownerCreated = await request('POST', '/v1/dairy/partner/drivers/create', {
+      token: partner.token,
+      body: {
+        firstName: 'OwnerCreated',
+        lastName: 'Rider',
+        email: `ownercreated${stamp}@http.local`,
+        mobile: ownerCreatedMobile,
+        countryCode: '+91',
+        vehicleType: 'cycle',
+      },
+    });
+    const ownerCreatedProfile = ownerCreated.body && ownerCreated.body.rider;
+    const ownerCreatedInvite = ownerCreated.body && ownerCreated.body.invite;
+    check('the outlet owner creates a driver account from Partner app',
+      ownerCreated.status === 201 && ownerCreatedProfile && ownerCreatedInvite
+      && /^[a-f0-9]{48}$/.test(ownerCreated.body.inviteCode || ''),
+      `got ${ownerCreated.status} ${JSON.stringify(ownerCreated.body)}`);
+    const ownerDriverId = ownerCreatedProfile && (ownerCreatedProfile.id || ownerCreatedProfile._id);
+    const ownerInviteId = ownerCreatedInvite && (ownerCreatedInvite.id || ownerCreatedInvite._id);
+    const ownerUserId = ownerCreatedProfile && (ownerCreatedProfile.userId &&
+      (ownerCreatedProfile.userId.id || ownerCreatedProfile.userId._id || ownerCreatedProfile.userId));
+    if (ownerDriverId) created.drivers.push(new mongoose.Types.ObjectId(ownerDriverId));
+    if (ownerInviteId) created.invites.push(new mongoose.Types.ObjectId(ownerInviteId));
+    if (ownerUserId) created.users.push(new mongoose.Types.ObjectId(ownerUserId));
+
+    const ownerAccount = ownerUserId ? await User.findById(ownerUserId) : null;
+    check('owner-created account cannot sign in before phone activation',
+      ownerAccount && ownerAccount.role === 'dairyDriver' && ownerAccount.isMobileVerified === false
+      && ownerCreatedProfile.approvalStatus === 'pending'
+      && ownerCreatedProfile.activeStatus === false,
+      JSON.stringify(ownerAccount && { role: ownerAccount.role, verified: ownerAccount.isMobileVerified }));
+
+    if (ownerDriverId && ownerInviteId && ownerCreated.body && ownerCreated.body.inviteCode) {
+      const approveBeforeActivation = await request(
+        'PATCH',
+        `/v1/dairy/partner/drivers/${ownerDriverId}/approval`,
+        { token: partner.token, body: { approve: true } }
+      );
+      check('an owner cannot approve an unclaimed driver account',
+        approveBeforeActivation.status === 409,
+        `got ${approveBeforeActivation.status} ${JSON.stringify(approveBeforeActivation.body)}`);
+
+      const reissued = await request(
+        'POST',
+        `/v1/dairy/partner/drivers/invites/${ownerInviteId}/reissue`,
+        { token: partner.token }
+      );
+      check('the owner can reissue an account activation code',
+        reissued.status === 200 && /^[a-f0-9]{48}$/.test(reissued.body.inviteCode || ''),
+        `got ${reissued.status} ${JSON.stringify(reissued.body)}`);
+
+      if (reissued.status === 200 && reissued.body.inviteCode) {
+        const activatedAccount = await registrationService.registerDriver({
+          firstName: 'OwnerCreated',
+          lastName: 'Rider',
+          countryCode: '+91',
+          mobile: ownerCreatedMobile,
+          email: `ownercreated${stamp}@http.local`,
+          password: 'Rider@12345',
+          inviteCode: reissued.body.inviteCode,
+          role: 'dairyDriver',
+          payoutMode: 'per_can',
+        });
+        check('OTP signup activates the owner-created account instead of duplicating it',
+          activatedAccount.activatedExistingAccount === true
+          && String(activatedAccount.user._id) === String(ownerUserId)
+          && activatedAccount.user.isMobileVerified === true,
+          JSON.stringify(activatedAccount && {
+            activatedExistingAccount: activatedAccount.activatedExistingAccount,
+            userId: activatedAccount.user && activatedAccount.user._id,
+          }));
+        const approvalAfterActivation = await request(
+          'PATCH',
+          `/v1/dairy/partner/drivers/${ownerDriverId}/approval`,
+          { token: partner.token, body: { approve: true } }
+        );
+        check('owner can approve the driver after phone activation',
+          approvalAfterActivation.status === 200
+          && approvalAfterActivation.body.driver.approvalStatus === 'approved',
+          `got ${approvalAfterActivation.status} ${JSON.stringify(approvalAfterActivation.body)}`);
+      }
+    }
+
     const invitedMobile = nextMobile(8);
     const invite = await request('POST', '/v1/dairy/partner/drivers/invite', {
       token: partner.token,
@@ -783,6 +867,9 @@ orderIds: [],
     });
     check('re-inviting the same number is not an error', inviteAgain.status === 200,
       `got ${inviteAgain.status} ${JSON.stringify(inviteAgain.body)}`);
+    check('an invite returns a one-time registration code',
+      inviteAgain.status === 200 && /^[a-f0-9]{48}$/.test(inviteAgain.body.inviteCode || ''),
+      `got code=${Boolean(inviteAgain.body && inviteAgain.body.inviteCode)}`);
 
     const inviteList = await request('GET', '/v1/dairy/partner/drivers/invites', {
       token: partner.token,
@@ -796,6 +883,10 @@ orderIds: [],
       && Array.isArray(inviteList.body.invites)
       && !inviteList.body.invites.some((i) => String(i.mobile) === String(invitedMobile + 1)),
       'a rival invite leaked');
+    check('invitation codes and their hashes are never listed',
+      inviteList.status === 200
+      && inviteList.body.invites.every((i) => !i.inviteCode && !i.inviteCodeHash),
+      'a reusable invite credential leaked');
 
     // The rider registers with the invited number and must land on this outlet.
     // Called on the service rather than over HTTP: the route verifies a phone OTP
@@ -807,6 +898,7 @@ orderIds: [],
       mobile: invitedMobile,
       email: `invited${stamp}@http.local`,
       password: 'Rider@12345',
+      inviteCode: inviteAgain.body.inviteCode,
       role: 'dairyDriver',
       payoutMode: 'per_can',
       payoutRate: 5,
@@ -831,6 +923,47 @@ orderIds: [],
     check('the invited rider joined this outlet',
       String(registration.driver.business) === String(business._id),
       `business=${registration.driver.business}`);
+    check('a newly registered rider waits for owner approval',
+      registration.driver.approvalStatus === 'pending'
+      && registration.driver.activeStatus === false,
+      `approval=${registration.driver.approvalStatus} active=${registration.driver.activeStatus}`);
+
+    const invitedTokens = await tokenService.generateAuthTokens(
+      registration.user,
+      '127.0.0.1',
+      'http-suite-invited-driver'
+    );
+    created.tokens.push(invitedTokens.refresh.token);
+    const invitedToken = invitedTokens.access.token;
+    const pendingStatus = await request('GET', '/v1/dairy/driver/onboarding/status', {
+      token: invitedToken,
+    });
+    check('the rider can see pending approval and outlet name',
+      pendingStatus.status === 200
+      && pendingStatus.body.onboarding.status === 'pending'
+      && pendingStatus.body.onboarding.outletName === business.name,
+      `got ${pendingStatus.status} ${JSON.stringify(pendingStatus.body)}`);
+    const pendingManifest = await request('GET', '/v1/dairy/driver/run/today', {
+      token: invitedToken,
+    });
+    check('pending drivers cannot access operational delivery APIs', pendingManifest.status === 403,
+      `got ${pendingManifest.status} ${JSON.stringify(pendingManifest.body)}`);
+
+    const activateInvitedRider = await request(
+      'PATCH',
+      `/v1/dairy/partner/drivers/${registration.driver._id}/approval`,
+      { token: partner.token, body: { approve: true } }
+    );
+    check('the outlet owner can approve a newly registered rider',
+      activateInvitedRider.status === 200
+      && activateInvitedRider.body.driver.approvalStatus === 'approved'
+      && activateInvitedRider.body.driver.activeStatus === true,
+      `got ${activateInvitedRider.status} ${JSON.stringify(activateInvitedRider.body)}`);
+    const approvedManifest = await request('GET', '/v1/dairy/driver/run/today', {
+      token: invitedToken,
+    });
+    check('an approved driver can access delivery APIs', approvedManifest.status === 200,
+      `got ${approvedManifest.status} ${JSON.stringify(approvedManifest.body)}`);
 
     // A client-supplied `invitedBy` must no longer decide anything. Rejected at
     // validation, so the payload cannot even name a partner.

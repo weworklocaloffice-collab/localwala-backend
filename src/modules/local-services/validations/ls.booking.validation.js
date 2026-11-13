@@ -155,4 +155,15 @@ const refundDecisionBody = {
     .unknown(false),
 };
 
-module.exports = { createBookingBody, bookingIdParam, transitionParam, paymentBody, quoteBody, rescheduleBody, disputeBody, reviewBody, assignBody, complaintBody, refundDecisionBody };
+const favoriteServiceParam = {
+  params: Joi.object().keys({ service: objectId.required() }),
+};
+
+const favoriteListQuery = {
+  query: Joi.object().keys({
+    page: Joi.number().min(1),
+    limit: Joi.number().min(1).max(100),
+  }),
+};
+
+module.exports = { createBookingBody, bookingIdParam, transitionParam, paymentBody, quoteBody, rescheduleBody, disputeBody, reviewBody, assignBody, complaintBody, refundDecisionBody, favoriteServiceParam, favoriteListQuery };

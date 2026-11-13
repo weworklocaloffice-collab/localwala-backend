@@ -688,7 +688,8 @@ const nearMeRestaurant = async (latitude, longitude, uid, options) => {
     // render its default header exactly as it does today.
     let headerBanner = null;
     try {
-      headerBanner = await headerBannerResolver.resolveActiveHeaderBanner(city.id);
+      headerBanner = await headerBannerResolver.resolveActiveHeaderBanner(city ? city.id : null, 'food');
+      console.log('[home-header-banner] city=', city ? city.id : null, 'vertical=food', 'resolved=', headerBanner && headerBanner.id);
     } catch (headerBannerError) {
       console.error('[header-banner] failed to resolve active banner for home feed', headerBannerError);
       headerBanner = null;

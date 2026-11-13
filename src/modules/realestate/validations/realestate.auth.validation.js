@@ -6,6 +6,7 @@ const sendRegistrationOtpBody = {
     countryCode: Joi.string().required(),
     mobileNumber: Joi.alternatives().try(Joi.number(), Joi.string()).required(),
     locale: Joi.string().allow('', null),
+    role: Joi.string().allow('', null),
   }),
 };
 
@@ -21,6 +22,7 @@ const registerPartnerBody = {
     locale: Joi.string().allow('', null),
     remember: Joi.boolean(),
     userAgent: Joi.string().allow('', null),
+    role: Joi.string().allow('', null),
   }),
 };
 

@@ -24,12 +24,14 @@ const fs = require('fs');
 const path = require('path');
 const { DateTime } = require('luxon');
 const catchAsync = require('../utils/catchAsync');
+const ApiError = require('../utils/ApiError');
 const pick = require('../utils/pick');
 const {
   supportChatRoomService,
   supportChatConversionService,
   emailConfigService,
 } = require('../services');
+const { SupportChatRoom, DairyOrder } = require('../models');
 const uploadMiddleware = require('../middlewares/upload');
 const config = require('../config/config');
 const {
@@ -37,8 +39,28 @@ const {
   supportChatMessageSchemaKeys,
 } = require('../utils/importCollectionSchema');
 
+const isDairySupportType = (type) => String(type || '').startsWith('dairy');
+
+const requireOwnedDairyRoom = async (roomId, userId) => {
+  const room = await SupportChatRoom.findById(roomId).select('userId supportType vertical').lean();
+  if (!room) throw new ApiError(httpStatus.NOT_FOUND, 'Not found');
+  if (isDairySupportType(room.supportType) && String(room.userId) !== String(userId)) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'This support conversation belongs to another account');
+  }
+  return room;
+};
+
 const checkChatRoom = catchAsync(async (req, res) => {
   const { user, type, typeId } = req.body;
+  if (isDairySupportType(type)) {
+    if (!req.user || String(user) !== String(req.user._id)) {
+      throw new ApiError(httpStatus.FORBIDDEN, 'You can only open your own Dairy support conversation');
+    }
+    if (type === 'dairy_orders') {
+      const order = await DairyOrder.findOne({ _id: typeId, user: req.user._id }).select('_id').lean();
+      if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Dairy order not found');
+    }
+  }
   const options = pick(req.body, ['sortBy', 'limit', 'page']);
   const result = await supportChatRoomService.checkChatRoom(user, type, typeId, options);
   res.send(result);
@@ -52,7 +74,9 @@ const mySupportChat = catchAsync(async (req, res) => {
 
 const saveNewMessage = catchAsync(async (req, res) => {
   const { room, sender, msg, msgType } = req.body;
-  const result = await supportChatConversionService.saveNewMessage(room, sender, msg, msgType);
+  const supportRoom = await requireOwnedDairyRoom(room, req.user && req.user._id);
+  const safeSender = isDairySupportType(supportRoom.supportType) ? req.user._id : sender;
+  const result = await supportChatConversionService.saveNewMessage(room, safeSender, msg, msgType);
   res.send(result);
 });
 
@@ -101,6 +125,7 @@ const supportTeamChat = catchAsync(async (req, res) => {
 
 const getChatConversion = catchAsync(async (req, res) => {
   const { roomId } = req.body;
+  await requireOwnedDairyRoom(roomId, req.user && req.user._id);
   const options = pick(req.body, ['sortBy', 'limit', 'page']);
   const result = await supportChatConversionService.getMessages(roomId, options);
   res.send(result);

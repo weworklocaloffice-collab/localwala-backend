@@ -18,13 +18,21 @@
 
 const catchAsync = require('../utils/catchAsync');
 const mongoose = require('mongoose');
+const { status: httpStatus } = require('http-status');
+const ApiError = require('../utils/ApiError');
 const logger = require('../config/logger');
 const {
   supportChatRoomService,
   supportBotService,
   supportAssignmentService,
 } = require('../services');
-const { SupportChatRoom, SupportChatConversion, SupportQueue, CannedResponse, AgentPresence } = require('../models');
+const { SupportChatRoom, SupportChatConversion, SupportQueue, CannedResponse, AgentPresence, DairyOrder } = require('../models');
+
+const assertDairyRoomOwner = async (room, userId) => {
+  if (room && String(room.supportType || '').startsWith('dairy') && String(room.userId) !== String(userId)) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'This Dairy support conversation belongs to another account');
+  }
+};
 
 // POST /support_chat_room/bot/start — idempotent room + first bot greeting.
 // This is the bot-first entry point. Creates the room in `bot` handoverState
@@ -34,6 +42,15 @@ const { SupportChatRoom, SupportChatConversion, SupportQueue, CannedResponse, Ag
 // agent — the transcript already has the greeting from the first open.
 const botStart = catchAsync(async (req, res) => {
   const { user, type, typeId, locale } = req.body;
+  if (String(type || '').startsWith('dairy')) {
+    if (!req.user || String(user) !== String(req.user._id)) {
+      throw new ApiError(httpStatus.FORBIDDEN, 'You can only start your own Dairy support conversation');
+    }
+    if (type === 'dairy_orders') {
+      const order = await DairyOrder.findOne({ _id: typeId, user: req.user._id }).select('_id').lean();
+      if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Dairy order not found');
+    }
+  }
   const room = await supportChatRoomService.createOrGetBotRoom(user, type, typeId);
   // Ticket language drives language-aware routing later. Stamp once per turn;
   // never blank an existing value.
@@ -82,6 +99,7 @@ const botMessage = catchAsync(async (req, res) => {
   const { roomId, message, locale } = req.body;
   const room = await SupportChatRoom.findById(roomId);
   if (!room) throw new Error('Room not found');
+  await assertDairyRoomOwner(room, req.user && req.user._id);
   if (locale && room.language !== locale) {
     room.language = locale;
     await room.save();
@@ -114,8 +132,7 @@ const botMessage = catchAsync(async (req, res) => {
   room.lastMessageType = 'text';
   await room.save();
 
-  const typeId =
-    room.orders || room.booking || room.purchaseSubscription || room.complaints || null;
+  const typeId = room.dairyOrders || room.orders || room.booking || room.purchaseSubscription || room.complaints || null;
   const result = await supportBotService.handleBotTurn({
     roomId,
     userMessage: message,
@@ -147,6 +164,9 @@ const botMessage = catchAsync(async (req, res) => {
 const handover = catchAsync(async (req, res) => {
   const { id } = req.params;
   const { reason } = req.body;
+  const room = await SupportChatRoom.findById(id).select('userId supportType').lean();
+  if (!room) throw new ApiError(httpStatus.NOT_FOUND, 'Not found');
+  await assertDairyRoomOwner(room, req.user && req.user._id);
   const result = await supportAssignmentService.handoverToHuman(id, { reason: reason || 'user-request' });
   res.send({
     success: true,
@@ -251,6 +271,9 @@ const internalNote = catchAsync(async (req, res) => {
 const submitCsat = catchAsync(async (req, res) => {
   const { id } = req.params;
   const { score, comment } = req.body;
+  const currentRoom = await SupportChatRoom.findById(id).select('userId supportType').lean();
+  if (!currentRoom) throw new ApiError(httpStatus.NOT_FOUND, 'Not found');
+  await assertDairyRoomOwner(currentRoom, req.user && req.user._id);
   const room = await supportChatRoomService.submitCsat(id, score, comment);
   // A poor score is the strongest escalation signal available - stronger than
   // any timer - so it pages supervisors immediately instead of waiting for the
@@ -270,10 +293,11 @@ const submitCsat = catchAsync(async (req, res) => {
 const queueStatus = catchAsync(async (req, res) => {
   const { id } = req.params;
   const room = await SupportChatRoom.findById(id)
-    .select('handoverState assignedAgent slaDueAt status firstResponseAt firstResponseDueAt')
+    .select('userId supportType handoverState assignedAgent slaDueAt status firstResponseAt firstResponseDueAt')
     .populate('assignedAgent', 'firstName lastName image')
     .lean();
   if (!room) throw new Error('Room not found');
+  await assertDairyRoomOwner(room, req.user && req.user._id);
   res.send({
     success: true,
     handoverState: room.handoverState,

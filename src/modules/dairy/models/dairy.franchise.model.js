@@ -113,6 +113,19 @@ const dairyFranchiseSchema = mongoose.Schema(
       set: (v) => Math.round(v * 100),
       default: 0,
     },
+    joiningFeePaymentStatus: {
+      type: String,
+      enum: ['not_required', 'pending', 'initiated', 'paid', 'failed', 'waived'],
+      default: 'not_required',
+      required: true,
+    },
+    joiningFeePaymentInitiation: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'PaymentInitiation',
+      required: false,
+    },
+    joiningFeePaidAt: { type: Date, required: false },
+    joiningFeePaymentReference: { type: String, required: false, trim: true },
     /**
      * Royalty charged on gross sales. Separate from revenue share: a royalty is
      * usually a flat monthly amount, a share is proportional.

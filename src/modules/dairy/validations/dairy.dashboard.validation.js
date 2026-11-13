@@ -27,6 +27,7 @@ const Joi = require('joi');
 const dashboardValidation = {
   query: Joi.object().keys({
     lowStockThreshold: Joi.number().integer().min(0).max(1000),
+    period: Joi.string().valid('7d', '30d').default('7d'),
   }),
 };
 

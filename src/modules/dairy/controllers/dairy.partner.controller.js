@@ -21,6 +21,9 @@ const pick = require('../../../utils/pick');
 const partnerService = require('../services/dairy.partner.service');
 const fleetService = require('../services/dairy.fleet.service');
 const subscriptionService = require('../services/dairy.subscription.service');
+const availabilityService = require('../services/dairy.partner.availability.service');
+const partnerProfileService = require('../services/dairy.partner.profile.service');
+const franchisePaymentService = require('../services/dairy.franchise.payment.service');
 
 /**
  * The partner's own view of their outlet.
@@ -110,7 +113,20 @@ const driverInvite = catchAsync(async (req, res) => {
     ...req.body,
     invitedBy: req.user._id,
   });
-  res.send(result);
+  const invite = result.invite ? result.invite.toJSON() : null;
+  if (invite) delete invite.inviteCodeHash;
+  res.send({ ...result, invite });
+});
+
+/** Creates an outlet-owned account and returns its one-time activation code. */
+const driverCreate = catchAsync(async (req, res) => {
+  const result = await fleetService.createDriverAccount(req.outletId, {
+    ...req.body,
+    invitedBy: req.user._id,
+  });
+  const invite = result.invite ? result.invite.toJSON() : null;
+  if (invite) delete invite.inviteCodeHash;
+  res.status(201).send({ ...result, invite });
 });
 
 const driverInvites = catchAsync(async (req, res) => {
@@ -127,6 +143,13 @@ const driverInviteRevoke = catchAsync(async (req, res) => {
   res.send({ invite });
 });
 
+const driverActivationReissue = catchAsync(async (req, res) => {
+  const result = await fleetService.reissueDriverActivation(req.outletId, req.params.invite);
+  const invite = result.invite ? result.invite.toJSON() : null;
+  if (invite) delete invite.inviteCodeHash;
+  res.send({ ...result, invite });
+});
+
 /**
  * Approves or blocks a rider on this outlet's fleet.
  *
@@ -138,7 +161,7 @@ const driverApproval = catchAsync(async (req, res) => {
     req.outletId,
     req.params.driver,
     req.body.approve,
-    { reason: req.body.reason }
+    { reason: req.body.reason, reviewedBy: req.user._id }
   );
   res.send({ driver });
 });
@@ -187,6 +210,35 @@ const settlementList = catchAsync(async (req, res) => {
   res.send(pick(result, ['settlements', 'totalResults', 'page', 'limit']));
 });
 
+const settlementDetail = catchAsync(async (req, res) => {
+  const settlement = await partnerService.getOutletSettlementDetail(req.outletId, req.params.settlement);
+  res.send({ settlement });
+});
+
+const availability = catchAsync(async (req, res) => {
+  res.send(await availabilityService.getPartnerAvailability(req.outletId));
+});
+
+const outletProfile = catchAsync(async (req, res) => {
+  res.send(await partnerProfileService.getPartnerBusinessProfile(req.outletId));
+});
+
+const updateOutletLocation = catchAsync(async (req, res) => {
+  res.send(await partnerProfileService.updatePartnerBusinessLocation(req.outletId, req.body));
+});
+
+const payFranchiseJoiningFee = catchAsync(async (req, res) => {
+  const result = await franchisePaymentService.initiateJoiningFeePayment({
+    businessId: req.outletId,
+    userId: req.user._id,
+  });
+  res.status(201).send({ franchise: result.franchise, payLink: String(result.initiation._id) });
+});
+
+const updateAvailability = catchAsync(async (req, res) => {
+  res.send(await availabilityService.updatePartnerAvailability(req.outletId, req.user._id, req.body));
+});
+
 module.exports = {
   subscriptionList,
   subscriptionPause,
@@ -194,11 +246,19 @@ module.exports = {
   customerList,
   driverList,
   driverInvite,
+  driverCreate,
   driverInvites,
   driverInviteRevoke,
+  driverActivationReissue,
   driverApproval,
   driverRemove,
   driverPayout,
   earnings,
   settlementList,
+  settlementDetail,
+  availability,
+  updateAvailability,
+  outletProfile,
+  updateOutletLocation,
+  payFranchiseJoiningFee,
 };

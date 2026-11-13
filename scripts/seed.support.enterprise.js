@@ -43,6 +43,7 @@ const QUEUES = [
   { name: 'dining-help', skills: ['dining'], wipLimit: 3 },
   { name: 'tiffin-help', skills: ['tiffin_subscription'], wipLimit: 3 },
   { name: 'complaints', skills: ['complaints', 'reports', 'restaurant_complaints'], wipLimit: 3 },
+  { name: 'dairy-support', skills: ['dairy', 'dairy_orders', 'dairy_partner'], wipLimit: 3 },
 ];
 
 // firstResponseSec is ALWAYS 30: the thread countdown, the Breached tab and
@@ -54,7 +55,7 @@ const SLA_MATRIX = {
   low: { firstResponseSec: 30, resolutionSec: 14400 },
 };
 
-const SUPPORT_TYPES = ['orders', 'dining', 'tiffin_subscription', 'complaints'];
+const SUPPORT_TYPES = ['orders', 'dining', 'tiffin_subscription', 'complaints', 'dairy', 'dairy_orders', 'dairy_partner'];
 
 const CANNED = [
   {

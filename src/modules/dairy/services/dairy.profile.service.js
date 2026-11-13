@@ -18,7 +18,7 @@
 
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
-const { User, Business, DairyDriver, DairyFranchise } = require('../../../models');
+const { User, Business, DairyDriver, DairyPartner, DairyFranchise } = require('../../../models');
 const ApiError = require('../../../utils/ApiError');
 
 /**
@@ -59,36 +59,68 @@ const DAIRY_DRIVER = 'dairyDriver';
  * @param {string} userId the authenticated user's id
  * @returns {Promise<Object>} the `Business` document
  */
-const resolveActorBusiness = async (userId) => {
-  const owned = await Business.findOne({
-    owner: userId,
+const listActorBusinesses = async (userId) => {
+  const [owned, partnerAgreements, franchiseAgreements] = await Promise.all([
+    Business.find({ owner: userId, vertical: 'dairy', status: true }).select('_id'),
+    DairyPartner.find({ user: userId, status: { $in: ['active', 'pending'] } }).select('business status'),
+    DairyFranchise.find({ operator: userId, status: { $in: ['active', 'pending'] } }).select('business status'),
+  ]);
+  const ids = [...new Set([
+    ...owned.map((row) => String(row._id)),
+    ...partnerAgreements.map((row) => String(row.business)),
+    ...franchiseAgreements.map((row) => String(row.business)),
+  ])];
+  if (ids.length === 0) return [];
+
+  const businesses = await Business.find({
+    _id: { $in: ids },
     vertical: 'dairy',
     status: true,
+  }).select('_id name businessModel verified address city locality location owner');
+  const ownedIds = new Set(owned.map((row) => String(row._id)));
+  const partnerByBusiness = new Map(partnerAgreements.map((row) => [String(row.business), row]));
+  const franchiseByBusiness = new Map(franchiseAgreements.map((row) => [String(row.business), row]));
+  return businesses.map((business) => {
+    const id = String(business._id);
+    const partner = partnerByBusiness.get(id);
+    const franchise = franchiseByBusiness.get(id);
+    return {
+      business,
+      access: ownedIds.has(id) ? 'owner' : franchise ? 'franchise_operator' : 'commission_partner',
+      agreementStatus: franchise?.status || partner?.status || null,
+    };
   });
-  if (owned) {
-    return owned;
+};
+
+/**
+ * Resolve an outlet only after confirming a live ownership or agreement link.
+ * `selectedBusinessId` is untrusted device context, never an authorization claim.
+ */
+const resolveActorBusiness = async (userId, selectedBusinessId) => {
+  const outlets = await listActorBusinesses(userId);
+  if (outlets.length === 0) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'No dairy outlet is linked to this account');
   }
-
-  const agreement = await DairyFranchise.findOne({
-    operator: userId,
-    status: 'active',
-  }).select('business');
-
-  if (agreement && agreement.business) {
-    const operated = await Business.findOne({
-      _id: agreement.business,
-      vertical: 'dairy',
-      status: true,
-    });
-    if (operated) {
-      return operated;
-    }
+  if (selectedBusinessId) {
+    const selected = outlets.find((row) => String(row.business._id) === String(selectedBusinessId));
+    if (!selected) throw new ApiError(httpStatus.FORBIDDEN, 'This account is not authorized for the selected Dairy outlet');
+    return selected.business;
   }
+  if (outlets.length > 1) {
+    throw new ApiError(httpStatus.CONFLICT, 'Select a Dairy outlet before continuing');
+  }
+  return outlets[0].business;
+};
 
-  throw new ApiError(
-    httpStatus.FORBIDDEN,
-    'No dairy outlet is linked to this account'
-  );
+const selectActorBusiness = async (userId, businessId) => {
+  const outlets = await listActorBusinesses(userId);
+  const selected = outlets.find((row) => String(row.business._id) === String(businessId));
+  if (!selected) throw new ApiError(httpStatus.FORBIDDEN, 'This account is not authorized for the selected Dairy outlet');
+  return {
+    outlet: selected.business,
+    access: selected.access,
+    agreementStatus: selected.agreementStatus,
+  };
 };
 
 /**
@@ -142,14 +174,13 @@ const getAvailableRoles = async (uid) => {
     };
   }
 
-  const [business, driver] = await Promise.all([
-    Business.findOne({ owner: userId, status: true }).select(
-      '_id name businessModel ownDeliveryPartner driverPayoutMode'
-    ),
+  const [businesses, driver] = await Promise.all([
+    listActorBusinesses(userId),
     DairyDriver.findOne({ userId: userId }).select(
       '_id business payoutMode canCapacity vehicleType'
     ),
   ]);
+  const business = businesses[0]?.business || null;
 
   const available = [];
   if (business) {
@@ -241,6 +272,8 @@ const getDairyLoginInfo = async (uid) => {
 module.exports = {
   DAIRY_PARTNER,
   DAIRY_DRIVER,
+  listActorBusinesses,
+  selectActorBusiness,
   resolveActorBusiness,
   getAvailableRoles,
   switchRole,

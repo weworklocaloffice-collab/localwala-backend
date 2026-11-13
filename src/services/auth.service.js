@@ -686,7 +686,7 @@ const refreshAuthApp = async (refreshToken) => {
     return tokenService.generateAuthTokens(user);
     // eslint-disable-next-line no-unused-vars
   } catch (error) {
-    return new ApiError(httpStatus.UNAUTHORIZED, 'Please authenticate');
+    throw new ApiError(httpStatus.UNAUTHORIZED, 'Please authenticate');
   }
 };
 

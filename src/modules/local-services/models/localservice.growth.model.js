@@ -40,10 +40,25 @@ const subscriptionSchema = mongoose.Schema(
   {
     provider: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceProvider', required: true },
     plan: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceSubscriptionPlan', required: true },
-    status: { type: String, required: true, enum: ['active', 'expired', 'cancelled'], default: 'active' },
+    status: {
+      type: String,
+      required: true,
+      enum: ['pending_payment', 'active', 'expired', 'cancelled'],
+      default: 'active',
+    },
     startedAt: { type: Date, required: true, default: Date.now },
     renewAt: { type: Date, required: true },
     cancelledAt: { type: Date, required: false },
+    amount: moneyField(0),
+    paymentStatus: {
+      type: String,
+      required: true,
+      enum: ['unpaid', 'initiated', 'paid', 'refunded'],
+      default: 'paid',
+    },
+    paymentInitiation: { type: mongoose.SchemaTypes.ObjectId, ref: 'PaymentInitiation', required: false },
+    paidAt: { type: Date, required: false },
+    planSnapshot: { type: mongoose.Schema.Types.Mixed, required: false },
   },
   { timestamps: true, toJSON: { getters: true } }
 );

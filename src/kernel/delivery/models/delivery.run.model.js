@@ -152,6 +152,14 @@ const deliveryRunSchema = mongoose.Schema(
         default: 0,
       },
     },
+    lastLocation: {
+      type: String,
+      required: false,
+    },
+    lastLocationAt: {
+      type: Date,
+      required: false,
+    },
     /**
      * Depot return leg and the reconciliation verdict.
      *

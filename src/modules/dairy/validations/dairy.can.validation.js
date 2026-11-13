@@ -30,6 +30,15 @@ const pickupScanValidation = {
   }),
 };
 
+const returnScanValidation = {
+  body: Joi.object().keys({
+    clientRef: Joi.string().required(),
+    run: Joi.string().custom(objectId).required(),
+    canCodes: Joi.array().items(Joi.string()).min(1).max(50).required(),
+    note: Joi.string().allow('', null),
+  }),
+};
+
 const issueScanValidation = {
   body: Joi.object().keys({
     clientRef: Joi.string().required(),
@@ -46,7 +55,7 @@ const collectScanValidation = {
   body: Joi.object().keys({
     clientRef: Joi.string().required(),
     run: Joi.string().custom(objectId).required(),
-    stop: Joi.string().custom(objectId).allow('', null),
+    stop: Joi.string().custom(objectId).required(),
     canCodes: Joi.array().items(Joi.string()).min(1).max(20).required(),
     note: Joi.string().allow('', null),
   }),
@@ -127,6 +136,7 @@ const importCansValidation = {
 module.exports = {
   SCAN_EVENT_TYPES,
   pickupScanValidation,
+  returnScanValidation,
   issueScanValidation,
   collectScanValidation,
   depositSummaryValidation,

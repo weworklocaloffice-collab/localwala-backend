@@ -31,6 +31,7 @@ const localServiceServiceSchema = mongoose.Schema(
     key: { type: String, required: true, trim: true, lowercase: true, match: /^[a-z0-9_]+$/ },
     name: { type: String, required: true, trim: true },
     description: { type: String, required: false, trim: true },
+    image: { type: String, required: false, trim: true },
     category: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceCategory', required: true },
     categoryKey: { type: String, required: false, lowercase: true, trim: true },
     bookingMode: { type: String, required: true, enum: BOOKING_MODES },

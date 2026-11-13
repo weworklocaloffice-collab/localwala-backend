@@ -45,10 +45,22 @@ const dairyJoiningRequestSchema = mongoose.Schema(
       ref: 'Business',
       required: true,
     },
+    requestedBusinessModel: {
+      type: String,
+      enum: ['franchise', 'commission_partner'],
+      required: false,
+    },
+    assignedBusinessModel: {
+      type: String,
+      enum: ['direct', 'franchise', 'commission_partner'],
+      required: false,
+    },
+    // Kept temporarily so pre-migration applications remain readable. New
+    // registration never writes this legacy field.
     businessModel: {
       type: String,
+      enum: ['direct', 'franchise', 'commission_partner'],
       required: false,
-      default: 'direct', // direct, franchise, commission_partner
     },
     name: {
       type: String,

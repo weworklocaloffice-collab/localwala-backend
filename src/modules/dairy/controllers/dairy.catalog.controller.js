@@ -19,6 +19,7 @@
 const catchAsync = require('../../../utils/catchAsync');
 const pick = require('../../../utils/pick');
 const dairyCatalogService = require('../services/dairy.catalog.service');
+const dairyInventoryLotService = require('../services/dairy.inventory.lot.service');
 
 // //// Categories ////
 
@@ -95,12 +96,25 @@ const brandDelete = catchAsync(async (req, res) => {
 // //// Products ////
 
 const productCreate = catchAsync(async (req, res) => {
-  const product = await dairyCatalogService.createProduct(req.body);
+  // The authenticated outlet is authoritative; never trust an outlet id from
+  // the app payload when creating a partner-owned catalogue item.
+  const product = await dairyCatalogService.createProduct({
+    ...req.body,
+    business: req.outletId,
+  });
   res.send({ product });
 });
 
 const productList = catchAsync(async (req, res) => {
   const result = await dairyCatalogService.listProducts(req.query);
+  res.send(pick(result, ['products', 'totalResults', 'page', 'limit']));
+});
+
+const partnerProductList = catchAsync(async (req, res) => {
+  const result = await dairyCatalogService.listProducts({
+    ...req.query,
+    business: req.outletId,
+  });
   res.send(pick(result, ['products', 'totalResults', 'page', 'limit']));
 });
 
@@ -121,14 +135,17 @@ const productUpdate = catchAsync(async (req, res) => {
 
 /** Faceted search for the customer app's browse and search screens. */
 const productSearch = catchAsync(async (req, res) => {
-  const result = await dairyCatalogService.searchProducts(req.query);
+  const result = await dairyCatalogService.searchProducts({
+    ...req.query,
+    userId: req.user?._id,
+  });
   res.send(pick(result, ['products', 'totalResults', 'page', 'limit']));
 });
 
 // //// SKUs ////
 
 const skuCreate = catchAsync(async (req, res) => {
-  const sku = await dairyCatalogService.createSku(req.body);
+  const sku = await dairyCatalogService.createSku(req.body, req.outletId);
   res.send({ sku });
 });
 
@@ -138,6 +155,9 @@ const skuList = catchAsync(async (req, res) => {
       // Last write wins, so a `?business=` in the query cannot widen the list
       // beyond the outlet the token identifies.
       business: req.outletId,
+      // The partner inventory editor must be able to restore an intentionally
+      // paused SKU. Customer/catalog reads keep the active-only default.
+      includeInactive: true,
     });
     res.send(pick(result, ['skus', 'totalResults', 'page', 'limit']));
   });
@@ -151,6 +171,47 @@ const skuUpdate = catchAsync(async (req, res) => {
     const sku = await dairyCatalogService.adjustSkuStock(req.params.id, req.body, req.outletId);
     res.send({ sku });
   });
+
+const skuLots = catchAsync(async (req, res) => {
+  const result = await dairyInventoryLotService.listLots(req.params.id, req.outletId);
+  res.send(result);
+});
+
+const receiveSkuLot = catchAsync(async (req, res) => {
+  const lot = await dairyInventoryLotService.receiveLot(req.params.id, req.outletId, req.body, req.user && req.user._id);
+  res.status(201).send({ lot });
+});
+
+const writeOffSkuLot = catchAsync(async (req, res) => {
+  const lot = await dairyInventoryLotService.writeOffLot(req.params.id, req.outletId, req.params.lot, req.body, req.user && req.user._id);
+  res.send({ lot });
+});
+
+const setSkuLotDisposition = catchAsync(async (req, res) => {
+  const lot = await dairyInventoryLotService.setLotDisposition(req.params.id, req.outletId, req.params.lot, req.body, req.user && req.user._id);
+  res.send({ lot });
+});
+
+const inventoryMovements = catchAsync(async (req, res) => {
+  res.send(await dairyInventoryLotService.listInventoryMovements({
+    businessId: req.outletId,
+    skuId: req.query.sku,
+    lotId: req.query.lot,
+    eventType: req.query.eventType,
+    from: req.query.from,
+    to: req.query.to,
+    page: req.query.page,
+    limit: req.query.limit,
+  }));
+});
+
+const inventoryReport = catchAsync(async (req, res) => {
+  res.send({ report: await dairyInventoryLotService.getInventoryReport({
+    businessId: req.outletId,
+    from: req.query.from,
+    to: req.query.to,
+  }) });
+});
 
 // //// Tree, import, health ////
 
@@ -195,6 +256,7 @@ module.exports = {
   brandDelete,
   productCreate,
   productList,
+  partnerProductList,
   productDetail,
   productUpdate,
   productDelete,
@@ -203,6 +265,12 @@ module.exports = {
   skuList,
   skuUpdate,
   stockAdjust,
+  skuLots,
+  receiveSkuLot,
+  writeOffSkuLot,
+  setSkuLotDisposition,
+  inventoryMovements,
+  inventoryReport,
   categoryTree,
   importProducts,
   catalogHealth,

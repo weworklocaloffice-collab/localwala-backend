@@ -42,7 +42,9 @@ const registerPartnerValidation = {
     role: Joi.string().required().valid('dairyPartner'),
 
     businessName: Joi.string().required().trim(),
-    businessModel: Joi.string().valid('direct', 'franchise', 'commission_partner').default('direct'),
+    // This is only the applicant's requested model. The actual Business model
+    // remains unset until Admin creates the corresponding commercial agreement.
+    requestedBusinessModel: Joi.string().valid('franchise', 'commission_partner').required(),
     // No `ownDeliveryPartner`. It was a choice between "the platform dispatches my
     // riders" and "I hire my own", and the platform half no longer exists — every
     // dairy rider is employed by an outlet. The field stays on the shared
@@ -50,7 +52,6 @@ const registerPartnerValidation = {
     // sets it true. Accepting it here would be misleading, so a client that still
     // sends it is rejected rather than quietly ignored.
     shortDescription: Joi.string().allow('', null),
-    address: Joi.string().allow('', null),
     logo: Joi.string().allow('', null),
     cover: Joi.string().allow('', null),
     // Location is required. An outlet with no city and locality is invisible to
@@ -59,7 +60,6 @@ const registerPartnerValidation = {
     // present is necessary, not sufficient.
     city: Joi.string().custom(objectId).required(),
     locality: Joi.string().custom(objectId).required(),
-    coordinates: Joi.array().items(Joi.number()).length(2).allow('', null),
     expectedDrivers: Joi.number().integer().min(0).default(0),
 
     // Compliance — reviewed by an admin after registration, never blocking.
@@ -76,6 +76,7 @@ const registerPartnerValidation = {
 const registerDriverValidation = {
   body: Joi.object().keys({
     id: Joi.string().required(),
+    inviteCode: Joi.string().hex().length(48).required(),
     firstName: Joi.string().required().trim(),
     lastName: Joi.string().required().trim(),
     countryCode: Joi.string().required(),

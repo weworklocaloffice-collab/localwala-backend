@@ -49,6 +49,10 @@ router.route('/bookings/:id/claim').post(appAuth('localservices_partner_read'), 
 
 router.route('/bookings/:id').get(appAuth('localservices_partner_read'), validate(BV.bookingIdParam), controller.getBookingDetail);
 
+router
+  .route('/bookings/:id/invoice/pdf')
+  .get(appAuth('localservices_partner_read'), validate(BV.bookingIdParam), bookingController.partnerInvoicePdf);
+
 router.route('/bookings/:id/:status').post(appAuth('localservices_partner_read'), validate(BV.transitionParam), controller.partnerTransitionBooking);
 
 router.route('/bookings/:id/assign').post(appAuth('localservices_partner_read'), validate(BV.assignBody), controller.assignBooking);
@@ -60,6 +64,13 @@ router.route('/bookings/:id/release').post(appAuth('localservices_partner_read')
 router.route('/documents').post(appAuth('localservices_partner_read'), validate(V.documentBody), controller.uploadDocument).get(appAuth('localservices_partner_read'), controller.listMyDocuments);
 
 router.route('/earnings').get(appAuth('localservices_partner_read'), controller.myEarnings);
+
+router.route('/policies').get(appAuth('localservices_partner_read'), controller.myPolicies);
+
+router
+  .route('/complaints')
+  .get(appAuth('localservices_partner_read'), bookingController.listMyComplaints)
+  .post(appAuth('localservices_partner_read'), validate(BV.complaintBody), controller.createPartnerComplaint);
 
 const revenueController = require('../controllers/ls.revenue.controller');
 

@@ -26,6 +26,8 @@ const {
 const ApiError = require('../../../utils/ApiError');
 const billingService = require('./dairy.subscription.billing.service');
 const verticalService = require('../../../kernel/vertical/services/vertical.service');
+const dairyCoverageService = require('./dairy.coverage.service');
+const dairyAvailabilityService = require('./dairy.partner.availability.service');
 
 /**
  * Reads the configured skip cutoff, never throwing.
@@ -108,6 +110,12 @@ const createSubscription = async (param) => {
   // would be a far larger act than turning a switch off, and the operator did not
   // ask for it.
   await verticalService.assertTradingOpen('dairy', 'a new plan cannot be started');
+  await dairyAvailabilityService.assertOrderAvailable(param.business || sku.business);
+  await dairyCoverageService.assertAddressCovered({
+    businessId: param.business || sku.business,
+    addressId: param.address,
+    userId: param.user,
+  });
 
   const subscriptionNo = await nextSubscriptionNo();
   const amount = (sku.price || 0) * (param.quantity || 1);
@@ -308,6 +316,11 @@ const changeQuantity = async (subscriptionId, quantity, param) => {
 const changeAddress = async (subscriptionId, param) => {
   const subscription = await getSubscription(subscriptionId);
   assertMutable(subscription);
+  await dairyCoverageService.assertAddressCovered({
+    businessId: subscription.business,
+    addressId: param.address,
+    userId: subscription.user,
+  });
 
   const previous = subscription.addressRaw;
   subscription.address = param.address;

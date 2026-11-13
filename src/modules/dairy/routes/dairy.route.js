@@ -18,6 +18,7 @@
 
 const express = require('express');
 const appAuth = require('../../../middlewares/appAuth');
+const appAuthOptional = require('../../../middlewares/appAuthOptional');
 const webAuth = require('../../../middlewares/webAuth');
 const validate = require('../../../middlewares/validate');
 
@@ -27,6 +28,7 @@ const DeliveryRunValidation = require('../../../kernel/delivery/validations/deli
 const DairyCanValidation = require('../validations/dairy.can.validation');
 const DairyContainerValidation = require('../validations/dairy.container.validation');
 const DairyCatalogValidation = require('../validations/dairy.catalog.validation');
+const DairyInventoryValidation = require('../validations/dairy.inventory.validation');
 const DairySubscriptionValidation = require('../validations/dairy.subscription.validation');
 const DairyOrderValidation = require('../validations/dairy.order.validation');
 const DairyProcurementValidation = require('../validations/dairy.procurement.validation');
@@ -58,9 +60,21 @@ const DairyComplianceController = require('../controllers/dairy.compliance.contr
 const DairyDashboardController = require('../controllers/dairy.dashboard.controller');
 const DairyReportController = require('../controllers/dairy.report.controller');
 const { partnerAuth } = require('../middlewares/dairy.outlet');
+const driverAuth = require('../middlewares/dairy.driver.auth');
 const DairyPayableController = require('../controllers/dairy.provider.payable.controller');
 const DairyOperationsController = require('../controllers/dairy.operations.controller');
+const DairySupportValidation = require('../validations/dairy.support.validation');
+const DairySupportChatValidation = require('../validations/dairy.support.chat.validation');
+const DairySupportChatController = require('../controllers/dairy.support.chat.controller');
+const DairyOutletController = require('../controllers/dairy.outlet.controller');
+const DairyCoverageValidation = require('../validations/dairy.coverage.validation');
+const DairyCoverageController = require('../controllers/dairy.coverage.controller');
+const DairyMarketingValidation = require('../validations/dairy.marketing.validation');
+const DairyMarketingController = require('../controllers/dairy.marketing.controller');
+const DairyCouponValidation = require('../validations/dairy.coupon.validation');
+const DairyCouponController = require('../controllers/dairy.coupon.controller');
 const DeliveryRunController = require('../../../kernel/delivery/controllers/delivery.run.controller');
+const rateLimiter = require('../../../middlewares/rateLimiter');
 
 const router = express.Router();
 
@@ -94,6 +108,14 @@ router.patch(
   appAuth('dairy_switch_role'),
   validate(DairyProfileValidation.switchRoleValidation),
   DairyProfileController.switchRole
+);
+// The selected outlet id is device context only. The API confirms ownership or
+// an active/pending Dairy agreement both here and on every partnerAuth request.
+router.get('/partner/outlets', appAuth('dairy_partner_outlets_read'), DairyOutletController.list);
+router.post('/partner/outlets/select',
+  appAuth('dairy_partner_outlets_read'),
+  validate(DairySupportValidation.outletSelect),
+  DairyOutletController.select
 );
 // Role Resolution Routes //
 
@@ -134,60 +156,179 @@ router.patch(
 );
 // Joining Request Review Routes //
 
+// Dairy marketing packages and paid campaign moderation are isolated from
+// Restaurant, Stores, and the platform-wide banner configuration.
+router.get('/admin/marketing/packages',
+  webAuth('dairy_marketing_manage'),
+  validate(DairyMarketingValidation.packageListValidation),
+  DairyMarketingController.adminPackages
+);
+router.post('/admin/marketing/packages',
+  webAuth('dairy_marketing_manage'),
+  validate(DairyMarketingValidation.packageCreateValidation),
+  DairyMarketingController.createPackage
+);
+router.patch('/admin/marketing/packages/:package',
+  webAuth('dairy_marketing_manage'),
+  validate(DairyMarketingValidation.packageUpdateValidation),
+  DairyMarketingController.updatePackage
+);
+router.get('/admin/marketing/campaigns',
+  webAuth('dairy_marketing_review'),
+  validate(DairyMarketingValidation.campaignListValidation),
+  DairyMarketingController.adminCampaigns
+);
+router.patch('/admin/marketing/campaigns/:campaign/review',
+  webAuth('dairy_marketing_review'),
+  validate(DairyMarketingValidation.campaignReviewValidation),
+  DairyMarketingController.reviewCampaign
+);
+
+router.get('/partner/marketing/packages',
+  partnerAuth('dairy_partner_marketing_read'),
+  validate(DairyMarketingValidation.packageListValidation),
+  DairyMarketingController.partnerPackages
+);
+router.get('/partner/marketing/campaigns',
+  partnerAuth('dairy_partner_marketing_read'),
+  validate(DairyMarketingValidation.campaignListValidation),
+  DairyMarketingController.partnerCampaigns
+);
+router.post('/partner/marketing/campaigns',
+  partnerAuth('dairy_partner_marketing_manage'),
+  validate(DairyMarketingValidation.campaignCreateValidation),
+  DairyMarketingController.createCampaign
+);
+router.post('/partner/marketing/campaigns/:campaign/pay',
+  partnerAuth('dairy_partner_marketing_manage'),
+  validate(DairyMarketingValidation.campaignPayValidation),
+  DairyMarketingController.payCampaign
+);
+
+router.get('/customer/marketing/featured',
+  appAuth('dairy_customer_cart_manage'),
+  validate(DairyMarketingValidation.featuredValidation),
+  DairyMarketingController.featured
+);
+router.post('/customer/marketing/campaigns/:campaign/events',
+  appAuth('dairy_customer_cart_manage'),
+  validate(DairyMarketingValidation.eventValidation),
+  DairyMarketingController.recordEvent
+);
+
+// Dairy partner-created coupons are reviewed by Dairy admins and redeemed only
+// against one-time Dairy carts. These paths do not participate in other verticals.
+router.get('/partner/marketing/coupons',
+  partnerAuth('dairy_partner_marketing_read'),
+  validate(DairyCouponValidation.partnerListValidation),
+  DairyCouponController.partnerList
+);
+router.get('/partner/marketing/coupons/:coupon/report',
+  partnerAuth('dairy_partner_marketing_read'),
+  validate(DairyCouponValidation.partnerReportValidation),
+  DairyCouponController.partnerReport
+);
+router.post('/partner/marketing/coupons',
+  partnerAuth('dairy_partner_marketing_manage'),
+  validate(DairyCouponValidation.createValidation),
+  DairyCouponController.create
+);
+router.patch('/partner/marketing/coupons/:coupon/disable',
+  partnerAuth('dairy_partner_marketing_manage'),
+  validate(DairyCouponValidation.disableValidation),
+  DairyCouponController.disable
+);
+router.get('/admin/marketing/coupons',
+  webAuth('dairy_marketing_review'),
+  validate(DairyCouponValidation.adminListValidation),
+  DairyCouponController.adminList
+);
+router.patch('/admin/marketing/coupons/:coupon/review',
+  webAuth('dairy_marketing_review'),
+  validate(DairyCouponValidation.reviewValidation),
+  DairyCouponController.review
+);
+router.post('/customer/coupons/quote',
+  appAuth('dairy_customer_cart_manage'),
+  validate(DairyCouponValidation.quoteValidation),
+  DairyCouponController.quote
+);
+router.get('/customer/coupons/available',
+  appAuth('dairy_customer_cart_manage'),
+  DairyCouponController.available
+);
+
 // Delivery Run Routes — Rider //
 // No rider id in any of these paths. The rider is resolved from the access token,
 // so there is no client-supplied value to tamper with.
+// Status remains readable before approval; all operational calls below require
+// an approved and active DairyDriver profile.
+router.get(
+  '/driver/onboarding/status',
+  appAuth('dairy_driver_profile'),
+  DairyDriverFleetController.onboardingStatus
+);
 router.get(
   '/driver/run/today',
-  appAuth('dairy_driver_run_today'),
+  driverAuth('dairy_driver_run_today'),
   validate(DeliveryRunValidation.driverRunValidation),
   DeliveryRunController.todayRun
 );
 router.get(
   '/driver/runs/history',
-  appAuth('dairy_driver_run_history'),
+  driverAuth('dairy_driver_run_history'),
   validate(DeliveryRunValidation.agentRunsValidation),
   DeliveryRunController.agentRuns
 );
 router.get(
   '/driver/runs/detail/:run',
-  appAuth('dairy_driver_run_detail'),
+  driverAuth('dairy_driver_run_detail'),
   validate(DeliveryRunValidation.runDetailValidation),
   DeliveryRunController.runDetail
 );
 router.patch(
   '/driver/runs/start/:run',
-  appAuth('dairy_driver_run_start'),
+  driverAuth('dairy_driver_run_start'),
   validate(DeliveryRunValidation.startRunValidation),
   DeliveryRunController.startRun
 );
 router.patch(
   '/driver/runs/complete/:run',
-  appAuth('dairy_driver_run_complete'),
+  driverAuth('dairy_driver_run_complete'),
   validate(DeliveryRunValidation.completeRunValidation),
   DeliveryRunController.completeRun
 );
+router.patch(
+  '/driver/runs/:run/location',
+  driverAuth('dairy_driver_run_detail'),
+  DeliveryRunController.pingLocation
+);
+router.get(
+  '/driver/metrics',
+  driverAuth('dairy_driver_run_detail'),
+  DeliveryRunController.driverMetrics
+);
 router.get(
   '/driver/stops/list/:run',
-  appAuth('dairy_driver_stop_list'),
+  driverAuth('dairy_driver_stop_list'),
   validate(DeliveryRunValidation.runDetailValidation),
   DeliveryRunController.stopList
 );
 router.patch(
   '/driver/stops/arrive/:stop',
-  appAuth('dairy_driver_stop_arrive'),
+  driverAuth('dairy_driver_stop_arrive'),
   validate(DeliveryRunValidation.arriveStopValidation),
   DeliveryRunController.arriveStop
 );
 router.patch(
   '/driver/stops/deliver/:stop',
-  appAuth('dairy_driver_stop_deliver'),
+  driverAuth('dairy_driver_stop_deliver'),
   validate(DeliveryRunValidation.deliverStopValidation),
   DeliveryRunController.deliverStop
 );
 router.patch(
   '/driver/stops/:status/:stop',
-  appAuth('dairy_driver_stop_skip'),
+  driverAuth('dairy_driver_stop_skip', 'dairy_driver_stop_fail'),
   validate(DeliveryRunValidation.skipStopValidation),
   DeliveryRunController.markStop
 );
@@ -221,31 +362,37 @@ router.patch('/partner/runs/cancel/:run',
 // on reconnect, so the same movement can arrive twice.
 router.patch(
   '/driver/cans/pickup_scan',
-  appAuth('dairy_driver_can_pickup_scan'),
+  driverAuth('dairy_driver_can_pickup_scan'),
   validate(DairyCanValidation.pickupScanValidation),
   DairyCanController.pickupScan
 );
 router.patch(
+  '/driver/cans/return_scan',
+  driverAuth('dairy_driver_can_return_scan'),
+  validate(DairyCanValidation.returnScanValidation),
+  DairyCanController.returnScan
+);
+router.patch(
   '/driver/cans/issue_scan',
-  appAuth('dairy_driver_can_issue_scan'),
+  driverAuth('dairy_driver_can_issue_scan'),
   validate(DairyCanValidation.issueScanValidation),
   DairyCanController.issueScan
 );
 router.patch(
   '/driver/cans/collect_scan',
-  appAuth('dairy_driver_can_collect_scan'),
+  driverAuth('dairy_driver_can_collect_scan'),
   validate(DairyCanValidation.collectScanValidation),
   DairyCanController.collectScan
 );
 router.get(
   '/driver/cans/deposit_summary',
-  appAuth('dairy_driver_can_deposit_summary'),
+  driverAuth('dairy_driver_can_deposit_summary'),
   validate(DairyCanValidation.depositSummaryValidation),
   DairyCanController.depositSummary
 );
 router.get(
   '/driver/cans/run_balance/:run',
-  appAuth('dairy_driver_can_deposit_summary'),
+  driverAuth('dairy_driver_can_deposit_summary'),
   validate(DairyCanValidation.runBalanceValidation),
   DairyCanController.runBalance
 );
@@ -318,13 +465,13 @@ router.patch('/partner/containers/:action/:can',
 // Container Rotation Routes — Rider //
 router.post(
   '/driver/containers/swap_plan/:id',
-  appAuth('dairy_driver_container_swap_plan'),
+  driverAuth('dairy_driver_container_swap_plan'),
   validate(DairyContainerValidation.planSwapValidation),
   DairyContainerController.planSwap
 );
 router.patch(
   '/driver/containers/swap_complete/:assignment/:id',
-  appAuth('dairy_driver_container_swap_complete'),
+  driverAuth('dairy_driver_container_swap_complete'),
   validate(DairyContainerValidation.completeSwapValidation),
   DairyContainerController.completeSwap
 );
@@ -348,6 +495,7 @@ router.get('/catalog/brands', validate(DairyCatalogValidation.brandListValidatio
 router.get('/catalog/products', validate(DairyCatalogValidation.productListValidation), DairyCatalogController.productList);
 router.get(
   '/catalog/products/search',
+  appAuthOptional(),
   validate(DairyCatalogValidation.searchValidation),
   DairyCatalogController.productSearch
 );
@@ -461,6 +609,11 @@ router.get(
 // Catalog Routes — Partner //
 // Products and pack sizes are per-outlet: each outlet curates its own list with
 // its own price and stock.
+router.get('/partner/products',
+  partnerAuth('dairy_partner_product_list'),
+  validate(DairyCatalogValidation.productListValidation),
+  DairyCatalogController.partnerProductList
+);
 router.post('/partner/products',
   partnerAuth('dairy_partner_product_add'),
   validate(DairyCatalogValidation.productCreateValidation),
@@ -495,6 +648,36 @@ router.patch('/partner/skus/:id/stock',
   partnerAuth('dairy_partner_stock_adjust'),
   validate(DairyCatalogValidation.stockAdjustValidation),
   DairyCatalogController.stockAdjust
+);
+router.get('/partner/skus/:id/lots',
+  partnerAuth('dairy_partner_inventory_list'),
+  validate(DairyCatalogValidation.skuLotsValidation),
+  DairyCatalogController.skuLots
+);
+router.post('/partner/skus/:id/lots',
+  partnerAuth('dairy_partner_stock_adjust'),
+  validate(DairyCatalogValidation.lotReceiveValidation),
+  DairyCatalogController.receiveSkuLot
+);
+router.post('/partner/skus/:id/lots/:lot/write-off',
+  partnerAuth('dairy_partner_stock_adjust'),
+  validate(DairyInventoryValidation.writeOffValidation),
+  DairyCatalogController.writeOffSkuLot
+);
+router.patch('/partner/skus/:id/lots/:lot/disposition',
+  partnerAuth('dairy_partner_stock_adjust'),
+  validate(DairyInventoryValidation.lotDispositionValidation),
+  DairyCatalogController.setSkuLotDisposition
+);
+router.get('/partner/inventory/movements',
+  partnerAuth('dairy_partner_inventory_list'),
+  validate(DairyInventoryValidation.movementsValidation),
+  DairyCatalogController.inventoryMovements
+);
+router.get('/partner/inventory/report',
+  partnerAuth('dairy_partner_inventory_list'),
+  validate(DairyInventoryValidation.reportValidation),
+  DairyCatalogController.inventoryReport
 );
 router.get('/partner/skus/list',
   partnerAuth('dairy_partner_inventory_list'),
@@ -965,6 +1148,67 @@ router.get('/partner/dashboard',
   validate(DairyDashboardValidation.dashboardValidation),
   DairyDashboardController.dashboard
 );
+router.get('/partner/reports/sales',
+  partnerAuth('dairy_partner_reports_sales'),
+  validate(DairyReportValidation.partnerSalesValidation),
+  DairyReportController.partnerSales
+);
+router.get('/partner/reports/sales/export',
+  partnerAuth('dairy_partner_reports_sales'),
+  validate(DairyReportValidation.partnerSalesExportValidation),
+  DairyReportController.exportSales
+);
+
+// Outlet location setup is the one required onboarding action after approval.
+// It remains accessible while operational partner endpoints are locked.
+router.get('/partner/profile/business',
+  partnerAuth('dairy_partner_profile'),
+  DairyPartnerController.outletProfile
+);
+router.patch('/partner/profile/business',
+  partnerAuth('dairy_partner_profile'),
+  validate(DairyPartnerValidation.outletLocationValidation),
+  DairyPartnerController.updateOutletLocation
+);
+router.post('/partner/franchise/joining-fee/pay',
+  partnerAuth('dairy_partner_profile'),
+  validate(DairyPartnerValidation.franchiseJoiningFeePaymentValidation),
+  DairyPartnerController.payFranchiseJoiningFee
+);
+
+// Delivery coverage requests. The active service area changes only after an
+// administrator approves the partner's request.
+router.get('/partner/coverage',
+  partnerAuth('dairy_partner_coverage_manage'),
+  DairyCoverageController.partnerCoverage
+);
+router.get('/partner/availability',
+  partnerAuth('dairy_partner_availability_manage'),
+  DairyPartnerController.availability
+);
+router.patch('/partner/availability',
+  partnerAuth('dairy_partner_availability_manage'),
+  validate(DairyPartnerValidation.availabilitySettingsValidation),
+  DairyPartnerController.updateAvailability
+);
+router.post('/partner/coverage/requests',
+  partnerAuth('dairy_partner_coverage_manage'),
+  validate(DairyCoverageValidation.requestCreateValidation),
+  DairyCoverageController.createRequest
+);
+
+// Admin approval queue. The reviewer never supplies a business id: the
+// request itself pins the outlet, city, and selected localities.
+router.get('/admin/coverage/requests',
+  webAuth('dairy_coverage_review'),
+  validate(DairyCoverageValidation.requestListValidation),
+  DairyCoverageController.listRequests
+);
+router.patch('/admin/coverage/requests/:request',
+  webAuth('dairy_coverage_review'),
+  validate(DairyCoverageValidation.requestReviewValidation),
+  DairyCoverageController.reviewRequest
+);
 
 // Sales & revenue report (admin). Aggregates dairy orders by model, status and
 // outlet for the requested period.
@@ -972,6 +1216,11 @@ router.get('/admin/reports/sales',
   webAuth('dairy_operations_view'),
   validate(DairyReportValidation.salesSummaryValidation),
   DairyReportController.salesSummary
+);
+router.get('/admin/reports/sales/export',
+  webAuth('dairy_operations_view'),
+  validate(DairyReportValidation.salesExportValidation),
+  DairyReportController.exportSales
 );
 
 router.get('/admin/reports/compliance',
@@ -985,6 +1234,18 @@ router.get('/admin/reports/settlements',
   validate(DairyReportValidation.settlementSummaryValidation),
   DairyReportController.settlementSummary
 );
+
+// Dairy conversations enter the same SupportChatRoom queues and agent desk as
+// Restaurant/Food support. Customer chats use the shared user support routes;
+// partner chats add outlet scope here.
+router.get('/partner/support/chat', partnerAuth('dairy_partner_support'), DairySupportChatController.list);
+router.post('/partner/support/chat', partnerAuth('dairy_partner_support'), DairySupportChatController.create);
+router.get('/partner/support/chat/:room/messages', partnerAuth('dairy_partner_support'),
+  validate(DairySupportChatValidation.roomParam), DairySupportChatController.messages);
+router.post('/partner/support/chat/:room/messages', partnerAuth('dairy_partner_support'), rateLimiter.supportChatSendLimiter,
+  validate(DairySupportChatValidation.message), DairySupportChatController.sendMessage);
+router.post('/partner/support/chat/:room/handover', partnerAuth('dairy_partner_support'),
+  validate(DairySupportChatValidation.roomParam), DairySupportChatController.handover);
 // Partner Dashboard Routes //
 
 // Partner Outlet Views — Subscriptions, Customers, Fleet, Earnings //
@@ -1035,6 +1296,12 @@ router.post('/partner/drivers/invite',
   DairyPartnerController.driverInvite
 );
 
+router.post('/partner/drivers/create',
+  partnerAuth('dairy_partner_driver_invite'),
+  validate(DairyFleetValidation.driverCreateValidation),
+  DairyPartnerController.driverCreate
+);
+
 router.get('/partner/drivers/invites',
   partnerAuth('dairy_partner_driver_list'),
   validate(DairyFleetValidation.driverInviteListValidation),
@@ -1045,6 +1312,12 @@ router.delete('/partner/drivers/invites/:invite',
   partnerAuth('dairy_partner_driver_invite'),
   validate(DairyFleetValidation.driverInviteRevokeValidation),
   DairyPartnerController.driverInviteRevoke
+);
+
+router.post('/partner/drivers/invites/:invite/reissue',
+  partnerAuth('dairy_partner_driver_invite'),
+  validate(DairyFleetValidation.driverActivationReissueValidation),
+  DairyPartnerController.driverActivationReissue
 );
 
 router.patch('/partner/drivers/:driver/approval',
@@ -1089,19 +1362,19 @@ router.delete('/notification/:notification',
 // Rider-side money. Scoped to the rider's own `DairyDriver` record, never to a
 // client-supplied id, so a rider cannot read another's earnings.
 router.get('/driver/earnings',
-  appAuth('dairy_driver_run_today'),
+  driverAuth('dairy_driver_run_today'),
   validate(DairyFleetValidation.driverPeriodValidation),
   DairyDriverFleetController.earnings
 );
 
 router.get('/driver/cash_in_hand',
-  appAuth('dairy_driver_can_deposit_summary'),
+  driverAuth('dairy_driver_can_deposit_summary'),
   validate(DairyFleetValidation.driverPeriodValidation),
   DairyDriverFleetController.cashInHand
 );
 
 router.post('/driver/cash_deposit',
-  appAuth('dairy_driver_can_deposit_summary'),
+  driverAuth('dairy_driver_can_deposit_summary'),
   validate(DairyFleetValidation.cashDepositValidation),
   DairyDriverFleetController.cashDeposit
 );
@@ -1116,6 +1389,11 @@ router.get('/partner/settlements',
   partnerAuth('dairy_partner_settlements'),
   validate(DairyPartnerValidation.settlementListValidation),
   DairyPartnerController.settlementList
+);
+router.get('/partner/settlements/detail/:settlement',
+  partnerAuth('dairy_partner_settlements'),
+  validate(DairyPartnerValidation.settlementDetailValidation),
+  DairyPartnerController.settlementDetail
 );
 
 // Partner Outlet Views //

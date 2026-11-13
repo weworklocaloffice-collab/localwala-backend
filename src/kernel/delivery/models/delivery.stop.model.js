@@ -86,6 +86,17 @@ const deliveryStopSchema = mongoose.Schema(
         required: false,
       },
     },
+    /** Actual rider GPS recorded on arrival; keep the destination pin intact. */
+    arrivalLocation: {
+      type: {
+        type: String,
+        enum: ['Point'],
+      },
+      coordinates: {
+        type: [Number],
+        required: false,
+      },
+    },
     order: {
       type: mongoose.SchemaTypes.ObjectId,
       ref: 'DairyOrder',
@@ -128,6 +139,11 @@ const deliveryStopSchema = mongoose.Schema(
       required: false,
       default: 0,
     },
+    plannedEmptyCans: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
     amountDue: {
       type: Number,
       required: false,
@@ -156,6 +172,18 @@ const deliveryStopSchema = mongoose.Schema(
       type: String,
       required: false,
     },
+    /** Why fewer cans were handed over than planned. */
+    shortfallReason: {
+      type: String,
+      required: false,
+    },
+    /** Line items for this stop (copied from the order at dispatch). */
+    items: [
+      {
+        name: { type: String, required: false },
+        quantity: { type: Number, required: false, default: 0 },
+      },
+    ],
     /**
      * Non-zero only when the rider explicitly overrides the reconciliation
      * arithmetic, which requires a reason at run close.
@@ -176,6 +204,7 @@ const deliveryStopSchema = mongoose.Schema(
 deliveryStopSchema.plugin(toJSON);
 deliveryStopSchema.plugin(paginate);
 deliveryStopSchema.index({ location: '2dsphere' });
+deliveryStopSchema.index({ arrivalLocation: '2dsphere' });
 deliveryStopSchema.index({ run: 1, sequence: 1 });
 deliveryStopSchema.index({ customer: 1, createdAt: -1 });
 deliveryStopSchema.index({ status: 1, 'slot.windowStart': 1 });

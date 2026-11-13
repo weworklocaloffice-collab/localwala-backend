@@ -16,8 +16,11 @@
  * LWL|WWL|2026|LOCALWALA|NODE
  */
 
+const { status: httpStatus } = require('http-status');
+const ApiError = require('../../../utils/ApiError');
 const catchAsync = require('../../../utils/catchAsync');
 const pick = require('../../../utils/pick');
+const { roleRights } = require('../../../config/roles');
 const deliveryRunService = require('../services/delivery.run.service');
 
 /**
@@ -60,11 +63,11 @@ const maybeDriverId = async (req) => {
  * @returns {Object|null} run
  */
 const todayRun = catchAsync(async (req, res) => {
-  const agent = await deliveryRunService.getRunForAgentAndDate(
+  const runs = await deliveryRunService.getRunsForAgentAndDate(
     await driverId(req),
     req.query.serviceDate
   );
-  res.send({ run: agent });
+  res.send({ runs, run: runs && runs.length ? runs[0] : null });
 });
 
 /** The signed-in driver's own run history. */
@@ -132,12 +135,22 @@ const arriveStop = catchAsync(async (req, res) => {
   res.send({ stop });
 });
 
+const pingLocation = catchAsync(async (req, res) => {
+  const run = await deliveryRunService.pingLocation(req.params.run, await driverId(req), req.body);
+  res.send({ run });
+});
+
+const driverMetrics = catchAsync(async (req, res) => {
+  const metrics = await deliveryRunService.getDriverMetrics(await driverId(req), req.query.fromDate, req.query.toDate);
+  res.send({ metrics });
+});
+
 /** @returns {Object} stop */
 const deliverStop = catchAsync(async (req, res) => {
   const agent = await driverId(req);
   const stop = await deliveryRunService.deliverStop(req.params.stop, agent, {
     ...req.body,
-    capturedBy: agent,
+    capturedBy: req.user._id,
   });
   res.send({ stop });
 });
@@ -155,8 +168,13 @@ const markStop = catchAsync(async (req, res) => {
     // This used to test only for `fail`, so the app's `failed` fell through to the
     // `skipped` branch — a delivery failure was recorded as a skip. Both are now
     // compared against the failed set, which cannot silently default.
-    const requested = String(req.params.status).toLowerCase();
-    const status = ['failed', 'fail'].includes(requested) ? 'failed' : 'skipped';
+  const requested = String(req.params.status).toLowerCase();
+  const status = ['failed', 'fail'].includes(requested) ? 'failed' : 'skipped';
+  const userRights = roleRights.get(req.user.role) || [];
+  const requiredRight = status === 'failed' ? 'dairy_driver_stop_fail' : 'dairy_driver_stop_skip';
+  if (!userRights.includes(requiredRight)) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'Forbidden');
+  }
   const stop = await deliveryRunService.markStop(
     req.params.stop,
     await driverId(req),
@@ -200,6 +218,8 @@ module.exports = {
   startRun,
   completeRun,
   arriveStop,
+  pingLocation,
+  driverMetrics,
   deliverStop,
   markStop,
   createRun,

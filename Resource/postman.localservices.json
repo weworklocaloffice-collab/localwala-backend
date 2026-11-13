@@ -248,6 +248,20 @@
           }
         },
         {
+          "name": "Booking detail",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/partner/bookings/:id"
+          }
+        },
+        {
+          "name": "Invoice PDF",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/partner/bookings/:id/invoice/pdf"
+          }
+        },
+        {
           "name": "Partner transition",
           "request": {
             "method": "POST",
@@ -321,6 +335,31 @@
               "mode": "raw",
               "raw": "{\"labourAmount\":450,\"partsAmount\":250,\"expiresAt\":\"2026-12-01T00:00:00Z\"}"
             }
+          }
+        },
+        {
+          "name": "My policies",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/partner/policies"
+          }
+        },
+        {
+          "name": "Raise complaint",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/complaints",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"booking\":\"<bookingId>\",\"reason\":\"Customer unreachable at the door\"}"
+            }
+          }
+        },
+        {
+          "name": "My complaints",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/partner/complaints"
           }
         }
       ]
@@ -412,6 +451,13 @@
           }
         },
         {
+          "name": "Invoice PDF",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/customer/bookings/:id/invoice/pdf"
+          }
+        },
+        {
           "name": "Reviews list",
           "request": {
             "method": "GET",
@@ -441,6 +487,13 @@
   "request": {
     "method": "POST",
     "url": "{{baseUrl}}/v1/local-services/partner/bookings/:id/assign"
+  }
+},
+{
+  "name": "Invoice PDF",
+  "request": {
+    "method": "GET",
+    "url": "{{baseUrl}}/v1/local-services/admin/bookings/:id/invoice/pdf"
   }
 },
 {
@@ -487,7 +540,22 @@
           "name": "Subscribe plan",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}/v1/local-services/subscriptions"
+            "url": "{{baseUrl}}/v1/local-services/subscriptions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"plan\":\":planId\"}"
+            }
+          }
+        },
+        {
+          "name": "Pay subscription",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/subscriptions/:id/pay",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
           }
         },
         {
@@ -543,6 +611,116 @@
     "url": "{{baseUrl}}/v1/local-services/admin/catalog/services/:id/sponsor"
   }
 }
+      ]
+    },
+    {
+      "name": "Marketing",
+      "item": [
+        {
+          "name": "List partner packages",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/partner/marketing/packages"
+          }
+        },
+        {
+          "name": "List partner campaigns",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/partner/marketing/campaigns?status=live"
+          }
+        },
+        {
+          "name": "Create campaign",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/marketing/campaigns",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"package\":\":packageId\",\"caption\":\"Monsoon AC check-up offer\",\"startsAt\":\"2026-12-01T09:00:00.000Z\",\"localities\":[\"Indiranagar\"]}"
+            }
+          }
+        },
+        {
+          "name": "Pay campaign",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/partner/marketing/campaigns/:campaign/pay",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "Pause / resume / cancel campaign",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/v1/local-services/partner/marketing/campaigns/:campaign/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"action\":\"pause\"}"
+            }
+          }
+        },
+        {
+          "name": "Create package",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/admin/marketing/packages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\":\"HOME-LOCALITY-24H\",\"name\":\"Home banner · locality · 24h\",\"placement\":\"home\",\"targetingLevel\":\"locality\",\"durationHours\":24,\"price\":499,\"maxConcurrent\":3,\"status\":true}"
+            }
+          }
+        },
+        {
+          "name": "Update package",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/v1/local-services/admin/marketing/packages/:packageId",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"price\":599,\"status\":true}"
+            }
+          }
+        },
+        {
+          "name": "List admin campaigns",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/admin/marketing/campaigns?status=pending_review"
+          }
+        },
+        {
+          "name": "Review campaign",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/v1/local-services/admin/marketing/campaigns/:campaign/review",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"decision\":\"approve\",\"note\":\"creative approved\"}"
+            }
+          }
+        },
+        {
+          "name": "Featured campaigns",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/v1/local-services/public/marketing/featured?locality=Indiranagar&placement=home"
+          }
+        },
+        {
+          "name": "Track campaign event",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/v1/local-services/customer/marketing/campaigns/:campaign/events",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"type\":\"click\",\"locality\":\"Indiranagar\"}"
+            }
+          }
+        }
       ]
     }
   ]

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tax Invoice {{invoiceNo}}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      color: #1f2937;
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .page { padding: 4px; position: relative; }
+    .void {
+      position: absolute;
+      top: 42%;
+      left: 18%;
+      transform: rotate(-24deg);
+      font-size: 84px;
+      font-weight: 700;
+      color: rgba(185, 28, 28, 0.13);
+      letter-spacing: 8px;
+      z-index: 5;
+    }
+    .header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #0f172a; padding-bottom: 12px; }
+    .brand { font-size: 21px; font-weight: 700; letter-spacing: 0.4px; }
+    .muted { color: #64748b; }
+    .small { font-size: 10.5px; }
+    .right { text-align: right; }
+    .title { font-size: 18px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+    .meta { margin-top: 8px; }
+    .meta div { margin-top: 2px; }
+    .parties { display: flex; gap: 16px; margin-top: 16px; }
+    .party { flex: 1; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 12px; }
+    .party h3 { margin: 0 0 6px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.8px; color: #64748b; }
+    .party .name { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+    .party .address { white-space: pre-line; }
+    .party .gstin { margin-top: 6px; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+    th { background: #0f172a; color: #fff; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px; text-align: left; }
+    td { border-bottom: 1px solid #e2e8f0; padding: 8px; vertical-align: top; }
+    tbody tr:nth-child(even) { background: #f8fafc; }
+    .num { text-align: right; white-space: nowrap; }
+    .summary { display: flex; gap: 16px; margin-top: 16px; }
+    .summary-left { flex: 1; }
+    .totals { width: 300px; }
+    .totals table { margin-top: 0; }
+    .totals td { border-bottom: 1px solid #e2e8f0; padding: 6px 8px; }
+    .totals .grand td { border-top: 2px solid #0f172a; border-bottom: 0; font-size: 14px; font-weight: 700; padding-top: 9px; }
+    .note { margin-top: 8px; font-size: 10.5px; color: #64748b; }
+    .footer { margin-top: 26px; border-top: 1px solid #e2e8f0; padding-top: 10px; display: flex; justify-content: space-between; gap: 16px; color: #64748b; font-size: 10px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    {{#if isVoid}}<div class="void">VOID</div>{{/if}}
+    <div class="header">
+      <div>
+        <div class="brand">{{seller.name}}</div>
+        <div class="address muted small">{{seller.address}}</div>
+        {{#if seller.gstin}}<div class="small"><strong>GSTIN:</strong> {{seller.gstin}}</div>{{/if}}
+        <div class="small"><strong>State code:</strong> {{seller.stateCode}}</div>
+      </div>
+      <div class="right">
+        <div class="title">Tax Invoice</div>
+        <div class="meta">
+          <div><strong>Invoice No:</strong> {{invoiceNo}}</div>
+          <div><strong>Issued:</strong> {{issuedAtText}}</div>
+          <div><strong>Status:</strong> {{status}}</div>
+          <div><strong>SAC:</strong> {{sacCode}}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="parties">
+      <div class="party">
+        <h3>Billed To</h3>
+        <div class="name">{{buyer.name}}</div>
+        <div class="address">{{buyer.address}}</div>
+        {{#if buyer.gstin}}<div class="gstin">GSTIN: {{buyer.gstin}}</div>{{/if}}
+        <div>State code: {{buyer.stateCode}}</div>
+      </div>
+      <div class="party">
+        <h3>Supply Details</h3>
+        <div><strong>Place of supply:</strong> {{placeOfSupply}}</div>
+        <div><strong>Supply type:</strong> {{#if isInterState}}Inter-state{{else}}Intra-state{{/if}}</div>
+        <div><strong>Currency:</strong> {{currency}}</div>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 8%;">#</th>
+          <th>Description</th>
+          <th style="width: 22%;" class="num">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each lines}}
+        <tr>
+          <td>{{add @index 1}}</td>
+          <td>{{label}}</td>
+          <td class="num">&#8377; {{amountText}}</td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+
+    <div class="summary">
+      <div class="summary-left">
+        <div class="note">This is a computer-generated tax invoice and does not require a physical signature.</div>
+      </div>
+      <div class="totals">
+        <table>
+          <tr>
+            <td>Taxable value</td>
+            <td class="num">&#8377; {{taxableValueText}}</td>
+          </tr>
+          {{#each taxRows}}
+          <tr>
+            <td>{{label}} ({{rate}}%)</td>
+            <td class="num">&#8377; {{amountText}}</td>
+          </tr>
+          {{/each}}
+          <tr>
+            <td>Total tax</td>
+            <td class="num">&#8377; {{taxTotalText}}</td>
+          </tr>
+          <tr class="grand">
+            <td>Total</td>
+            <td class="num">&#8377; {{totalText}}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div>{{seller.name}} &#183; GSTIN {{seller.gstin}}</div>
+      <div>Invoice {{invoiceNo}}</div>
+    </div>
+  </div>
+</body>
+</html>

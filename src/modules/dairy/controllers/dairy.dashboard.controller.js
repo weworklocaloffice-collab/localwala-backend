@@ -22,8 +22,8 @@ const dashboardService = require('../services/dairy.dashboard.service');
 /**
  * The partner's home screen, in one response.
  *
- * Six panels behind one call, because this is the first thing an operator sees
- * and on rural mobile data six round trips before first paint is a visible wait.
+ * Dashboard panels behind one call, because this is the first thing an operator
+ * sees and on rural mobile data several round trips delay first paint.
  *
  * Each panel is gathered independently and reported as unavailable rather than
  * failing the request, so one broken query cannot cost the operator the whole

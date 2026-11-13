@@ -49,18 +49,56 @@ const lineSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const invoicePartySchema = new mongoose.Schema(
+  {
+    _id: false,
+    name: { type: String, required: false, trim: true },
+    gstin: { type: String, required: false, trim: true, uppercase: true },
+    address: { type: String, required: false, trim: true },
+    stateCode: { type: String, required: false, trim: true },
+  },
+  { _id: false }
+);
+
 const invoiceSchema = mongoose.Schema(
   {
     booking: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceBooking', required: true, unique: true },
+    // Consecutive GST invoice number: LS/<financial year>/<sequence>.
+    invoiceNo: { type: String, required: false, unique: true, sparse: true, trim: true },
+    issuedAt: { type: Date, required: false, default: Date.now },
     lines: { type: [lineSchema], required: true },
+    // GST fields: seller/buyer snapshots are frozen at issue time.
+    sacCode: { type: String, required: false, trim: true, default: '9987' },
+    seller: { type: invoicePartySchema, required: false },
+    buyer: { type: invoicePartySchema, required: false },
+    placeOfSupply: { type: String, required: false, trim: true },
+    isInterState: { type: Boolean, required: false, default: false },
+    taxableValue: moneyField(0),
+    taxPercent: { type: Number, required: false, default: 0, min: 0, max: 100 },
+    cgst: moneyField(0),
+    sgst: moneyField(0),
+    igst: moneyField(0),
+    taxTotal: moneyField(0),
     total: moneyField(0),
+    currency: { type: String, required: false, trim: true, uppercase: true, default: 'INR' },
     status: { type: String, required: true, enum: ['issued', 'void'], default: 'issued' },
+    voidedAt: { type: Date, required: false },
   },
   { timestamps: true, toJSON: { getters: true } }
 );
 invoiceSchema.plugin(toJSON);
 invoiceSchema.plugin(paginate);
 const LocalServiceInvoice = mongoose.model('LocalServiceInvoice', invoiceSchema);
+
+// One counter row per financial year so invoice numbers are consecutive.
+const invoiceCounterSchema = mongoose.Schema(
+  {
+    fy: { type: String, required: true, unique: true, trim: true },
+    seq: { type: Number, required: true, default: 0, min: 0 },
+  },
+  { timestamps: true }
+);
+const LocalServiceInvoiceCounter = mongoose.model('LocalServiceInvoiceCounter', invoiceCounterSchema);
 
 const reviewSchema = mongoose.Schema(
   {
@@ -97,4 +135,11 @@ function invoiceTotal(lines = []) {
   return Number(lines.reduce((s, l) => s + Number(l.amount || 0), 0).toFixed(2));
 }
 
-module.exports = { LocalServiceAssignment, LocalServiceInvoice, LocalServiceReview, LocalServiceComplaint, invoiceTotal };
+module.exports = {
+  LocalServiceAssignment,
+  LocalServiceInvoice,
+  LocalServiceInvoiceCounter,
+  LocalServiceReview,
+  LocalServiceComplaint,
+  invoiceTotal,
+};

@@ -17,6 +17,7 @@
  */
 
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const { status: httpStatus } = require('http-status');
 const {
   User,
@@ -137,16 +138,12 @@ countryCode: param.countryCode,
         [
           {
             vertical: 'dairy',
-            businessModel: param.businessModel,
             name: param.businessName,
             description: param.shortDescription,
             logo: param.logo,
             cover: param.cover,
             city: param.city ? new mongoose.Types.ObjectId(param.city) : null,
             locality: param.locality ? new mongoose.Types.ObjectId(param.locality) : null,
-            location: param.coordinates
-              ? { type: 'Point', coordinates: param.coordinates }
-              : undefined,
             owner: user[0]._id,
             contact: {
               name: `${param.firstName} ${param.lastName}`,
@@ -177,17 +174,13 @@ countryCode: param.countryCode,
           {
             user: user[0]._id,
             business: business[0]._id,
-            businessModel: param.businessModel,
+            requestedBusinessModel: param.requestedBusinessModel,
             name: param.businessName,
-            address: param.address,
             shortDescription: param.shortDescription,
             logo: param.logo,
             cover: param.cover,
             city: param.city ? new mongoose.Types.ObjectId(param.city) : null,
             locality: param.locality ? new mongoose.Types.ObjectId(param.locality) : null,
-            location: param.coordinates
-              ? { type: 'Point', coordinates: param.coordinates }
-              : undefined,
             expectedDrivers: param.expectedDrivers,
             fssaiLicence: param.fssaiLicence,
             fssaiExpiry: param.fssaiExpiry,
@@ -232,24 +225,19 @@ countryCode: param.countryCode,
  * @returns {Promise<{user: Object, driver: Object}>}
  */
 const registerDriver = async (param) => {
-  const existing = await User.findOne({
-    countryCode: param.countryCode,
-    mobile: param.mobile,
-  });
-  if (existing) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Phone already registered');
-  }
-
   // The outlet is decided by an invitation the *partner* created, looked up by
   // this rider's phone number - the identifier the OTP flow has just proven they
   // hold. This used to accept an `invitedBy` user id from the payload and attach
   // the rider to whoever owned it, so anyone who knew a partner's user id could
   // enrol themselves on that outlet's fleet.
+  const inviteCodeHash = crypto.createHash('sha256').update(param.inviteCode).digest('hex');
+  const now = new Date();
   const invite = await DairyDriverInvite.findOne({
+    inviteCodeHash,
     countryCode: param.countryCode,
     mobile: param.mobile,
     status: 'pending',
-    expiresAt: { $gt: new Date() },
+    expiresAt: { $gt: now },
   });
   /**
    * ## There is no platform pool
@@ -273,7 +261,7 @@ const registerDriver = async (param) => {
   if (!invite) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
-      'Dairy riders join an outlet by invitation. Ask the outlet to invite this mobile number.'
+      'This invitation code is invalid, expired, revoked, or does not match this phone number.'
     );
   }
 
@@ -306,6 +294,56 @@ const registerDriver = async (param) => {
     locality: invitedBusiness.locality,
     location: invitedBusiness.location,
   };
+
+  const existing = await User.findOne({
+    countryCode: param.countryCode,
+    mobile: param.mobile,
+  });
+  if (existing) {
+    // Owner-created accounts already have a User and DairyDriver record. A
+    // verified OTP plus the code bound to that exact user is the only path that
+    // may claim it; this prevents an invite code from becoming a way to take over
+    // an unrelated account with the same email or phone.
+    const existingDriver = await DairyDriver.findOne({
+      userId: existing._id,
+      business: businessId,
+    });
+    if (
+      existing.role !== 'dairyDriver' ||
+      existing.isMobileVerified === true ||
+      !invite.rider ||
+      String(invite.rider) !== String(existing._id) ||
+      !existingDriver
+    ) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Phone already registered');
+    }
+    if (await User.isEmailTaken(param.email, existing._id)) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'That email is already registered');
+    }
+
+    try {
+      return await withOptionalTransaction(async (session) => {
+        existing.firstName = param.firstName;
+        existing.lastName = param.lastName;
+        existing.email = param.email;
+        existing.password = param.password;
+        existing.locale = param.locale || existing.locale;
+        existing.isMobileVerified = true;
+        existing.status = true;
+        await existing.save({ session });
+
+        invite.status = 'accepted';
+        invite.rider = existing._id;
+        invite.acceptedAt = now;
+        invite.inviteCodeHash = undefined;
+        await invite.save({ session });
+
+        return { user: existing, driver: existingDriver, activatedExistingAccount: true };
+      });
+    } catch (error) {
+      throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, error.message);
+    }
+  }
 
   try {
     const created = await withOptionalTransaction(async (session) => {
@@ -364,18 +402,14 @@ countryCode: param.countryCode,
             fssaiLicence: param.fssaiLicence,
             age: param.age,
             dob: param.dob,
-            activeStatus: true,
+            // The account can sign in to see its review status, but dispatch
+            // queries and driver routes require owner approval.
+            activeStatus: false,
             status: true,
+            isBlocked: false,
+            approvalStatus: 'pending',
           },
         ],
-        { session }
-      );
-
-      // Keep the outlet's rider list in step. Unconditional now that every rider
-      // has an outlet.
-      await Business.updateOne(
-        { _id: businessId },
-        { $addToSet: { deliveryPartners: user[0]._id } },
         { session }
       );
 
@@ -386,7 +420,10 @@ countryCode: param.countryCode,
     // and the audit trail records which outlet they joined through.
     await DairyDriverInvite.updateOne(
       { _id: invite._id },
-      { $set: { status: 'accepted', rider: created.user._id, acceptedAt: new Date() } }
+      {
+        $set: { status: 'accepted', rider: created.user._id, acceptedAt: now },
+        $unset: { inviteCodeHash: 1 },
+      }
     );
 
     return created;
@@ -424,13 +461,13 @@ const reviewJoiningRequest = async (requestId, approve, adminId, reason) => {
   // The error names what is missing rather than saying "invalid", because the fix is
   // always the same and an operator should not have to guess it.
   if (approve) {
-    const business = await Business.findById(request.business).select('city locality');
-    if (!business) {
+    const approvedBusiness = await Business.findById(request.business).select('city locality');
+    if (!approvedBusiness) {
       throw new ApiError(httpStatus.NOT_FOUND, 'The outlet this request refers to no longer exists');
     }
     const missing = [];
-    if (!business.city) missing.push('city');
-    if (!business.locality) missing.push('locality');
+    if (!approvedBusiness.city) missing.push('city');
+    if (!approvedBusiness.locality) missing.push('locality');
     if (missing.length) {
       throw new ApiError(
         httpStatus.BAD_REQUEST,
@@ -447,10 +484,11 @@ const reviewJoiningRequest = async (requestId, approve, adminId, reason) => {
   request.verifiedAt = new Date();
   await request.save();
 
-  await Business.updateOne(
-    { _id: request.business },
-    { $set: { verified: approve === true } }
-  );
+  const businessUpdate = { verified: approve === true };
+  // Registration deliberately collects only the administrative primary
+  // locality. The physical outlet address and entrance pin are set by the owner
+  // after admin approval through the authenticated partner profile flow.
+  await Business.updateOne({ _id: request.business }, { $set: businessUpdate });
 
   return request;
 };
@@ -507,6 +545,10 @@ const listJoiningRequests = async (options = {}) => {
   return {
     results: rows.map((row) => ({
       ...row,
+      // Older requests stored the applicant's choice in businessModel. Expose
+      // it as a preference until those rows are migrated, never as the final
+      // commercial model.
+      requestedBusinessModel: row.requestedBusinessModel || row.businessModel || null,
       hasLocation: Boolean(row.city && row.locality),
     })),
     totalResults,

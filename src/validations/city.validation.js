@@ -29,6 +29,7 @@ const createCity = {
     translations: Joi.allow(),
     defaultDeliveryRadiusMeters: Joi.number().integer().min(100).max(50000).allow(null, ''),
     maxZoneDiameterKm: Joi.number().min(1).max(100).allow(null, ''),
+    dairyDeliveryMaxRadiusKm: Joi.number().min(1).max(50).allow(null, ''),
   }),
 };
 

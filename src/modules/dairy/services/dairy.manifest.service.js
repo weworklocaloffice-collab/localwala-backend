@@ -230,7 +230,11 @@ const buildRuns = async (forDate) => {
           addressRaw: occurrence.addressRaw,
           receiverName:
             occurrence.subscription && occurrence.subscription.receiverName,
+          receiverContact:
+            occurrence.subscription && occurrence.subscription.receiverContact,
           cansOut: occurrence.quantity,
+          plannedEmptyCans: occurrence.quantity,
+          items: [{ name: 'Subscription delivery', quantity: occurrence.quantity }],
           amountDue: isCod(occurrence) ? occurrence.amount : 0,
           paymentMode: isCod(occurrence) ? 'cod' : 'prepaid',
           subscription: occurrence.subscription._id,

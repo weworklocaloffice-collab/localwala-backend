@@ -32,7 +32,11 @@ const {
 const storesPaymentService = require('../modules/stores/services/stores.payment.service');
 const realEstatePaymentService = require('../modules/realestate/services/realestate.payment.service');
 const localServicePaymentService = require('../modules/local-services/services/localservice.payment.service');
+const lsMarketingPaymentService = require('../modules/local-services/services/localservice.marketing.payment.service');
+const lsSubscriptionPaymentService = require('../modules/local-services/services/localservice.subscription.payment.service');
 const jhatkaPaymentService = require('../modules/jhatka/services/jhatka.payment.service');
+const dairyMarketingPaymentService = require('../modules/dairy/services/dairy.marketing.payment.service');
+const dairyFranchisePaymentService = require('../modules/dairy/services/dairy.franchise.payment.service');
 
 /**
  * payment.dispatch.js — the post-success dispatch for the shared payment
@@ -233,7 +237,11 @@ const KNOWN_PAYMENT_SUBJECTS = Object.freeze([
   ...storesPaymentService.STORE_PAYMENT_SUBJECTS,
   ...realEstatePaymentService.REAL_ESTATE_PAYMENT_SUBJECTS,
   ...localServicePaymentService.LS_PAYMENT_SUBJECTS,
+  ...lsMarketingPaymentService.LS_MARKETING_PAYMENT_SUBJECTS,
+  ...lsSubscriptionPaymentService.LS_SUBSCRIPTION_PAYMENT_SUBJECTS,
   ...jhatkaPaymentService.JHATKA_PAYMENT_SUBJECTS,
+  ...dairyMarketingPaymentService.DAIRY_PAYMENT_SUBJECTS,
+  ...dairyFranchisePaymentService.DAIRY_FRANCHISE_PAYMENT_SUBJECTS,
   ...Object.keys(LEGACY_PAYMENT_HANDLERS),
 ]);
 
@@ -263,7 +271,19 @@ const dispatchPaidCallback = async (payment) => {
   if (await localServicePaymentService.routePaidCallback(payment)) {
     return { handled: true, subject: payment.paymentFrom };
   }
+  if (await lsMarketingPaymentService.routePaidCallback(payment)) {
+    return { handled: true, subject: payment.paymentFrom };
+  }
+  if (await lsSubscriptionPaymentService.routePaidCallback(payment)) {
+    return { handled: true, subject: payment.paymentFrom };
+  }
   if (await jhatkaPaymentService.routePaidCallback(payment)) {
+    return { handled: true, subject: payment.paymentFrom };
+  }
+  if (await dairyMarketingPaymentService.routePaidCallback(payment)) {
+    return { handled: true, subject: payment.paymentFrom };
+  }
+  if (await dairyFranchisePaymentService.routePaidCallback(payment)) {
     return { handled: true, subject: payment.paymentFrom };
   }
 
@@ -314,7 +334,23 @@ const dispatchFailedCallback = async (payment, reason) => {
     return { handled: true, subject: payment.paymentFrom };
   }
 
+  if (await lsMarketingPaymentService.routeFailedCallback(payment, reason)) {
+    return { handled: true, subject: payment.paymentFrom };
+  }
+
+  if (await lsSubscriptionPaymentService.routeFailedCallback(payment, reason)) {
+    return { handled: true, subject: payment.paymentFrom };
+  }
+
   if (await jhatkaPaymentService.routeFailedCallback(payment, reason)) {
+    return { handled: true, subject: payment.paymentFrom };
+  }
+
+  if (await dairyMarketingPaymentService.routeFailedCallback(payment, reason)) {
+    return { handled: true, subject: payment.paymentFrom };
+  }
+
+  if (await dairyFranchisePaymentService.routeFailedCallback(payment, reason)) {
     return { handled: true, subject: payment.paymentFrom };
   }
 

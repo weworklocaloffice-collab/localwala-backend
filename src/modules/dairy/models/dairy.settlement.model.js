@@ -96,6 +96,30 @@ const dairySettlementSchema = mongoose.Schema(
         set: (v) => Math.round(v * 100),
         default: 0,
       },
+      /** Customer discounts shown separately so a partner can reconcile coupon orders. */
+      discounts: {
+        type: Number,
+        required: false,
+        get: (v) => Number((v / 100).toFixed(2)),
+        set: (v) => Math.round(v * 100),
+        default: 0,
+      },
+      /** Product sales after customer discounts; kept distinct from commission basis. */
+      netSales: {
+        type: Number,
+        required: false,
+        get: (v) => Number((v / 100).toFixed(2)),
+        set: (v) => Math.round(v * 100),
+        default: 0,
+      },
+      /** Tax collected from customers, disclosed but excluded from partner sales. */
+      taxes: {
+        type: Number,
+        required: false,
+        get: (v) => Number((v / 100).toFixed(2)),
+        set: (v) => Math.round(v * 100),
+        default: 0,
+      },
       /** Delivery charges collected, counted only when the basis includes them. */
       deliveryCharges: {
         type: Number,

@@ -36,6 +36,9 @@ const dairyRoute = require('../../modules/dairy/routes/dairy.route');
 const storesRoute = require('../../modules/stores/routes/stores.route');
 const storesAdminRoute = require('../../modules/stores/routes/stores.admin.route');
 const headerBannerAdminRoute = require('../../modules/header-banner/routes/header.banner.admin.route');
+const verticalAdminRoute = require('../../modules/vertical/vertical.admin.route');
+const headerBannerRoute = require('../../modules/header-banner/routes/header.banner.route');
+const verticalRoute = require('../../modules/vertical/vertical.route');
 // Jhatka. Route FILES are named per §15.1 of the plan — `jhatka.<actor>.route.js`.
 // The MOUNT PATHS are per §15.2: one surface per actor.
 //
@@ -371,7 +374,14 @@ const defaultRoutes = [
     path: '/admin/header-banner',
     route: headerBannerAdminRoute,
   },
+  {
+    path: '/admin/verticals',
+    route: verticalAdminRoute,
+  },
 ];
+
+router.use('/header-banner', headerBannerRoute);
+router.use('/verticals', verticalRoute);
 
 defaultRoutes.forEach((route) => {
   router.use(route.path, route.route);

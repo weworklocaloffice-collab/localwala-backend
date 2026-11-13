@@ -17,6 +17,7 @@
  */
 
 const { status: httpStatus } = require('http-status');
+const crypto = require('crypto');
 const {
   Business,
   User,
@@ -30,6 +31,7 @@ const {
 } = require('../../../models');
 const ApiError = require('../../../utils/ApiError');
 const { debitMoneyField, creditMoneyField, toPaise } = require('../../../utils/money');
+const { withOptionalTransaction } = require('../../../utils/optionalTransaction');
 const notificationService = require('./dairy.notification.service');
 
 /**
@@ -56,6 +58,9 @@ const notificationService = require('./dairy.notification.service');
  */
 
 const INVITE_TTL_DAYS = 14;
+
+const makeInviteCode = () => crypto.randomBytes(24).toString('hex');
+const hashInviteCode = (code) => crypto.createHash('sha256').update(code).digest('hex');
 
 // //// Invitations ////
 
@@ -88,6 +93,9 @@ const inviteRider = async (businessId, param) => {
     throw new ApiError(httpStatus.BAD_REQUEST, 'A valid mobile number is required');
   }
 
+  const inviteCode = makeInviteCode();
+  const inviteCodeHash = hashInviteCode(inviteCode);
+
   const existingUser = await User.findOne({
     countryCode: param.countryCode || '+91',
     mobile,
@@ -108,7 +116,13 @@ const inviteRider = async (businessId, param) => {
     // sending an invitation to a phone they already own.
     if (alreadyOnFleet) {
       const attached = await attachRider(alreadyOnFleet, businessId);
-      return { invite: null, rider: attached, alreadyRegistered: true };
+      return {
+        invite: null,
+        rider: attached,
+        alreadyRegistered: true,
+        approvalStatus: 'pending',
+        businessName: business.name,
+      };
     }
 
     throw new ApiError(
@@ -124,10 +138,17 @@ const inviteRider = async (businessId, param) => {
   });
 
   if (pending) {
-    // Extend the window: a partner re-inviting means they still want this rider.
+    // Reissuing rotates the one-time code as well as extending the window. The
+    // prior code can no longer be used after the partner taps "Send again".
     pending.expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 86400000);
+    pending.inviteCodeHash = inviteCodeHash;
     await pending.save();
-    return { invite: pending, rider: null, alreadyInvited: true };
+    return {
+      invite: pending,
+      inviteCode,
+      businessName: business.name,
+      alreadyInvited: true,
+    };
   }
 
   const invite = await DairyDriverInvite.create({
@@ -135,11 +156,199 @@ const inviteRider = async (businessId, param) => {
     invitedBy: param.invitedBy,
     countryCode: param.countryCode || '+91',
     mobile,
+    inviteCodeHash,
     status: 'pending',
     expiresAt: new Date(Date.now() + INVITE_TTL_DAYS * 86400000),
   });
 
-  return { invite, rider: null, alreadyInvited: false };
+  return { invite, inviteCode, businessName: business.name, alreadyInvited: false };
+};
+
+/**
+ * Creates an outlet-owned rider account before the driver completes activation.
+ * The account starts with a random, undisclosed password and an unverified
+ * phone. The driver must prove control of the invited number, choose their own
+ * password through the OTP registration screen, and then wait for outlet
+ * approval before delivery routes become available.
+ */
+const createDriverAccount = async (businessId, param) => {
+  const business = await Business.findById(businessId)
+    .select('ownDeliveryPartner name city locality location');
+  if (!business) throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
+  if (business.ownDeliveryPartner !== true) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'This outlet does not run its own delivery fleet');
+  }
+
+  const mobile = Number(param.mobile);
+  const countryCode = String(param.countryCode || '+91');
+  const email = String(param.email || '').trim().toLowerCase();
+  if (!Number.isFinite(mobile) || mobile <= 0) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'A valid mobile number is required');
+  }
+
+  const [existingUser, pendingInvite] = await Promise.all([
+    User.findOne({ countryCode, mobile }),
+    DairyDriverInvite.findOne({ business: businessId, mobile, status: 'pending' }),
+  ]);
+
+  // A retry after a client timeout returns the same unclaimed account while
+  // rotating the activation code, instead of creating duplicate rider records.
+  if (existingUser) {
+    const [existingDriver, existingInvite] = await Promise.all([
+      DairyDriver.findOne({ userId: existingUser._id, business: businessId }),
+      DairyDriverInvite.findOne({
+        business: businessId,
+        mobile,
+        status: 'pending',
+        rider: existingUser._id,
+      }),
+    ]);
+    if (
+      existingUser.role === 'dairyDriver' &&
+      existingUser.isMobileVerified !== true &&
+      existingDriver &&
+      existingInvite
+    ) {
+      if (email !== existingUser.email && await User.isEmailTaken(email, existingUser._id)) {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'That email is already registered');
+      }
+      existingUser.firstName = param.firstName;
+      existingUser.lastName = param.lastName;
+      existingUser.email = email;
+      await existingUser.save();
+      const inviteCode = makeInviteCode();
+      existingInvite.inviteCodeHash = hashInviteCode(inviteCode);
+      existingInvite.expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 86400000);
+      await existingInvite.save();
+      return {
+        rider: existingDriver,
+        invite: existingInvite,
+        inviteCode,
+        businessName: business.name,
+        awaitingActivation: true,
+        alreadyCreated: true,
+      };
+    }
+    throw new ApiError(httpStatus.BAD_REQUEST, 'A user account already exists with that phone number');
+  }
+
+  if (await User.isEmailTaken(email)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'That email is already registered');
+  }
+  if (pendingInvite && pendingInvite.rider) {
+    throw new ApiError(httpStatus.CONFLICT, 'A driver account is already awaiting activation for this number');
+  }
+
+  const inviteCode = makeInviteCode();
+  const inviteCodeHash = hashInviteCode(inviteCode);
+  const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 86400000);
+  const unknownPassword = `${crypto.randomBytes(32).toString('hex')}A1`;
+
+  try {
+    const created = await withOptionalTransaction(async (session) => {
+      const users = await User.create([{
+        firstName: param.firstName,
+        lastName: param.lastName,
+        email,
+        password: unknownPassword,
+        role: 'dairyDriver',
+        countryCode,
+        mobile: String(mobile),
+        isMobileVerified: false,
+        locale: param.locale || 'en',
+        status: true,
+      }], { session });
+      const user = users[0];
+
+      const drivers = await DairyDriver.create([{
+        userId: user._id,
+        business: businessId,
+        city: business.city,
+        locality: business.locality,
+        ...(business.location ? { location: business.location } : {}),
+        payoutMode: param.payoutMode || 'per_can',
+        canCapacity: Number(param.canCapacity || 0),
+        vehicleType: param.vehicleType || 'cycle',
+        identity: param.identity || undefined,
+        identityNumber: param.identityNumber || undefined,
+        identityProof: param.identityProof || undefined,
+        licence: param.licence || undefined,
+        licenceExpiry: param.licenceExpiry || undefined,
+        age: param.age || undefined,
+        dob: param.dob || undefined,
+        activeStatus: false,
+        status: true,
+        isBlocked: false,
+        approvalStatus: 'pending',
+      }], { session });
+
+      let invite = pendingInvite;
+      if (invite) {
+        invite.invitedBy = param.invitedBy;
+        invite.rider = user._id;
+        invite.inviteCodeHash = inviteCodeHash;
+        invite.expiresAt = expiresAt;
+        await invite.save({ session });
+      } else {
+        const invites = await DairyDriverInvite.create([{
+          business: businessId,
+          invitedBy: param.invitedBy,
+          countryCode,
+          mobile,
+          rider: user._id,
+          inviteCodeHash,
+          status: 'pending',
+          expiresAt,
+        }], { session });
+        invite = invites[0];
+      }
+      return { user, driver: drivers[0], invite };
+    });
+
+    return {
+      rider: created.driver,
+      invite: created.invite,
+      inviteCode,
+      businessName: business.name,
+      awaitingActivation: true,
+      alreadyCreated: false,
+    };
+  } catch (error) {
+    if (error && error.code === 11000) {
+      throw new ApiError(httpStatus.CONFLICT, 'A driver account already exists with that phone or email');
+    }
+    throw error;
+  }
+};
+
+/** Rotates the one-time activation code for an unclaimed owner-created account. */
+const reissueDriverActivation = async (businessId, inviteId) => {
+  const invite = await DairyDriverInvite.findOne({
+    _id: inviteId,
+    business: businessId,
+    status: { $in: ['pending', 'expired'] },
+  }).populate('rider', 'firstName lastName mobile countryCode isMobileVerified');
+  if (!invite || !invite.rider) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Pending driver account not found');
+  }
+  if (invite.rider.isMobileVerified === true) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'This driver has already activated their account');
+  }
+  const driver = await DairyDriver.findOne({ userId: invite.rider._id, business: businessId });
+  if (!driver) throw new ApiError(httpStatus.NOT_FOUND, 'Driver account not found on this outlet');
+
+  const inviteCode = makeInviteCode();
+  invite.status = 'pending';
+  invite.inviteCodeHash = hashInviteCode(inviteCode);
+  invite.expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 86400000);
+  await invite.save();
+  return {
+    invite,
+    rider: driver,
+    inviteCode,
+    businessName: (await Business.findById(businessId).select('name'))?.name || '',
+    awaitingActivation: true,
+  };
 };
 
 /**
@@ -149,10 +358,44 @@ const inviteRider = async (businessId, param) => {
  * @returns {Promise<Object[]>}
  */
 const listInvites = async (businessId) => {
+  await DairyDriverInvite.updateMany(
+    { business: businessId, status: 'pending', expiresAt: { $lte: new Date() } },
+    { $set: { status: 'expired' }, $unset: { inviteCodeHash: 1 } }
+  );
   return DairyDriverInvite.find({ business: businessId })
-    .populate('rider', 'firstName lastName mobile countryCode')
+    .populate('rider', 'firstName lastName mobile countryCode isMobileVerified')
+    .select('-inviteCodeHash')
     .sort({ createdAt: -1 })
     .limit(100);
+};
+
+/**
+ * Read-only status for the signed-in rider's onboarding screen. This endpoint
+ * remains available while the rider is pending or blocked; operational routes
+ * use `dairy.driver.auth` and require an approved, active profile.
+ */
+const getDriverOnboardingStatus = async (userId) => {
+  const driver = await DairyDriver.findOne({ userId })
+    .populate('business', 'name')
+    .select('approvalStatus approvalReviewedAt approvalReason activeStatus isBlocked status business');
+
+  if (!driver) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Driver profile not found');
+  }
+
+  const approvalStatus = driver.approvalStatus || 'approved';
+  let status = approvalStatus;
+  if (approvalStatus === 'approved' && (driver.isBlocked === true || driver.activeStatus !== true || driver.status !== true)) {
+    status = 'blocked';
+  }
+
+  return {
+    status,
+    canDeliver: status === 'approved',
+    outletName: driver.business && driver.business.name ? driver.business.name : '',
+    reviewedAt: driver.approvalReviewedAt || null,
+    reason: driver.approvalReason || '',
+  };
 };
 
 /**
@@ -170,13 +413,16 @@ const attachRider = async (driver, businessId) => {
   driver.business = businessId;
   driver.status = true;
   driver.isBlocked = false;
-  driver.activeStatus = true;
+  driver.activeStatus = false;
+  driver.approvalStatus = 'pending';
+  driver.approvalReviewedAt = undefined;
+  driver.approvalReviewedBy = undefined;
+  driver.approvalReason = undefined;
   await driver.save();
 
-  await Business.updateOne(
-    { _id: businessId },
-    { $addToSet: { deliveryPartners: driver.userId } }
-  );
+  // An attached but unapproved profile is intentionally absent from the
+  // outlet's operational deliveryPartners list. Approval adds it atomically
+  // with the activation decision below.
 
   // Matched on the rider's phone, which is how an invitation is issued: the
   // invite has no rider id until the rider accepts it.
@@ -189,7 +435,10 @@ const attachRider = async (driver, businessId) => {
         mobile: rider.mobile,
         status: 'pending',
       },
-      { $set: { status: 'accepted', rider: driver.userId, acceptedAt: new Date() } }
+      {
+        $set: { status: 'accepted', rider: driver.userId, acceptedAt: new Date() },
+        $unset: { inviteCodeHash: 1 },
+      }
     );
   }
 
@@ -223,6 +472,7 @@ const revokeInvite = async (businessId, inviteId, reason) => {
   invite.status = 'revoked';
   invite.revokedAt = new Date();
   invite.reason = reason;
+  invite.inviteCodeHash = undefined;
   await invite.save();
   return invite;
 };
@@ -244,7 +494,7 @@ const findFleetDriver = async (businessId, driverId) => {
   const driver = await DairyDriver.findOne({
     _id: driverId,
     business: businessId,
-  }).populate('userId', 'firstName lastName mobile countryCode email');
+  }).populate('userId', 'firstName lastName mobile countryCode email isMobileVerified');
 
   if (!driver) {
     throw new ApiError(httpStatus.NOT_FOUND, 'Rider not found on this outlet');
@@ -268,8 +518,38 @@ const findFleetDriver = async (businessId, driverId) => {
 const setDriverApproval = async (businessId, driverId, approve, param = {}) => {
   const driver = await findFleetDriver(businessId, driverId);
 
-  driver.isBlocked = !approve;
-  driver.activeStatus = approve;
+  if (approve && (!driver.userId || driver.userId.isMobileVerified !== true)) {
+    throw new ApiError(httpStatus.CONFLICT, 'The driver must verify their phone and activate the account before approval');
+  }
+
+  const isAwaitingReview = driver.approvalStatus === 'pending';
+  if (isAwaitingReview && !approve && !String(param.reason || '').trim()) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Add a reason when rejecting a new driver application');
+  }
+  if (approve) {
+    driver.approvalStatus = 'approved';
+    driver.approvalReviewedAt = new Date();
+    driver.approvalReviewedBy = param.reviewedBy;
+    driver.approvalReason = undefined;
+    driver.isBlocked = false;
+    driver.activeStatus = true;
+    await Business.updateOne(
+      { _id: businessId },
+      { $addToSet: { deliveryPartners: driver.userId._id || driver.userId } }
+    );
+  } else if (isAwaitingReview) {
+    driver.approvalStatus = 'rejected';
+    driver.approvalReviewedAt = new Date();
+    driver.approvalReviewedBy = param.reviewedBy;
+    driver.approvalReason = param.reason || undefined;
+    driver.isBlocked = true;
+    driver.activeStatus = false;
+  } else {
+    // Existing fleet management behavior: deactivate a previously approved
+    // rider. Keep approval history as approved so it can be reactivated later.
+    driver.isBlocked = true;
+    driver.activeStatus = false;
+  }
   // `status` is the profile's own validity. Blocking hides the rider from
   // dispatch but must not look like the profile was deleted.
   driver.status = true;
@@ -704,8 +984,12 @@ const riderUserIds = async (driverId) => {
 
 module.exports = {
   INVITE_TTL_DAYS,
+  hashInviteCode,
   inviteRider,
+  createDriverAccount,
+  reissueDriverActivation,
   listInvites,
+  getDriverOnboardingStatus,
   revokeInvite,
   setDriverApproval,
   removeDriver,

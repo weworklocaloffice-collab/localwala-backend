@@ -43,6 +43,10 @@ const localServiceProviderSchema = mongoose.Schema(
     fundAccountId: { type: String, required: false, trim: true },
     businessName: { type: String, required: true, trim: true },
     businessAddress: { type: String, required: false, trim: true },
+    // GST identity for invoices. stateCode is the 2-digit GST state code and
+    // defaults to the GSTIN prefix when omitted.
+    gstin: { type: String, required: false, trim: true, uppercase: true },
+    stateCode: { type: String, required: false, trim: true, match: /^\d{2}$/ },
     contactName: { type: String, required: false, trim: true },
     contactPhone: { type: String, required: false, trim: true },
     providerType: {

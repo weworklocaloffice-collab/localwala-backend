@@ -33,7 +33,8 @@ const createCategory = catchAsync(async (req, res) => {
 });
 
 const listCategories = catchAsync(async (req, res) => {
-  const filter = pick(req.query, ['status']);
+  const filter = pick(req.query, ['status', 'parent']);
+  if (String(req.query.subcategories) === 'true') filter.parent = { $ne: null };
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
   res.status(httpStatus.OK).send(await Category.paginate(filter, options));
 });
@@ -160,6 +161,39 @@ const searchAvailability = catchAsync(async (req, res) => {
   const { LocalServiceFeaturedPlacement } = require('../models/localservice.growth.model');
   const { isFeatured } = require('../services/localservice.growth.service');
   const placements = await LocalServiceFeaturedPlacement.find({ status: 'active' }).lean();
+
+  // Live sponsored search campaigns for this audience. Campaigns with a
+  // service are service-level boosts; campaigns without one boost every
+  // offering the provider has.
+  const { LocalServiceMarketingCampaign } = require('../models/localservice.marketing.model');
+  const campaignClauses = [];
+  if (resolvedLocality) campaignClauses.push({ targetLocalities: String(resolvedLocality) });
+  if (resolvedPincode) campaignClauses.push({ targetPincodes: String(resolvedPincode) });
+  if (req.query.city) campaignClauses.push({ city: String(req.query.city) });
+  const providerIds = offerings.filter((o) => o.provider).map((o) => o.provider._id);
+  const now = new Date();
+  const campaignBoosts =
+    campaignClauses.length && providerIds.length
+      ? await LocalServiceMarketingCampaign.find({
+          provider: { $in: providerIds },
+          paymentStatus: 'paid',
+          'approval.status': 'approved',
+          status: { $in: ['scheduled', 'live'] },
+          startsAt: { $lte: now },
+          endsAt: { $gt: now },
+          'packageSnapshot.placement': 'search',
+          $or: campaignClauses,
+        })
+          .select('provider service')
+          .lean()
+      : [];
+  const campaignBoostFor = (providerId, serviceId) =>
+    campaignBoosts.some(
+      (campaign) =>
+        String(campaign.provider) === String(providerId) &&
+        (!campaign.service || String(campaign.service) === String(serviceId))
+    );
+
   const out = [];
   for (const o of offerings) {
     if (!o.provider) continue;
@@ -183,7 +217,9 @@ const searchAvailability = catchAsync(async (req, res) => {
       provider: providerId,
       status: { $in: ['held', 'confirmed'] },
     });
-    const sponsored = isFeatured(placements, { providerId, serviceId: o.service }, new Date());
+    const sponsoredByCampaign = campaignBoostFor(providerId, o.service);
+    const sponsored =
+      sponsoredByCampaign || isFeatured(placements, { providerId, serviceId: o.service }, new Date());
     // Coverage: a provider that does not serve the customer's address is
     // reported as unavailable rather than dropped, so the UI can show it
     // greyed out with the reason. Only when no coverage was supplied do we
@@ -192,7 +228,7 @@ const searchAvailability = catchAsync(async (req, res) => {
       const coverage = await LocalServiceCoverage.findOne({ provider: providerId }).lean();
       const covered = isCovered(coverage, { locality: resolvedLocality, pincode: resolvedPincode });
       if (!covered) {
-        out.push({ provider: o.provider, offering: o._id, available: false, sponsored, inCoverage: false });
+        out.push({ provider: o.provider, offering: o._id, image: o.image || null, available: false, sponsored, inCoverage: false });
         continue;
       }
     }
@@ -200,9 +236,9 @@ const searchAvailability = catchAsync(async (req, res) => {
     try {
       if (!withinHours) throw new ApiError(httpStatus.CONFLICT, 'Outside working hours');
       availability.assertSlotFree(existing, start, end, bufferMinutes, { capacity });
-      out.push({ provider: o.provider, offering: o._id, available: true, sponsored });
+      out.push({ provider: o.provider, offering: o._id, image: o.image || null, available: true, sponsored });
     } catch {
-      out.push({ provider: o.provider, offering: o._id, available: false, sponsored });
+      out.push({ provider: o.provider, offering: o._id, image: o.image || null, available: false, sponsored });
     }
   }
   // Sponsored first, then organic — labels kept distinct, never mixed silently.
@@ -219,7 +255,11 @@ const publicCategories = catchAsync(async (req, res) => {
 const publicServices = catchAsync(async (req, res) => {
   const filter = { status: 'active' };
   if (req.query.category) filter.category = req.query.category;
-  const rows = await Service.find(filter).lean();
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  const skip = (page - 1) * limit;
+  const rows = await Service.find(filter).skip(skip).limit(limit).lean();
+  const total = await Service.countDocuments(filter);
   // Attach avgRating from reviews (best-effort; missing data leaves 0).
   const Booking = require('../models/localservice.booking.model');
   const Review = require('../models/localservice.fulfilment.model').LocalServiceReview;
@@ -238,7 +278,7 @@ const publicServices = catchAsync(async (req, res) => {
       // best-effort
     }
   }
-  res.status(httpStatus.OK).send({ results: rows });
+  res.status(httpStatus.OK).send({ results: rows, page, limit, total, hasMore: skip + rows.length < total });
 });
 
 const publicServiceDetail = catchAsync(async (req, res) => {
@@ -342,7 +382,7 @@ const publicSubcategories = catchAsync(async (req, res) => {
 
 const updateCategory = updateDoc(Category, ['name', 'description', 'icon', 'sortOrder', 'allowedBookingModes', 'status']);
 const updateFacet = updateDoc(Facet, ['name', 'label', 'description', 'icon', 'sortOrder', 'options', 'required', 'searchable', 'filterable', 'status']);
-const updateService = updateDoc(Service, ['name', 'description', 'bookingMode', 'pricingMode', 'baseDurationMinutes', 'minPrice', 'maxPrice', 'inspectionFee', 'inspectionFeeTreatment', 'depositPercent', 'allowedPaymentModes', 'allowedBookingModes', 'status']);
+const updateService = updateDoc(Service, ['name', 'description', 'image', 'bookingMode', 'pricingMode', 'baseDurationMinutes', 'minPrice', 'maxPrice', 'inspectionFee', 'inspectionFeeTreatment', 'depositPercent', 'allowedPaymentModes', 'allowedBookingModes', 'status']);
 const updateVariant = updateDoc(Variant, ['name', 'sku', 'durationMinutes', 'basePrice', 'includedWork', 'status']);
 const updateTemplate = updateDoc(Template, ['name', 'description', 'requiredFields', 'status']);
 const updateAddon = updateDoc(Addon, ['name', 'description', 'price', 'status']);

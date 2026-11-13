@@ -27,6 +27,10 @@ const {
   Business,
 } = require('../../../models');
 const ApiError = require('../../../utils/ApiError');
+const dairyCoverageService = require('./dairy.coverage.service');
+const dairyAvailabilityService = require('./dairy.partner.availability.service');
+const dairyInventoryLotService = require('./dairy.inventory.lot.service');
+const logger = require('../../../config/logger');
 
 /**
  * Catalogue services for the four-level hierarchy:
@@ -359,6 +363,8 @@ const findOwned = async (model, id, business, label) => {
 
 const updateProduct = async (id, param, business) => {
   const product = await findOwned(DairyProduct, id, business, 'Product');
+  // Ownership is fixed at creation and cannot be moved by a partner update.
+  delete param.business;
   if (param.category || param.subCategory) {
     await assertCategoryPair(param.category || product.category, param.subCategory ?? product.subCategory);
   }
@@ -393,17 +399,24 @@ const deleteProduct = async (id, business) => {
 
 // //// SKUs ////
 
-const createSku = async (param) => {
-  const product = await DairyProduct.findById(param.product);
+const createSku = async (param, business) => {
+  const productQuery = { _id: param.product };
+  if (business) productQuery.business = new mongoose.Types.ObjectId(business);
+  const product = await DairyProduct.findOne(productQuery);
   if (!product) {
     throw new ApiError(httpStatus.NOT_FOUND, 'Product not found');
   }
 
-  const business = param.business || product.business;
+  // Product, category, brand and outlet are inherited from the owned product;
+  // callers cannot create a SKU for another outlet or supply mismatched links.
+  delete param.business;
+  delete param.category;
+  delete param.subCategory;
+  delete param.brand;
 
   return DairySku.create({
     ...param,
-    business: new mongoose.Types.ObjectId(business),
+    business: product.business,
     category: product.category,
     subCategory: product.subCategory,
     brand: product.brand,
@@ -411,30 +424,19 @@ const createSku = async (param) => {
 };
 
 /**
- * Adjusts stock, recording the delta rather than overwriting.
+ * Adjusts the current stock by a delta rather than overwriting the quantity.
  *
- * Accepting an absolute figure would let a typo silently delete a day's stock,
- * and there is no audit trail to reconstruct it from.
+ * The SKU stores the resulting on-hand quantity; there is not a separate stock
+ * movement ledger in this module yet.
  */
 const adjustSkuStock = async (id, param, business) => {
-  const sku = await findOwned(DairySku, id, business, 'SKU');
-
-  const next = sku.availableQty + param.delta;
-  if (next < 0) {
-    throw new ApiError(httpStatus.BAD_REQUEST, `Stock cannot go negative (would be ${next})`);
-  }
-
-  sku.availableQty = next;
-  sku.inStock = next > 0;
-  await sku.save();
-
-  return sku;
+  return dairyInventoryLotService.adjustStock(id, business, param.delta);
 };
 
 const listSkus = async (options) => {
   const { limit, page, skip } = paginate(options);
 
-  const query = { status: true };
+  const query = options.includeInactive === true || options.includeInactive === 'true' ? {} : { status: true };
   if (options.business) {
     query.business = new mongoose.Types.ObjectId(options.business);
   }
@@ -447,10 +449,17 @@ const listSkus = async (options) => {
   if (options.reusableContainer !== undefined) {
     query.reusableContainer = options.reusableContainer === 'true' || options.reusableContainer === true;
   }
+  if (query.business) {
+    try {
+      await dairyInventoryLotService.expireLotsForBusiness(query.business);
+    } catch (error) {
+      logger.error(`dairy inventory expiry reconciliation failed for ${query.business}: ${error.message}`);
+    }
+  }
 
   const [skus, totalResults] = await Promise.all([
     DairySku.find(query)
-      .populate('product', 'name slug')
+      .populate('product', 'name slug images shortDescription description')
       .populate('brand', 'name slug')
       .sort({ name: 1 })
       .skip(skip)
@@ -463,6 +472,24 @@ const listSkus = async (options) => {
 
 const updateSku = async (id, param, business) => {
   const sku = await findOwned(DairySku, id, business, 'SKU');
+  if (Object.prototype.hasOwnProperty.call(param, 'availableQty')) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Use the inventory stock adjustment endpoint to change on-hand quantity.');
+  }
+  delete param.business;
+  delete param.lotTrackingEnabled;
+  delete param.lotTrackingInitializing;
+  if (param.product) {
+    const product = await DairyProduct.findOne({
+      _id: param.product,
+      business: new mongoose.Types.ObjectId(business),
+    });
+    if (!product) {
+      throw new ApiError(httpStatus.NOT_FOUND, 'Product not found');
+    }
+    param.category = product.category;
+    param.subCategory = product.subCategory;
+    param.brand = product.brand;
+  }
   Object.assign(sku, param);
   await sku.save();
   return sku;
@@ -553,6 +580,32 @@ const searchProducts = async (options) => {
   if (options.business) {
     query.business = new mongoose.Types.ObjectId(options.business);
   }
+  if (options.address) {
+    const eligibleBusinessIds = await dairyCoverageService.businessIdsForAddress({
+      addressId: options.address,
+      userId: options.userId,
+    });
+    const eligible = new Set(eligibleBusinessIds.map((id) => id.toString()));
+    if (options.business && !eligible.has(String(options.business))) {
+      query.business = { $in: [] };
+    } else if (options.business) {
+      query.business = new mongoose.Types.ObjectId(options.business);
+    } else {
+      query.business = { $in: eligibleBusinessIds };
+    }
+  }
+  const inventoryBusinesses = Array.isArray(query.business && query.business.$in)
+    ? query.business.$in
+    : query.business
+      ? [query.business]
+      : [];
+  await Promise.all(inventoryBusinesses.map(async (businessId) => {
+    try {
+      await dairyInventoryLotService.expireLotsForBusiness(businessId);
+    } catch (error) {
+      logger.error(`dairy inventory expiry reconciliation failed for ${businessId}: ${error.message}`);
+    }
+  }));
   if (options.category) query.category = new mongoose.Types.ObjectId(options.category);
   if (options.subCategory) query.subCategory = new mongoose.Types.ObjectId(options.subCategory);
   if (options.brand) query.brand = new mongoose.Types.ObjectId(options.brand);
@@ -594,7 +647,7 @@ const searchProducts = async (options) => {
   // second round trip per product.
   const productIds = products.map((p) => p._id);
   const skus = productIds.length
-    ? await DairySku.find({ product: { $in: productIds }, status: true, inStock: true }).sort({ 'packSize.quantity': 1 })
+    ? await DairySku.find({ product: { $in: productIds }, status: true, inStock: true, availableQty: { $gt: 0 } }).sort({ 'packSize.quantity': 1 })
     : [];
 
   const skusByProduct = skus.reduce((acc, sku) => {
@@ -676,7 +729,7 @@ const getCatalogHealth = async () => {
  */
 const getBusinessProfile = async (id) => {
   const business = await Business.findOne({ _id: id, vertical: 'dairy' })
-    .select('name code logo cover description city locality businessModel verified rating ownDeliveryPartner status')
+    .select('name code logo cover description address city locality businessModel verified rating ownDeliveryPartner status dairyOperations')
     .populate('city', 'name')
     .populate('locality', 'name')
     .lean();
@@ -684,7 +737,14 @@ const getBusinessProfile = async (id) => {
   if (!business) {
     throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
   }
-  return business;
+  const { dairyOperations: operations = {}, ...publicBusiness } = business;
+  const orderAvailability = dairyAvailabilityService.evaluateAvailability(operations);
+  return {
+    ...publicBusiness,
+    operatingHours: operations.operatingHours || [],
+    orderCutoffTime: operations.orderCutoffTime || null,
+    orderAvailability,
+  };
 };
 
 module.exports = {

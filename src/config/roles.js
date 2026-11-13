@@ -234,6 +234,8 @@ const allRoles = {
     // granted together by accident.
     'dairy_vertical_manage',
     'dairy_partner_manage',
+    'dairy_partner_coverage_manage',
+    'dairy_coverage_review',
     'dairy_franchise_manage',
     'dairy_settlement_generate',
     'dairy_compliance_audit',
@@ -245,6 +247,8 @@ const allRoles = {
     // Approving something you cannot see is not a coherent set of rights.
     'dairy_settlement_view',
     'dairy_payables_pay',
+    'dairy_marketing_manage',
+    'dairy_marketing_review',
 
     // ---- local stores: platform governance ----------------------------------
     //
@@ -1652,6 +1656,11 @@ const allRoles = {
     'dairy_partner_batch_shrinkage',
     'dairy_partner_reports_procurement',
     'dairy_partner_dashboard',
+    'dairy_partner_reports_sales',
+    'dairy_partner_support',
+    'dairy_partner_outlets_read',
+    'dairy_partner_coverage_manage',
+    'dairy_partner_availability_manage',
     'dairy_payables_view',
     'dairy_payables_manage',
     'dairy_compliance_manage',
@@ -1679,6 +1688,8 @@ const allRoles = {
     'dairy_partner_commission',
     'dairy_partner_settlements',
     'dairy_partner_settlement_request',
+    'dairy_partner_marketing_read',
+    'dairy_partner_marketing_manage',
     'notification_list',
     'mark_all_read',
     'update_password',
@@ -1708,6 +1719,7 @@ const allRoles = {
     'dairy_driver_stop_fail',
     'dairy_driver_stop_collect_cash',
     'dairy_driver_can_pickup_scan',
+    'dairy_driver_can_return_scan',
     'dairy_driver_can_issue_scan',
     'dairy_driver_can_collect_scan',
     'dairy_driver_container_swap_plan',

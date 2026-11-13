@@ -178,6 +178,7 @@ module.exports.Business = require('../kernel/business/models/business.model');
 module.exports.DeliveryRun = require('../kernel/delivery/models/delivery.run.model');
 module.exports.DeliveryStop = require('../kernel/delivery/models/delivery.stop.model');
 module.exports.DeliveryPOD = require('../kernel/delivery/models/delivery.pod.model');
+module.exports.DeliveryAudit = require('../kernel/delivery/models/delivery.audit.model');
 module.exports.DispatchAttempt = require('../kernel/dispatch/models/dispatch.attempt.model');
 module.exports.OrderAssignmentEvent = require('../kernel/dispatch/models/order.assignment.event.model');
 // Kernel — geography. Added for the Real Estate vertical, shared by any vertical that
@@ -239,6 +240,7 @@ module.exports.DairyCan = require('../modules/dairy/models/dairy.can.model');
 module.exports.DairyCanLedger = require('../modules/dairy/models/dairy.can.ledger.model');
 module.exports.DairyContainerAssignment = require('../modules/dairy/models/dairy.container.assignment.model');
 module.exports.DairySku = require('../modules/dairy/models/dairy.sku.model');
+module.exports.DairySkuInventoryLot = require('../modules/dairy/models/dairy.sku.inventory.lot.model');
 module.exports.DairyCategory = require('../modules/dairy/models/dairy.category.model');
 module.exports.DairySubCategory = require('../modules/dairy/models/dairy.sub.category.model');
 module.exports.DairyBrand = require('../modules/dairy/models/dairy.brand.model');
@@ -259,6 +261,14 @@ module.exports.DairyFranchise = require('../modules/dairy/models/dairy.franchise
 module.exports.DairySettlement = require('../modules/dairy/models/dairy.settlement.model');
 module.exports.DairyCompliance = require('../modules/dairy/models/dairy.compliance.model');
 module.exports.DairyProviderPayable = require('../modules/dairy/models/dairy.provider.payable.model');
+module.exports.DairyCoverageRequest = require('../modules/dairy/models/dairy.coverage.request.model');
+module.exports.DairyMarketingPackage = require('../modules/dairy/models/dairy.marketing.package.model');
+module.exports.DairyMarketingCampaign = require('../modules/dairy/models/dairy.marketing.campaign.model');
+module.exports.DairyMarketingEvent = require('../modules/dairy/models/dairy.marketing.event.model');
+module.exports.DairyCoupon = require('../modules/dairy/models/dairy.coupon.model');
+module.exports.DairyCouponRedemption = require('../modules/dairy/models/dairy.coupon.redemption.model');
+module.exports.DairySkuInventoryMovement = require('../modules/dairy/models/dairy.sku.inventory.movement.model');
+module.exports.DairySupportTicket = require('../modules/dairy/models/dairy.support.ticket.model');
 
 // Modules — stores vertical
 module.exports.StoreChain = require('../modules/stores/models/store.chain.model');
@@ -454,3 +464,11 @@ module.exports.AgentPresence = require('./agent.presence.model');
 module.exports.HeaderBanner = require('../modules/header-banner/models/header.banner.model');
 module.exports.HeaderBannerDraft = require('../modules/header-banner/models/header.banner.draft.model');
 module.exports.HeaderBannerPublishHistory = require('../modules/header-banner/models/header.banner.publish.history.model');
+
+// -- local-services: customer favourites (saved bookable services). Appended at END, never edit above.
+module.exports.LocalServiceFavorite = require('../modules/local-services/models/localservice.favorite.model');
+
+// -- local-services: sponsored marketing (packages/campaigns/events). Appended at END, never edit above.
+module.exports.LocalServiceMarketingPackage = require('../modules/local-services/models/localservice.marketing.model').LocalServiceMarketingPackage;
+module.exports.LocalServiceMarketingCampaign = require('../modules/local-services/models/localservice.marketing.model').LocalServiceMarketingCampaign;
+module.exports.LocalServiceMarketingEvent = require('../modules/local-services/models/localservice.marketing.model').LocalServiceMarketingEvent;

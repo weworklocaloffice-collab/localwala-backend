@@ -22,6 +22,8 @@ const { HORIZONTAL_ASPECT_RATIO, VERTICAL_ASPECT_RATIO } = require('../models/he
 
 const OBJECT_ID_PATTERN = /^[a-f\d]{24}$/i;
 
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /**
  * Builds the `$or` clause that keeps a banner inside its schedule window.
  *
@@ -60,21 +62,48 @@ const baseEligibility = () => ({
  * @param {string} [cityId] City ObjectId string.
  * @returns {Promise<object|null>} Customer facing payload, or null.
  */
-const resolveActiveHeaderBanner = async (cityId) => {
+const resolveActiveHeaderBanner = async (cityId, vertical) => {
   const now = new Date();
   const base = { ...baseEligibility(now), ...scheduleWindow(now) };
   const sort = { priority: 1, createdAt: -1 };
 
+  // `null` / empty / "all" means a global banner that applies to every vertical.
+  // A specific vertical must be checked as its OWN query first: matching the
+  // vertical plus the globals in a single query lets an "all verticals" banner
+  // win on priority/createdAt over the vertical's own banner.
+  const requested = vertical && String(vertical).trim();
+  const isSpecificVertical = Boolean(requested) && requested.toLowerCase() !== 'all';
+
+  const globalVerticalFilter = {
+    $and: [
+      {
+        $or: [{ vertical: null }, { vertical: '' }, { vertical: { $regex: /^all$/i } }],
+      },
+    ],
+  };
+  const specificVerticalFilter = isSpecificVertical
+    ? { vertical: { $regex: new RegExp(`^${escapeRegExp(requested)}$`, 'i') } }
+    : null;
+
+  const cityScopes = cityId ? [{ city: cityId }, { city: null }] : [{ city: null }];
+
+  // Vertical wins over city: the requested vertical is checked in the customer's
+  // city first, then globally, and only then do global ("all verticals") banners
+  // get a turn. Otherwise a city-scoped global banner would hide the vertical's
+  // own banner.
+  const verticalFilters = [specificVerticalFilter, globalVerticalFilter].filter(Boolean);
+
   let banner = null;
 
-  if (cityId) {
-    banner = await HeaderBanner.findOne({ ...base, city: cityId }).sort(sort);
+  for (const verticalFilter of verticalFilters) {
+    for (const scope of cityScopes) {
+      banner = await HeaderBanner.findOne({ ...base, ...scope, ...verticalFilter }).sort(sort);
+      if (banner) break;
+    }
+    if (banner) break;
   }
 
-  if (!banner) {
-    banner = await HeaderBanner.findOne({ ...base, city: null }).sort(sort);
-  }
-
+  console.log('[header-banner] resolve city=', cityId, 'vertical=', requested || null, 'resolved=', banner && banner._id, 'resolvedVertical=', banner && banner.vertical);
   if (!banner) return null;
 
   const ctaTargetDetail = await resolveCtaTarget(banner.ctaAction, banner.ctaTarget);
@@ -226,6 +255,7 @@ const toCustomerPayload = (banner, ctaTargetDetail = null) => {
 
     priority: banner.priority === undefined ? 999 : banner.priority,
     city: banner.city || null,
+    vertical: banner.vertical || null,
   };
 };
 

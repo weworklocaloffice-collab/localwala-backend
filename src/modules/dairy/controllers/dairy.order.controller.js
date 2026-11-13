@@ -120,7 +120,12 @@ const updateStatus = catchAsync(async (req, res) => {
    });
 
 const cancel = catchAsync(async (req, res) => {
-  const order = await dairyOrderService.cancelOrder(req.params.order, req.body);
+  const order = await dairyOrderService.cancelOrder(req.params.order, {
+    ...req.body,
+    userId: req.user._id,
+    actor: req.user._id,
+    actorType: 'customer',
+  });
   res.send({ order });
 });
 

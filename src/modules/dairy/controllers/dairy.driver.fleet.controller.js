@@ -53,6 +53,12 @@ const earnings = catchAsync(async (req, res) => {
   res.send({ earnings: result });
 });
 
+/** Pending/approved status is deliberately readable before operational access. */
+const onboardingStatus = catchAsync(async (req, res) => {
+  const status = await fleetService.getDriverOnboardingStatus(req.user._id);
+  res.send({ onboarding: status });
+});
+
 /**
  * Cash collected and not yet handed over.
  *
@@ -76,6 +82,7 @@ const cashDeposit = catchAsync(async (req, res) => {
 });
 
 module.exports = {
+  onboardingStatus,
   earnings,
   cashInHand,
   cashDeposit,

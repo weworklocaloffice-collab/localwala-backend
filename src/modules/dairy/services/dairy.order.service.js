@@ -22,7 +22,7 @@ const {
   DairyOrder,
   DairyOrderStatusHistory,
   DairyCartItem,
-  DairySku,
+  DairyRecurringOrder,
   DairyCan,
   DairyMilkBatch,
   DairyBatchLedger,
@@ -36,13 +36,18 @@ const verticalService = require('../../../kernel/vertical/services/vertical.serv
 const dairyCanService = require('./dairy.can.service');
 const deliveryRunService = require('../../../kernel/delivery/services/delivery.run.service');
 const procurementService = require('./dairy.procurement.service');
+const dairyCoverageService = require('./dairy.coverage.service');
+const dairyCouponService = require('./dairy.coupon.service');
+const dairyAvailabilityService = require('./dairy.partner.availability.service');
+const dairyInventoryLotService = require('./dairy.inventory.lot.service');
 const logger = require('../../../config/logger');
 
 /**
- * SKUs whose stock comes from raw-milk batches rather than a simple SKU count.
+ * SKUs whose stock is sourced from raw-milk procurement batches.
  *
- * These need FEFO allocation at checkout so the oldest milk is sold first. Every
- * other SKU draws on `DairySku.availableQty`, which the catalog already tracks.
+ * These need litre-based FEFO allocation at checkout. Packaged dairy uses its
+ * own finished-goods lots when enabled, with `DairySku.availableQty` as the
+ * sellable aggregate for both paths.
  *
  * Set per outlet, because whether an outlet sells its own collected milk is a
  * business decision — many just buy finished product from a supplier.
@@ -132,6 +137,12 @@ const createOrder = async (param) => {
     throw new ApiError(httpStatus.BAD_REQUEST, 'An order can only contain items from one outlet');
   }
   const business = cartItems[0].business;
+  await dairyAvailabilityService.assertOrderAvailable(business);
+  await dairyCoverageService.assertAddressCovered({
+    businessId: business,
+    addressId: param.address,
+    userId: param.user,
+  });
 
   // Validate and reserve stock before taking any money.
   for (const item of cartItems) {
@@ -196,7 +207,9 @@ const createOrder = async (param) => {
 
   const serviceCharge = param.serviceCharge || 0;
   const taxAmount = Number((itemTotal * 0.05).toFixed(2));
-  const discountAmount = param.discountAmount || 0;
+  // Discount values are calculated server-side from the submitted Dairy coupon.
+  // Never accept `discountAmount` from the app: the client can be modified.
+  const discountAmount = 0;
 
   // What the customer pays for the goods and the delivery. The can deposit is
   // NOT added here.
@@ -240,14 +253,54 @@ const createOrder = async (param) => {
     status: 'pending_payments',
   });
 
+  let couponReservation = null;
+  if (param.couponCode) {
+    try {
+      couponReservation = await dairyCouponService.reserveForOrder({
+        code: param.couponCode,
+        businessId: business,
+        userId: param.user,
+        orderId: order._id,
+        subtotal: itemTotal,
+      });
+      order.coupon = couponReservation.coupon._id;
+      order.couponRedemption = couponReservation.redemption._id;
+      order.couponCode = couponReservation.coupon.code;
+      order.couponSnapshot = couponReservation.snapshot;
+      order.discountAmount = couponReservation.discountAmount;
+      order.grandTotal = Number(Math.max(itemTotal + serviceCharge + taxAmount - couponReservation.discountAmount, 0).toFixed(2));
+      order.codCollectionAmount = Number((order.grandTotal + depositTotal).toFixed(2));
+      await order.save();
+    } catch (error) {
+      if (couponReservation) await dairyCouponService.releaseRedemption(order._id);
+      await order.deleteOne();
+      throw error;
+    }
+  }
+
   // Commit stock and attach cans. Failures unwind everything reserved so far.
   const batchCommits = [];
+  const stockReservations = [];
   try {
     for (const item of cartItems) {
-      await DairySku.updateOne(
-        { _id: item.sku._id, availableQty: { $gte: item.quantity } },
-        { $inc: { availableQty: -item.quantity } }
-      );
+      const stockReservation = await dairyInventoryLotService.reserveSkuStock({
+        skuId: item.sku._id,
+        businessId: item.business,
+        quantity: item.quantity,
+        sourceType: 'order',
+        sourceId: order._id,
+        actorId: param.user,
+      });
+      stockReservations.push({
+        skuId: item.sku._id,
+        businessId: item.business,
+        quantity: item.quantity,
+        allocations: stockReservation.allocations,
+      });
+      if (stockReservation.allocations.length > 0) {
+        const orderItem = order.items.find((line) => line.sku.toString() === item.sku._id.toString());
+        if (orderItem) orderItem.inventoryLotAllocations = stockReservation.allocations;
+      }
 
       // Raw-milk SKUs additionally draw from `DairyMilkBatch`, FEFO.
       if (item.sku[batchTrackedSkuFlag]) {
@@ -287,8 +340,21 @@ const createOrder = async (param) => {
     }
   } catch (error) {
     // Unwind, then report.
-    for (const item of cartItems) {
-      await DairySku.updateOne({ _id: item.sku._id }, { $inc: { availableQty: item.quantity } });
+    for (const reservation of stockReservations.reverse()) {
+      try {
+        await dairyInventoryLotService.releaseSkuStock({
+          skuId: reservation.skuId,
+          businessId: reservation.businessId,
+          quantity: reservation.quantity,
+          allocations: reservation.allocations,
+          sourceType: 'order',
+          sourceId: order._id,
+          actorId: param.user,
+          reason: 'Order checkout compensation.',
+        });
+      } catch (releaseError) {
+        logger.error(`dairy order ${order.orderNo}: stock return failed â€” ${releaseError.message}`);
+      }
     }
     // Return any batches already committed.
     for (const commit of batchCommits) {
@@ -316,6 +382,7 @@ const createOrder = async (param) => {
         { $set: { status: 'in_store', condition: 'ready', 'currentHolder.type': 'store' } }
       );
     }
+    if (couponReservation) await dairyCouponService.releaseRedemption(order._id);
     await order.deleteOne();
     // Preserve the original status code. Wrapping everything as 500 would turn a
     // deliberate "not enough milk in date" 400 into a server error, and hide real
@@ -332,10 +399,12 @@ const createOrder = async (param) => {
   }
 
   // Link the reserved cans to their lines so the rider's scan knows which is which.
+  let canCursor = 0;
   for (const item of order.items) {
     const reusable = cartItems.find((c) => c.sku._id.toString() === item.sku.toString());
     if (reusable && reusable.sku.reusableContainer) {
-      item.canCodes = cansIssued.slice(0, item.quantity);
+      item.canCodes = cansIssued.slice(canCursor, canCursor + item.quantity);
+      canCursor += item.quantity;
     }
   }
   await order.save();
@@ -376,6 +445,7 @@ const payOrder = async (orderId, param) => {
     order.status = 'confirmed';
     order.paymentStatus = 'pending';
     await order.save();
+    await dairyCouponService.finishRedemption(order._id);
 
     await recordHistory(order, {
       fromStatus: 'pending_payments',
@@ -437,6 +507,7 @@ const payOrder = async (orderId, param) => {
   order.paymentStatus = 'paid';
   order.status = 'confirmed';
   await order.save();
+  await dairyCouponService.finishRedemption(order._id);
 
   await recordHistory(order, {
     fromStatus: 'pending_payments',
@@ -522,6 +593,7 @@ const markGatewayPaid = async (orderId, gatewayRef) => {
   order.paymentStatus = 'paid';
   order.status = 'confirmed';
   await order.save();
+  await dairyCouponService.finishRedemption(order._id);
 
   await recordHistory(order, {
     fromStatus,
@@ -539,6 +611,9 @@ const markGatewayPaid = async (orderId, gatewayRef) => {
  * Advances order status with a transition check and a history entry.
  */
 const updateStatus = async (orderId, toStatus, param) => {
+  if (toStatus === 'cancelled') {
+    return cancelOrder(orderId, { ...param, actorType: 'partner' });
+  }
   const order = await getOrder(orderId, { businessId: param.businessId });
 
   if (order.status === toStatus) {
@@ -598,20 +673,41 @@ const updateStatus = async (orderId, toStatus, param) => {
  * on the order so support can reconcile.
  */
 const cancelOrder = async (orderId, param) => {
-  const order = await getOrder(orderId);
+  const order = await getOrder(orderId, {
+    ...(param.userId ? { userId: param.userId } : {}),
+    ...(param.businessId ? { businessId: param.businessId } : {}),
+  });
   const fromStatus = order.status;
 
   assertTransition(fromStatus, 'cancelled');
   const unresolved = [];
+  let stockRestoreFailed = false;
 
   // 1. Return stock.
   for (const item of order.items) {
     try {
-      await DairySku.updateOne({ _id: item.sku }, { $inc: { availableQty: item.quantity } });
+      await dairyInventoryLotService.releaseSkuStock({
+        skuId: item.sku,
+        businessId: order.business,
+        quantity: item.quantity,
+        allocations: item.inventoryLotAllocations || [],
+        sourceType: 'order',
+        sourceId: order._id,
+        actorId: param.userId,
+        reason: `Order cancelled: ${param.reason || 'customer or partner cancellation'}`,
+      });
     } catch (error) {
+      stockRestoreFailed = true;
       unresolved.push(`stock:${item.sku}`);
       logger.error(`dairy order ${order.orderNo}: stock return failed — ${error.message}`);
     }
+  }
+
+  if (order.recurringOrder && !stockRestoreFailed) {
+    await DairyRecurringOrder.updateOne(
+      { _id: order.recurringOrder },
+      { $set: { stockReserved: false, inventoryLotAllocations: [] } }
+    );
   }
 
   // 2. Recover cans and release their deposits.
@@ -683,6 +779,14 @@ const cancelOrder = async (orderId, param) => {
     order.cancellation.reason = `${param.reason || 'Cancelled'} [needs reconciliation: ${unresolved.join(', ')}]`;
   }
   await order.save();
+  try {
+    await dairyCouponService.releaseRedemption(order._id);
+  } catch (error) {
+    unresolved.push('coupon');
+    logger.error(`dairy order ${order.orderNo}: coupon release failed — ${error.message}`);
+    order.cancellation.reason = `${param.reason || 'Cancelled'} [needs reconciliation: ${unresolved.join(', ')}]`;
+    await order.save();
+  }
 
   await recordHistory(order, {
     fromStatus,
@@ -728,7 +832,12 @@ const assignToRun = async (orderId, param) => {
         receiverContact: order.receiverContact,
         location: order.location,
         order: order._id,
-        cansOut: order.cansIssued.length > 0 ? order.items[0].quantity : 0,
+        cansOut: order.cansIssued.length,
+        plannedEmptyCans: order.cansIssued.length,
+        items: (order.items || []).map((item) => ({
+          name: item.name || (item.sku && item.sku.name) || 'Item',
+          quantity: item.quantity || 0,
+        })),
         // Cash orders carry the deposit too: there is no wallet hold to fall back
         // on, so the rider collects `codCollectionAmount`. Prepaid orders are
         // already paid and owe the rider nothing.

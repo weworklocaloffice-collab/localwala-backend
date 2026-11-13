@@ -21,6 +21,7 @@ const { status: httpStatus } = require('http-status');
 const {
   DairyPartner,
   DairyFranchise,
+  DairyJoiningRequest,
   Business,
   User,
   City,
@@ -47,11 +48,17 @@ const createPartner = async (param) => {
   if (!business) {
     throw new ApiError(httpStatus.NOT_FOUND, 'Business not found');
   }
+  if (business.verified !== true || business.status !== true) {
+    throw new ApiError(httpStatus.CONFLICT, 'Approve and verify the outlet application before creating an agreement');
+  }
 
-  const existing = await DairyPartner.findOne({
-    $or: [{ business: param.business }, { partnerCode: param.partnerCode }],
-  });
-  if (existing) {
+  const [existingPartner, existingFranchise] = await Promise.all([
+    DairyPartner.findOne({
+      $or: [{ business: param.business }, { partnerCode: param.partnerCode }],
+    }),
+    DairyFranchise.findOne({ business: param.business }).select('_id'),
+  ]);
+  if (existingPartner || existingFranchise) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'This outlet already has a partner agreement, or the code is taken');
   }
 
@@ -65,6 +72,10 @@ const createPartner = async (param) => {
   // does not have to join the agreement to know how the outlet trades.
   business.businessModel = 'commission_partner';
   await business.save();
+  await DairyJoiningRequest.updateOne(
+    { business: business._id, status: 'approved' },
+    { $set: { assignedBusinessModel: 'commission_partner' } }
+  );
 
   return partner;
 };
@@ -181,16 +192,22 @@ const createFranchise = async (param) => {
   if (!business) {
     throw new ApiError(httpStatus.NOT_FOUND, 'Business not found');
   }
+  if (business.verified !== true || business.status !== true) {
+    throw new ApiError(httpStatus.CONFLICT, 'Approve and verify the outlet application before creating an agreement');
+  }
 
   const operator = await User.findById(param.operator);
   if (!operator) {
     throw new ApiError(httpStatus.NOT_FOUND, 'Operator not found');
   }
 
-  const existing = await DairyFranchise.findOne({
-    $or: [{ business: param.business }, { franchiseCode: param.franchiseCode }],
-  });
-  if (existing) {
+  const [existingFranchise, existingPartner] = await Promise.all([
+    DairyFranchise.findOne({
+      $or: [{ business: param.business }, { franchiseCode: param.franchiseCode }],
+    }),
+    DairyPartner.findOne({ business: param.business }).select('_id'),
+  ]);
+  if (existingFranchise || existingPartner) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'This outlet already has a franchise agreement, or the code is taken');
   }
 
@@ -214,15 +231,25 @@ const createFranchise = async (param) => {
     }
   }
 
+  const joiningFee = Number(param.joiningFee || 0);
+  const feeRequired = joiningFee > 0;
   const franchise = await DairyFranchise.create({
     ...param,
+    joiningFee,
+    joiningFeePaymentStatus: feeRequired ? 'pending' : 'not_required',
     // A franchisee on a full supply model has no procurement screens.
     procurementEnabled: param.procurementEnabled === true || param.supplyModel === 'local_procurement',
-    status: 'active',
+    // A fee-bearing franchise cannot trade until the payment callback confirms
+    // the exact approved amount. Zero-fee agreements may activate immediately.
+    status: feeRequired ? 'pending' : 'active',
   });
 
   business.businessModel = 'franchise';
   await business.save();
+  await DairyJoiningRequest.updateOne(
+    { business: business._id, status: 'approved' },
+    { $set: { assignedBusinessModel: 'franchise' } }
+  );
 
   return franchise;
 };
@@ -419,6 +446,7 @@ const createAdminOutlet = async (param) => {
               revenueSharePercentage: param.revenueSharePercentage,
               revenueShareBasis: param.revenueShareBasis || 'product_only',
               joiningFee: param.joiningFee || 0,
+              joiningFeePaymentStatus: Number(param.joiningFee || 0) > 0 ? 'pending' : 'not_required',
               royalty: param.royalty || 0,
               royaltyFrequency: param.royaltyFrequency || 'monthly',
               supplyModel: param.supplyModel || 'platform_supplied',
@@ -431,7 +459,7 @@ const createAdminOutlet = async (param) => {
                 documentUrl: param.agreement && param.agreement.documentUrl ? param.agreement.documentUrl : undefined,
                 notes: param.agreement && param.agreement.notes ? param.agreement.notes : undefined,
               },
-              status: 'active',
+              status: Number(param.joiningFee || 0) > 0 ? 'pending' : 'active',
             },
           ],
           { session }
@@ -500,9 +528,14 @@ const listAdminOutlets = async (options = {}) => {
   }
 
   if (options.availableFor) {
-    query.businessModel = 'direct';
     query.verified = true;
     query.status = true;
+    const availableClauses = [{ $or: [{ businessModel: 'direct' }, { businessModel: null }] }];
+    if (query.$or) {
+      availableClauses.push({ $or: query.$or });
+      delete query.$or;
+    }
+    query.$and = availableClauses;
 
     const [partnerBusinesses, franchiseBusinesses] = await Promise.all([
       DairyPartner.distinct('business'),
@@ -653,6 +686,14 @@ const setFranchiseStatus = async (franchiseId, status, param) => {
       httpStatus.BAD_REQUEST,
       `Cannot move a ${franchise.status} franchise to ${status}`
     );
+  }
+
+  if (
+    status === 'active' &&
+    Number(franchise.joiningFee || 0) > 0 &&
+    !['paid', 'waived'].includes(franchise.joiningFeePaymentStatus)
+  ) {
+    throw new ApiError(httpStatus.CONFLICT, 'The franchise joining fee must be paid before activation');
   }
 
   franchise.status = status;
@@ -836,7 +877,7 @@ const listOutletDrivers = async (businessId, options = {}) => {
 
   const [drivers, totalResults] = await Promise.all([
     DairyDriver.find(query)
-      .populate('userId', 'firstName lastName mobile countryCode email status')
+      .populate('userId', 'firstName lastName mobile countryCode email status isMobileVerified')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit),
@@ -899,6 +940,8 @@ const getOutletEarnings = async (businessId, options = {}) => {
         grossSalesPaise: { $sum: '$itemTotal' },
         deliveryPaise: { $sum: '$serviceCharge' },
         discountPaise: { $sum: '$discountAmount' },
+        taxPaise: { $sum: '$taxAmount' },
+        couponOrderCount: { $sum: { $cond: [{ $gt: ['$discountAmount', 0] }, 1, 0] } },
       },
     },
   ]);
@@ -908,6 +951,7 @@ const getOutletEarnings = async (businessId, options = {}) => {
   const grossSales = rows ? Number((rows.grossSalesPaise / 100).toFixed(2)) : 0;
   const deliveryCharges = rows ? Number((rows.deliveryPaise / 100).toFixed(2)) : 0;
   const discounts = rows ? Number((rows.discountPaise / 100).toFixed(2)) : 0;
+  const taxes = rows ? Number((rows.taxPaise / 100).toFixed(2)) : 0;
 
   // Same basis and rate the settlement engine uses, so the preview and the
   // statement cannot diverge. An outlet with no agreement yet reports zero
@@ -926,6 +970,9 @@ const getOutletEarnings = async (businessId, options = {}) => {
     grossSales,
     deliveryCharges,
     discounts,
+    netSales: Number((grossSales - discounts).toFixed(2)),
+    taxes,
+    couponOrderCount: rows ? rows.couponOrderCount : 0,
     commissionBase,
     ratePercentage: rate,
     commissionBasis: includeDelivery ? 'product_and_delivery' : 'product_only',
@@ -959,7 +1006,7 @@ const listOutletSettlements = async (businessId, options = {}) => {
 
   const [settlements, totalResults] = await Promise.all([
     DairySettlement.find(query)
-      .select('settlementNo settlementType period from to totals status paidAt payoutReference')
+      .select('settlementNo settlementType period from to totals status paidAt payoutReference payoutMethod')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit),
@@ -967,6 +1014,14 @@ const listOutletSettlements = async (businessId, options = {}) => {
   ]);
 
   return { settlements, totalResults, page, limit };
+};
+
+/** A full, outlet-scoped statement for the partner's report/export view. */
+const getOutletSettlementDetail = async (businessId, settlementId) => {
+  const settlement = await DairySettlement.findOne({ _id: settlementId, business: businessId })
+    .select('settlementNo settlementType period from to totals lineItems status paidAt payoutReference payoutMethod notes createdAt');
+  if (!settlement) throw new ApiError(httpStatus.NOT_FOUND, 'Settlement not found');
+  return settlement;
 };
 
 const findTerritoryOwner = async (cityId, localityId) => {
@@ -1036,4 +1091,5 @@ module.exports = {
   listOutletDrivers,
   getOutletEarnings,
   listOutletSettlements,
+  getOutletSettlementDetail,
 };

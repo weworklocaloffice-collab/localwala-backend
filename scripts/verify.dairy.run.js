@@ -216,7 +216,14 @@ const run = async () => {
 
     // 6 — stop mutations
     console.log('\n5. Stops');
-    await deliveryRunService.arriveStop(stops[0]._id, agentId, { location: 'doorstep' });
+    await deliveryRunService.arriveStop(stops[0]._id, agentId, { location: '17.5144,78.4818' });
+    const arrived = await DeliveryStop.findById(stops[0]._id);
+    check(
+      'arrival stores a valid GeoJSON point separately from the destination',
+      arrived.arrivalLocation?.type === 'Point' &&
+        arrived.arrivalLocation.coordinates[0] === 78.4818 &&
+        arrived.arrivalLocation.coordinates[1] === 17.5144
+    );
     const delivered = await deliveryRunService.deliverStop(stops[0]._id, agentId, {
       cansDelivered: 2,
       emptyCansCollected: 2,

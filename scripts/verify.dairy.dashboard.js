@@ -250,12 +250,19 @@ const run = async () => {
       dash.lowStock.ok && !dash.lowStock.data.items.some((s) => s.name === healthy.name));
     check('out-of-stock SKU not counted as low',
       dash.lowStock.ok && !dash.lowStock.data.items.some((s) => s.name === empty.name));
+    check('out-of-stock SKU is reported separately',
+      dash.lowStock.ok && dash.lowStock.data.outOfStock.items.some((s) => s.name === empty.name));
 
     const wide = await dashboardService.getDashboard(business._id, { lowStockThreshold: 1000 });
     check('threshold is overridable',
       wide.lowStock.ok && wide.lowStock.data.threshold === 1000
       && wide.lowStock.data.items.some((s) => s.name === healthy.name),
       wide.lowStock.ok ? `${wide.lowStock.data.items.length} items` : wide.lowStock.error);
+
+    check('milk-batch expiry alert panel is available',
+      dash.expiryAlerts && dash.expiryAlerts.ok === true
+      && Array.isArray(dash.expiryAlerts.data.items),
+      dash.expiryAlerts && dash.expiryAlerts.error);
 
     check('compliance panel is live',
       dash.compliance.ok && dash.compliance.data.status === 'expiring',

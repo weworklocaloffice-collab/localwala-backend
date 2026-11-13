@@ -122,6 +122,7 @@ const VALIDATION_MODULES = [
   { alias: 'DairyCatalogValidation', file: 'src/modules/dairy/validations/dairy.catalog.validation' },
   { alias: 'DairySubscriptionValidation', file: 'src/modules/dairy/validations/dairy.subscription.validation' },
   { alias: 'DairyOrderValidation', file: 'src/modules/dairy/validations/dairy.order.validation' },
+  { alias: 'DairyCoverageValidation', file: 'src/modules/dairy/validations/dairy.coverage.validation' },
   { alias: 'DairyProcurementValidation', file: 'src/modules/dairy/validations/dairy.procurement.validation' },
   { alias: 'DairySettlementValidation', file: 'src/modules/dairy/validations/dairy.settlement.validation' },
   { alias: 'DeliveryRunValidation', file: 'src/kernel/delivery/validations/delivery.run.validation' },

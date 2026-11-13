@@ -38,6 +38,21 @@ const supportChatRoomSchema = mongoose.Schema(
       ref: 'Orders',
       required: false,
     },
+    dairyOrders: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'DairyOrder',
+      required: false,
+    },
+    business: {
+      type: mongoose.SchemaTypes.ObjectId,
+      ref: 'Business',
+      required: false,
+    },
+    vertical: {
+      type: String,
+      enum: ['dairy'],
+      required: false,
+    },
     booking: {
       type: mongoose.SchemaTypes.ObjectId,
       ref: 'DiningBooking',
@@ -235,6 +250,7 @@ supportChatRoomSchema.index({ assignedAgent: 1, status: 1 });
 // status prefix every historical ticket for a customer is walked on each probe.
 supportChatRoomSchema.index({ userId: 1, status: 1, createdAt: -1 });
 supportChatRoomSchema.index({ userId: 1, supportType: 1 });
+supportChatRoomSchema.index({ business: 1, supportType: 1, userId: 1 });
 supportChatRoomSchema.index({ slaDueAt: 1, status: 1 });
 supportChatRoomSchema.index({ handoverState: 1, status: 1 });
 supportChatRoomSchema.index({ escalationLevel: 1, status: 1 });

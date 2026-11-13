@@ -18,7 +18,7 @@
 
 const mongoose = require('mongoose');
 const { status: httpStatus } = require('http-status');
-const { DairyCan, DairyCanLedger, DeliveryRun, Wallet } = require('../../../models');
+const { DairyCan, DairyCanLedger, DeliveryRun, DeliveryStop, Wallet } = require('../../../models');
 const ApiError = require('../../../utils/ApiError');
 const { withOptionalTransaction } = require('../../../utils/optionalTransaction');
 
@@ -90,6 +90,44 @@ const alreadyApplied = async (clientRef) => {
   return !!existing;
 };
 
+const codesAlreadyApplied = async (clientRef, codes) => {
+  const applied = new Set();
+  if (!clientRef) return applied;
+  for (const code of codes) {
+    if (await alreadyApplied(`${clientRef}:${code}`)) applied.add(code);
+  }
+  return applied;
+};
+
+/** Driver scans must belong to their currently active, assigned run. */
+const getActiveDriverRun = async (param) => {
+  const run = await DeliveryRun.findOne({
+    _id: param.run,
+    agent: param.agent,
+    status: 'in_progress',
+  }).select('business');
+  if (!run) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'This scan is not assigned to your active run');
+  }
+  return run;
+};
+
+const assertCansBelongToRun = (cans, run) => {
+  const businessId = run.business?._id || run.business;
+  const outside = cans.filter((can) => String(can.business?._id || can.business) !== String(businessId));
+  if (outside.length > 0) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'A can belongs to a different outlet');
+  }
+};
+
+const getRunStop = async (runId, stopId) => {
+  const stop = await DeliveryStop.findOne({ _id: stopId, run: runId }).select('customer order');
+  if (!stop) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'The selected customer is not on this run');
+  }
+  return stop;
+};
+
 /**
  * Records a movement for one can and updates its custody.
  *
@@ -121,6 +159,12 @@ const applyMovement = async (canId, param) => {
   // Re-issuing a can already with a customer would silently lose a deposit.
   if (param.eventType === 'issue' && fromHolder === 'customer') {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Can is already with a customer');
+  }
+  if (param.eventType === 'pickup' && fromHolder !== 'store') {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Can is not available at the outlet');
+  }
+  if (param.eventType === 'return_to_store' && fromHolder !== 'agent') {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Can is not currently with this driver');
   }
 
   can.status = nextStatus;
@@ -172,6 +216,11 @@ const applyScanBatch = async (param) => {
   if (codes.length === 0) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'No can codes supplied');
   }
+  const existingCodes = await codesAlreadyApplied(param.clientRef, codes);
+  if (existingCodes.size === codes.length) {
+    return { applied: 0, duplicates: codes.length, cans: [] };
+  }
+  const run = await getActiveDriverRun(param);
 
   const cans = await DairyCan.find({ canCode: { $in: codes } });
   const foundCodes = new Set(cans.map((c) => c.canCode));
@@ -180,6 +229,7 @@ const applyScanBatch = async (param) => {
   if (missing.length > 0) {
     throw new ApiError(httpStatus.NOT_FOUND, `Unknown can code(s): ${missing.join(', ')}`);
   }
+  assertCansBelongToRun(cans, run);
 
   let applied = 0;
   let duplicates = 0;
@@ -274,6 +324,18 @@ const issueCans = async (param) => {
   if (codes.length === 0) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'No can codes supplied');
   }
+  const duplicatesByCode = await codesAlreadyApplied(param.clientRef, codes);
+  if (duplicatesByCode.size === codes.length) {
+    return { issued: codes.length, depositHeld: 0, duplicates: codes.length, cans: [] };
+  }
+
+  const run = await getActiveDriverRun(param);
+  const stop = await getRunStop(param.run, param.stop);
+  const stopCustomer = stop.customer?._id || stop.customer;
+  if (String(stopCustomer) !== String(param.customer)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Customer does not match the selected run stop');
+  }
+  const orderId = stop.order?._id || stop.order;
 
   // Idempotency is checked BEFORE any state validation.
   //
@@ -281,16 +343,13 @@ const issueCans = async (param) => {
   // already-applied batch will arrive with the cans now sitting `with_customer`.
   // Validating state first would reject the replay with a confusing
   // "not available to issue" instead of silently skipping it.
-  if (param.clientRef && (await alreadyApplied(`${param.clientRef}:${codes[0]}`))) {
-    return { issued: codes.length, depositHeld: 0, duplicates: codes.length, cans: [] };
-  }
-
   const cans = await DairyCan.find({ canCode: { $in: codes } });
   const foundCodes = new Set(cans.map((c) => c.canCode));
   const missing = codes.filter((c) => !foundCodes.has(c));
   if (missing.length > 0) {
     throw new ApiError(httpStatus.NOT_FOUND, `Unknown can code(s): ${missing.join(', ')}`);
   }
+  assertCansBelongToRun(cans, run);
 
   /**
  * The `currentHolder.type` values a can may be issued FROM.
@@ -306,7 +365,8 @@ const issueCans = async (param) => {
 const ISSUEABLE_HOLDERS = ['store', 'agent'];
 
   const notIssuable = cans.filter(
-    (c) => !ISSUEABLE_HOLDERS.includes(c.currentHolder?.type || 'store')
+    (c) => !duplicatesByCode.has(c.canCode) &&
+      !ISSUEABLE_HOLDERS.includes(c.currentHolder?.type || 'store')
   );
   if (notIssuable.length > 0) {
     throw new ApiError(
@@ -315,27 +375,38 @@ const ISSUEABLE_HOLDERS = ['store', 'agent'];
     );
   }
 
-  const customerId = param.customer;
+  const customerId = stopCustomer;
   let depositTotal = 0;
+  let issued = 0;
+  let duplicates = 0;
+  const touched = [];
 
   for (const can of cans) {
-    depositTotal += can.depositAmount || 0;
-    await applyMovement(can._id, {
+    const movement = await applyMovement(can._id, {
       eventType: 'issue',
       clientRef: param.clientRef ? `${param.clientRef}:${can.canCode}` : undefined,
       run: param.run,
       stop: param.stop,
-      order: param.order,
+      order: orderId,
       agent: param.agent,
       customer: customerId,
       createdBy: param.createdBy,
     });
+    if (movement.duplicate) {
+      duplicates += 1;
+      continue;
+    }
+    issued += 1;
+    touched.push(movement.can);
+    depositTotal += can.depositAmount || 0;
     await DairyCanLedger.create({
       can: can._id,
       business: can.business,
       eventType: 'deposit_held',
+      clientRef: param.clientRef ? `${param.clientRef}:deposit:${can.canCode}` : undefined,
       run: param.run,
       stop: param.stop,
+      order: orderId,
       customer: customerId,
       fromHolder: 'store',
       toHolder: 'customer',
@@ -345,7 +416,7 @@ const ISSUEABLE_HOLDERS = ['store', 'agent'];
   }
   await holdDeposit(customerId, depositTotal);
 
-  return { issued: cans.length, depositHeld: depositTotal, cans };
+  return { issued, duplicates, depositHeld: depositTotal, cans: touched };
 };
 
 /**
@@ -358,23 +429,39 @@ const collectCans = async (param) => {
   if (codes.length === 0) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'No can codes supplied');
   }
-
-  // Same ordering rule as `issueCans` — see the note there.
-  if (param.clientRef && (await alreadyApplied(`${param.clientRef}:${codes[0]}`))) {
+  const duplicatesByCode = await codesAlreadyApplied(param.clientRef, codes);
+  if (duplicatesByCode.size === codes.length) {
     return { collected: codes.length, depositReleased: 0, duplicates: codes.length, cans: [] };
   }
 
+  const run = await getActiveDriverRun(param);
+  const stop = await getRunStop(param.run, param.stop);
+  const stopCustomer = stop.customer?._id || stop.customer;
+
   const cans = await DairyCan.find({ canCode: { $in: codes } });
-  if (cans.length === 0) {
-    throw new ApiError(httpStatus.NOT_FOUND, 'Unknown can codes');
+  const foundCodes = new Set(cans.map((can) => can.canCode));
+  const missing = codes.filter((code) => !foundCodes.has(code));
+  if (missing.length > 0) {
+    throw new ApiError(httpStatus.NOT_FOUND, `Unknown can code(s): ${missing.join(', ')}`);
+  }
+  assertCansBelongToRun(cans, run);
+  const belongsToAnotherCustomer = cans.some(
+    (can) => !duplicatesByCode.has(can.canCode) &&
+      String(can.currentHolder?.ref?._id || can.currentHolder?.ref) !== String(stopCustomer)
+  );
+  if (belongsToAnotherCustomer) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'A can does not belong to the selected customer');
   }
 
   const releases = new Map();
   let releasedTotal = 0;
+  let collected = 0;
+  let duplicates = 0;
+  const touched = [];
 
   for (const can of cans) {
     const previousCustomer = can.currentHolder?.ref;
-    await applyMovement(can._id, {
+    const movement = await applyMovement(can._id, {
       eventType: 'collect',
       clientRef: param.clientRef ? `${param.clientRef}:${can.canCode}` : undefined,
       run: param.run,
@@ -382,6 +469,12 @@ const collectCans = async (param) => {
       agent: param.agent,
       createdBy: param.createdBy,
     });
+    if (movement.duplicate) {
+      duplicates += 1;
+      continue;
+    }
+    collected += 1;
+    touched.push(movement.can);
 
     if (previousCustomer) {
       const key = previousCustomer.toString();
@@ -391,6 +484,7 @@ const collectCans = async (param) => {
         can: can._id,
         business: can.business,
         eventType: 'deposit_released',
+        clientRef: param.clientRef ? `${param.clientRef}:deposit:${can.canCode}` : undefined,
         run: param.run,
         stop: param.stop,
         customer: previousCustomer,
@@ -406,7 +500,7 @@ const collectCans = async (param) => {
     await releaseDeposit(customerId, amount);
   }
 
-  return { collected: cans.length, depositReleased: releasedTotal, cans };
+  return { collected, duplicates, depositReleased: releasedTotal, cans: touched };
 };
 
 /**

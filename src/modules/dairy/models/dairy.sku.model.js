@@ -162,14 +162,34 @@ const dairySkuSchema = mongoose.Schema(
       required: false,
       default: 0,
     },
+    /** Finished-goods stock is sourced from expiring SKU lots when enabled. */
+    lotTrackingEnabled: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    /** Short-lived setup lock used while converting legacy on-hand stock to an opening lot. */
+    lotTrackingInitializing: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    /** Outlet-controlled replenishment trigger; legacy SKUs use the dashboard fallback. */
+    stockAlertThreshold: {
+      type: Number,
+      required: false,
+      default: 10,
+      min: 0,
+      max: 100000,
+    },
     inStock: {
       type: Boolean,
       required: false,
       default: true,
     },
     /**
-     * Perishable goods. Raw-milk batch tracking (fat / SNF / FEFO) lives on
-     * `DairyMilkBatch` in the procurement slice, not here.
+     * Product shelf-life hint. Packaged product lot expiry lives on
+     * `DairySkuInventoryLot`; raw-milk fat / SNF / FEFO lives on `DairyMilkBatch`.
      */
     shelfLifeHours: {
       type: Number,

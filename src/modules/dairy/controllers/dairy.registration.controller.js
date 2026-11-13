@@ -133,7 +133,15 @@ const registerDriver = catchAsync(async (req, res) => {
     user: created.user,
     tokens,
     profile,
-    driver: pick(created.driver, ['_id', 'business', 'payoutMode', 'vehicleType', 'canCapacity']),
+    driver: pick(created.driver, [
+      '_id',
+      'business',
+      'payoutMode',
+      'vehicleType',
+      'canCapacity',
+      'approvalStatus',
+      'activeStatus',
+    ]),
   });
 });
 

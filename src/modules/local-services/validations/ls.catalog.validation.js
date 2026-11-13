@@ -59,6 +59,7 @@ const serviceBody = {
       key: Joi.string().lowercase().pattern(/^[a-z0-9_]+$/).required(),
       name: Joi.string().max(200).required(),
       description: Joi.string().max(2000).allow('', null),
+      image: Joi.string().allow('', null),
       category: objectId.required(),
       categoryKey: Joi.string().lowercase().max(64).allow(null, ''),
       bookingMode: Joi.string().valid('INSTANT', 'SLOT', 'REQUEST', 'DATE_RANGE', 'RECURRING').required(),

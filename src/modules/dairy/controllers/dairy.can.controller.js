@@ -54,6 +54,21 @@ const pickupScan = catchAsync(async (req, res) => {
   res.send(result);
 });
 
+/** Returns scanned cans to the outlet at the end of a run. */
+const returnScan = catchAsync(async (req, res) => {
+  const agent = await riderId(req);
+  const result = await dairyCanService.applyScanBatch({
+    eventType: 'return_to_store',
+    clientRef: req.body.clientRef,
+    run: req.body.run,
+    canCodes: req.body.canCodes,
+    agent,
+    createdBy: agent,
+    note: req.body.note,
+  });
+  res.send(result);
+});
+
 /**
  * Issues cans to a customer at a stop and holds their deposits.
  *
@@ -225,6 +240,7 @@ const importCans = catchAsync(async (req, res) => {
 
 module.exports = {
   pickupScan,
+  returnScan,
   issueScan,
   collectScan,
   depositSummary,

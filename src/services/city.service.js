@@ -45,6 +45,13 @@ const sanitizeZoneDiameterKm = (value) => {
   return Math.min(100, Math.max(1, v));
 };
 
+const sanitizeDairyDeliveryMaxRadiusKm = (value) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return undefined;
+  return Math.min(50, Math.max(1, v));
+};
+
 const createCity = async (param) => {
   if (await City.isNameTaken(param.name)) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Already exist');
@@ -57,6 +64,8 @@ const createCity = async (param) => {
     translations: param.translations,
     defaultDeliveryRadiusMeters: sanitizeCityRadius(param.defaultDeliveryRadiusMeters) ?? null,
     maxZoneDiameterKm: sanitizeZoneDiameterKm(param.maxZoneDiameterKm) ?? null,
+    dairyDeliveryMaxRadiusKm:
+      sanitizeDairyDeliveryMaxRadiusKm(param.dairyDeliveryMaxRadiusKm) ?? 5,
   });
   await City.create(cityData);
   return { success: true };
@@ -112,6 +121,7 @@ const getAllCitiesAdmin = async (options) => {
         name: 1,
         status: 1,
         translations: 1,
+        dairyDeliveryMaxRadiusKm: 1,
         localities: {
           $size: '$localities',
         },
@@ -363,6 +373,10 @@ const updateCityById = async (cityId, param) => {
   }
   if (param && 'maxZoneDiameterKm' in param) {
     updateBody.maxZoneDiameterKm = sanitizeZoneDiameterKm(param.maxZoneDiameterKm) ?? null;
+  }
+  if (param && 'dairyDeliveryMaxRadiusKm' in param) {
+    updateBody.dairyDeliveryMaxRadiusKm =
+      sanitizeDairyDeliveryMaxRadiusKm(param.dairyDeliveryMaxRadiusKm) ?? 5;
   }
   Object.assign(city, updateBody);
   await city.save();

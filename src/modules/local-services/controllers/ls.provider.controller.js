@@ -49,10 +49,57 @@ const myProvider = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ provider: doc });
 });
 
+const myPolicies = catchAsync(async (req, res) => {
+  const provider = await Provider.findOne({ owner: req.user._id }).sort({ createdAt: -1 });
+  if (!provider) throw new ApiError(httpStatus.NOT_FOUND, 'No provider profile');
+  const Policy = require('../models/localservice.policy.model');
+  const offerings = await Offering.find({ provider: provider._id }).select('service').lean();
+  const serviceIds = offerings.map((o) => o.service).filter(Boolean);
+  const services = await Service.find({ _id: { $in: serviceIds } }).select('key categoryKey').lean();
+  const serviceKeys = [...new Set(services.map((s) => s.key).filter(Boolean))];
+  const categoryKeys = [...new Set(services.map((s) => s.categoryKey).filter(Boolean))];
+  const scopes = [
+    { provider: provider._id },
+    { provider: null, serviceKey: { $in: serviceKeys } },
+    { provider: null, categoryKey: { $in: categoryKeys } },
+    { provider: null, categoryKey: null, subcategoryKey: null, serviceKey: null },
+  ];
+  const policies = await Policy.find({ status: 'active', $or: scopes }).sort({ categoryKey: 1, serviceKey: 1, createdAt: -1 });
+  res.status(httpStatus.OK).send({ policies });
+});
+
+const createPartnerComplaint = catchAsync(async (req, res) => {
+  const { LocalServiceComplaint } = require('../models/localservice.fulfilment.model');
+  const provider = await Provider.findOne({ owner: req.user._id });
+  if (!provider) throw new ApiError(httpStatus.NOT_FOUND, 'No provider profile');
+  if (req.body.booking) {
+    const Booking = require('../models/localservice.booking.model');
+    const booking = await Booking.findById(req.body.booking);
+    if (!booking) throw new ApiError(httpStatus.NOT_FOUND, 'Booking not found');
+    const owns =
+      String(booking.provider || '') === String(provider._id) ||
+      (provider.business && String(booking.provider || '') === String(provider.business));
+    if (!owns) throw new ApiError(httpStatus.FORBIDDEN, 'Not your booking');
+  }
+  const doc = await LocalServiceComplaint.create({ raisedBy: req.user._id, ...pick(req.body, ['booking', 'reason']) });
+  try {
+    const outbox = require('../services/localservice.outbox.service');
+    await outbox.enqueue({
+      aggregateType: 'complaint',
+      aggregateId: String(doc._id),
+      eventType: 'complaint.created',
+      payload: { complaintId: String(doc._id), booking: req.body.booking },
+    });
+  } catch (e) {
+    console.error('LocalServices outbox enqueue failed:', e && e.message);
+  }
+  res.status(httpStatus.CREATED).send({ complaint: doc });
+});
+
 const updateMyProvider = catchAsync(async (req, res) => {
   const doc = await Provider.findOne({ _id: req.params.id, owner: req.user._id });
   if (!doc) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
-  const fields = ['businessName', 'businessAddress', 'contactName', 'contactPhone', 'providerType', 'serviceKeys'];
+  const fields = ['businessName', 'businessAddress', 'gstin', 'stateCode', 'contactName', 'contactPhone', 'providerType', 'serviceKeys'];
   for (const field of fields) {
     if (req.body[field] !== undefined) doc[field] = req.body[field];
   }
@@ -62,6 +109,7 @@ const updateMyProvider = catchAsync(async (req, res) => {
 
 const adminListProviders = catchAsync(async (req, res) => {
   const filter = { ...pick(req.query, ['status']) };
+  if (req.query.statuses) filter.status = { $in: String(req.query.statuses).split(',') };
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
   res.status(httpStatus.OK).send(await Provider.paginate(filter, options));
 });
@@ -75,7 +123,7 @@ const adminGetProvider = catchAsync(async (req, res) => {
 const adminUpdateProvider = catchAsync(async (req, res) => {
   const doc = await Provider.findById(req.params.id);
   if (!doc) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
-  const allowed = ['fundAccountId'];
+  const allowed = ['fundAccountId', 'gstin', 'stateCode'];
   for (const key of allowed) {
     if (req.body[key] !== undefined) doc[key] = req.body[key];
   }
@@ -160,6 +208,7 @@ const createOffering = catchAsync(async (req, res) => {
       provider: provider._id,
       service: service._id,
       variant: variantId,
+      image: req.body.image || null,
       price: req.body.price,
       durationMinutes,
       status: 'draft',
@@ -189,6 +238,7 @@ const updateOffering = catchAsync(async (req, res) => {
     doc.price = req.body.price;
   }
   if (req.body.durationMinutes !== undefined) doc.durationMinutes = req.body.durationMinutes;
+  if (req.body.image !== undefined) doc.image = req.body.image || null;
   doc.status = 'draft';
   doc.configVersion += 1;
   await doc.save();
@@ -357,16 +407,17 @@ const getBookingDetail = catchAsync(async (req, res) => {
     (provider.business && String(booking.provider || '') === String(provider.business));
   if (!owns) throw new ApiError(httpStatus.FORBIDDEN, 'Not your booking');
   const Quote = require('../models/localservice.quote.model');
-  const { LocalServiceAssignment } = require('../models/localservice.fulfilment.model');
+  const { LocalServiceAssignment, LocalServiceInvoice } = require('../models/localservice.fulfilment.model');
   const History = require('../models/localservice.status.history.model');
-  const [quotes, assignment, history] = await Promise.all([
+  const [quotes, assignment, history, invoice] = await Promise.all([
     Quote.find({ booking: booking._id }).sort({ createdAt: -1 }),
     LocalServiceAssignment.findOne({ booking: booking._id })
       .populate('staff', 'name status')
       .populate('resource', 'name kind capacity status'),
     History.find({ booking: booking._id }).sort({ createdAt: 1 }),
+    LocalServiceInvoice.findOne({ booking: booking._id }),
   ]);
-  res.status(httpStatus.OK).send({ booking, quotes, assignment, history });
+  res.status(httpStatus.OK).send({ booking, quotes, assignment, history, invoice });
 });
 
 const listMyBookings = catchAsync(async (req, res) => {  const provider = await Provider.findOne({ owner: req.user._id });
@@ -584,4 +635,4 @@ const adminListAssignments = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(result);
 });
 
-module.exports = { registerProvider, myProvider, updateMyProvider, adminListProviders, adminGetProvider, adminUpdateProvider, adminListOfferings, adminListDocuments, adminListAssignments, submitProvider, transitionProvider, createOffering, updateOffering, listMyOfferings, submitOffering, transitionOffering, listOpenBookings, claimBooking, partnerTransitionBooking, listMyBookings, getBookingDetail, assignBooking, releaseAssignment, uploadDocument, listMyDocuments, verifyDocument, myEarnings, PROVIDER_TRANSITIONS, OFFERING_TRANSITIONS };
+module.exports = { registerProvider, myProvider, myPolicies, createPartnerComplaint, updateMyProvider, adminListProviders, adminGetProvider, adminUpdateProvider, adminListOfferings, adminListDocuments, adminListAssignments, submitProvider, transitionProvider, createOffering, updateOffering, listMyOfferings, submitOffering, transitionOffering, listOpenBookings, claimBooking, partnerTransitionBooking, listMyBookings, getBookingDetail, assignBooking, releaseAssignment, uploadDocument, listMyDocuments, verifyDocument, myEarnings, PROVIDER_TRANSITIONS, OFFERING_TRANSITIONS };

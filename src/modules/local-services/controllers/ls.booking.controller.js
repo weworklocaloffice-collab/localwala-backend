@@ -178,19 +178,22 @@ const createBooking = catchAsync(async (req, res) => {
     throw new ApiError(httpStatus.BAD_REQUEST, 'A provider is required for scheduled bookings');
   }
 
-  if (provider && req.body.address) {
-    const Coverage = require('../models/localservice.staff.model').LocalServiceCoverage;
-    const { isCovered } = require('../services/localservice.staff.service');
-    const coverage = await Coverage.findOne({ provider: provider._id }).lean();
-    let address = null;
+  let addressDoc = null;
+  if (req.body.address) {
     try {
       const Address = require('../../../models/user.address.model');
-      address = await Address.findById(req.body.address).lean();
+      addressDoc = await Address.findById(req.body.address).lean();
     } catch (e) {
       // best-effort
     }
-    const locality = address && (address.locality || address.city);
-    const pincode = address && address.pincode;
+  }
+
+  if (provider && addressDoc) {
+    const Coverage = require('../models/localservice.staff.model').LocalServiceCoverage;
+    const { isCovered } = require('../services/localservice.staff.service');
+    const coverage = await Coverage.findOne({ provider: provider._id }).lean();
+    const locality = addressDoc.locality || addressDoc.city;
+    const pincode = addressDoc.pincode;
     if ((locality || pincode) && !isCovered(coverage, { locality, pincode })) {
       throw new ApiError(httpStatus.CONFLICT, 'Provider does not serve this address');
     }
@@ -234,6 +237,7 @@ const createBooking = catchAsync(async (req, res) => {
   const payload = {
     customer: req.user._id,
     ...pick(req.body, ['subcategoryKey', 'serviceKey', 'bookingMode', 'scheduledAt', 'startAt', 'endAt', 'address', 'paymentMode']),
+    addressSnapshot: bookingService.buildAddressSnapshot(addressDoc),
     categoryKey: categoryKey || undefined,
     provider: provider ? provider._id : undefined,
     offering: offering ? offering._id : undefined,
@@ -700,18 +704,59 @@ const submitReview = catchAsync(async (req, res) => {
 
 const getInvoice = catchAsync(async (req, res) => {
   const { LocalServiceInvoice } = require('../models/localservice.fulfilment.model');
+  const booking = await Booking.exists({ _id: req.params.id, customer: req.user._id });
+  if (!booking) throw new ApiError(httpStatus.NOT_FOUND, 'Booking not found');
   const invoice = await LocalServiceInvoice.findOne({ booking: req.params.id });
   if (!invoice) throw new ApiError(httpStatus.NOT_FOUND, 'Invoice not found');
   res.status(httpStatus.OK).send({ invoice });
 });
 
-const voidInvoice = catchAsync(async (req, res) => {
+const invoiceFilename = (invoice) =>
+  `${String(invoice.invoiceNo || 'localservice-invoice').replace(/[^a-zA-Z0-9._-]/g, '-')}.pdf`;
+
+const sendInvoicePdf = async (res, invoice) => {
+  const { renderInvoicePdf } = require('../services/localservice.invoice.pdf.service');
+  const pdf = await renderInvoicePdf(invoice);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${invoiceFilename(invoice)}"`);
+  res.status(httpStatus.OK).send(pdf);
+};
+
+const getInvoicePdf = catchAsync(async (req, res) => {
+  const { LocalServiceInvoice } = require('../models/localservice.fulfilment.model');
+  const booking = await Booking.exists({ _id: req.params.id, customer: req.user._id });
+  if (!booking) throw new ApiError(httpStatus.NOT_FOUND, 'Booking not found');
+  const invoice = await LocalServiceInvoice.findOne({ booking: req.params.id });
+  if (!invoice) throw new ApiError(httpStatus.NOT_FOUND, 'Invoice not found');
+  await sendInvoicePdf(res, invoice);
+});
+
+const adminInvoicePdf = catchAsync(async (req, res) => {
   const { LocalServiceInvoice } = require('../models/localservice.fulfilment.model');
   const invoice = await LocalServiceInvoice.findOne({ booking: req.params.id });
   if (!invoice) throw new ApiError(httpStatus.NOT_FOUND, 'Invoice not found');
-  if (invoice.status === 'void') return res.status(httpStatus.OK).send({ invoice });
-  invoice.status = 'void';
-  await invoice.save();
+  await sendInvoicePdf(res, invoice);
+});
+
+const partnerInvoicePdf = catchAsync(async (req, res) => {
+  const { LocalServiceInvoice } = require('../models/localservice.fulfilment.model');
+  const provider = await Provider.findOne({ owner: req.user._id });
+  if (!provider) throw new ApiError(httpStatus.NOT_FOUND, 'No provider profile');
+  const booking = await Booking.findById(req.params.id);
+  if (!booking) throw new ApiError(httpStatus.NOT_FOUND, 'Booking not found');
+  const owns =
+    String(booking.provider || '') === String(provider._id) ||
+    (provider.business && String(booking.provider || '') === String(provider.business));
+  if (!owns) throw new ApiError(httpStatus.FORBIDDEN, 'Not your booking');
+  const invoice = await LocalServiceInvoice.findOne({ booking: booking._id });
+  if (!invoice) throw new ApiError(httpStatus.NOT_FOUND, 'Invoice not found');
+  await sendInvoicePdf(res, invoice);
+});
+
+const voidInvoice = catchAsync(async (req, res) => {
+  const { voidInvoiceForBooking } = require('../services/localservice.invoice.service');
+  const invoice = await voidInvoiceForBooking({ bookingId: req.params.id });
+  if (!invoice) throw new ApiError(httpStatus.NOT_FOUND, 'Invoice not found');
   res.status(httpStatus.OK).send({ invoice });
 });
 
@@ -979,4 +1024,4 @@ const adminListReviews = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(await LocalServiceReview.paginate(filter, options));
 });
 
-module.exports = { createBooking, transitionBooking, submitQuote, acceptQuote, reviseQuote, rescheduleBooking, disputeBooking, confirmCompletion, submitReview, listReviews, getInvoice, voidInvoice, createComplaint, listMyComplaints, listAllComplaints, resolveComplaint, listMyBookings, listPartnerQuotes, getMyBooking, initiatePayment, getBookingPayment, adminListBookings, adminGetBooking, adminListRefunds, adminListInvoices, adminListReviews, decideRefund, retryRefund };
+module.exports = { createBooking, transitionBooking, submitQuote, acceptQuote, reviseQuote, rescheduleBooking, disputeBooking, confirmCompletion, submitReview, listReviews, getInvoice, getInvoicePdf, adminInvoicePdf, partnerInvoicePdf, voidInvoice, createComplaint, listMyComplaints, listAllComplaints, resolveComplaint, listMyBookings, listPartnerQuotes, getMyBooking, initiatePayment, getBookingPayment, adminListBookings, adminGetBooking, adminListRefunds, adminListInvoices, adminListReviews, decideRefund, retryRefund };

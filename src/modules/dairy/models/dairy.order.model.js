@@ -100,6 +100,17 @@ const dairyOrderSchema = mongoose.Schema(
           type: Array,
           default: [],
         },
+        /** Finished-product inventory lots consumed by this order line. */
+        inventoryLotAllocations: {
+          type: [
+            {
+              lot: { type: mongoose.SchemaTypes.ObjectId, ref: 'DairySkuInventoryLot', required: true },
+              lotNo: { type: String, required: false },
+              quantity: { type: Number, required: true, min: 0 },
+            },
+          ],
+          default: [],
+        },
         /** Cans attached to this line when the SKU is reusable. */
         canCodes: {
           type: [String],
@@ -149,6 +160,14 @@ const dairyOrderSchema = mongoose.Schema(
       get: (v) => Number((v / 100).toFixed(2)),
       set: (v) => Math.round(v * 100),
       default: 0,
+    },
+    coupon: { type: mongoose.SchemaTypes.ObjectId, ref: 'DairyCoupon', required: false },
+    couponRedemption: { type: mongoose.SchemaTypes.ObjectId, ref: 'DairyCouponRedemption', required: false },
+    couponCode: { type: String, required: false, uppercase: true, trim: true },
+    couponSnapshot: {
+      title: { type: String, required: false },
+      discountType: { type: String, enum: ['percentage', 'fixed'], required: false },
+      discountValue: { type: Number, required: false },
     },
     /**
      * What the customer actually pays for this order: goods + delivery + tax −

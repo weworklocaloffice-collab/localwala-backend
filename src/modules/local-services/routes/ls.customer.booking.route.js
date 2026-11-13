@@ -17,12 +17,47 @@
  */
 
 const express = require('express');
+const { status: httpStatus } = require('http-status');
 const validate = require('../../../middlewares/validate');
 const appAuth = require('../../../middlewares/appAuth');
 const controller = require('../controllers/ls.booking.controller');
+const favoriteService = require('../services/ls.favorite.service');
 const V = require('../validations/ls.booking.validation');
 
 const router = express.Router();
+
+const listFavorites = async (req, res) => {
+  const result = await favoriteService.listFavorites({
+    customer: req.user._id,
+    page: Number(req.query.page) || 1,
+    limit: Number(req.query.limit) || 20,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const getFavorite = async (req, res) => {
+  const result = await favoriteService.isFavorite({
+    customer: req.user._id,
+    service: req.params.service,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const addFavorite = async (req, res) => {
+  const result = await favoriteService.addFavorite({
+    customer: req.user._id,
+    service: req.params.service,
+  });
+  res.status(httpStatus.OK).send(result);
+};
+
+const removeFavorite = async (req, res) => {
+  const result = await favoriteService.removeFavorite({
+    customer: req.user._id,
+    service: req.params.service,
+  });
+  res.status(httpStatus.OK).send(result);
+};
 
 router.route('/bookings').post(appAuth('localservices_customer_read'), validate(V.createBookingBody), controller.createBooking).get(appAuth('localservices_customer_read'), controller.listMyBookings);
 
@@ -48,9 +83,14 @@ router.route('/bookings/:id/complete-confirmation').post(appAuth('localservices_
 router.route('/bookings/:id/review').post(appAuth('localservices_customer_read'), validate(V.reviewBody), controller.submitReview);
 
 router.route('/bookings/:id/invoice').get(appAuth('localservices_customer_read'), validate(V.bookingIdParam), controller.getInvoice);
+router.route('/bookings/:id/invoice/pdf').get(appAuth('localservices_customer_read'), validate(V.bookingIdParam), controller.getInvoicePdf);
 
 router.route('/reviews').get(controller.listReviews);
 
 router.route('/complaints').post(appAuth('localservices_customer_read'), validate(V.complaintBody), controller.createComplaint).get(appAuth('localservices_customer_read'), controller.listMyComplaints);
+
+router.route('/favorites').get(validate(V.favoriteListQuery), appAuth('localservices_customer_read'), listFavorites);
+
+router.route('/services/:service/favorite').get(validate(V.favoriteServiceParam), appAuth('localservices_customer_read'), getFavorite).post(validate(V.favoriteServiceParam), appAuth('localservices_customer_read'), addFavorite).delete(validate(V.favoriteServiceParam), appAuth('localservices_customer_read'), removeFavorite);
 
 module.exports = router;

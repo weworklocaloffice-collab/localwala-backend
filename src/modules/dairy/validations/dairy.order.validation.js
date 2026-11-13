@@ -59,7 +59,10 @@ const checkoutValidation = {
       endTime: Joi.string().pattern(/^([01]\d|2[0-3]):[0-5]\d$/),
     }),
     serviceCharge: Joi.number().min(0).default(0),
-    discountAmount: Joi.number().min(0).default(0),
+    // Retained for compatibility with older clients; the order service ignores
+    // this value and calculates only discounts backed by an eligible coupon.
+    discountAmount: Joi.number().min(0),
+    couponCode: Joi.string().trim().uppercase().pattern(/^[A-Z0-9_-]{2,40}$/).allow('', null),
     payment: Joi.string().custom(objectId).allow('', null),
     paymentMode: Joi.string().valid('wallet', 'cod', 'gateway').default('wallet'),
   }),

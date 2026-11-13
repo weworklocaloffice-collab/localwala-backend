@@ -134,7 +134,7 @@ const run = async () => {
     password: 'Location@123',
     role: 'dairyPartner',
     businessName: `Loc Outlet ${stamp}`,
-    businessModel: 'direct',
+    requestedBusinessModel: 'commission_partner',
     // No `ownDeliveryPartner`: the API rejects it now, and the service sets the flag
     // itself. Every dairy outlet runs its own riders.
     city: city._id.toString(),
@@ -202,6 +202,16 @@ const run = async () => {
     created.businesses.push(created1.business._id);
 
     check('a city and locality from the same city registers', true);
+    check(
+      'self-registration keeps the final business model unassigned',
+      !created1.business.businessModel,
+      `model=${created1.business.businessModel}`
+    );
+    check(
+      'the requested model is stored on the application',
+      created1.request.requestedBusinessModel === 'commission_partner',
+      `requested=${created1.request.requestedBusinessModel}`
+    );
     check(
       'the outlet stores the city it chose',
       String(created1.business.city) === city._id.toString(),

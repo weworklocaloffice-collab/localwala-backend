@@ -25,7 +25,7 @@ const {
   LocalServiceSubscription,
   LocalServiceFeaturedPlacement,
 } = require('../models/localservice.growth.model');
-const growth = require('../services/localservice.growth.service');
+const subscriptionPayment = require('../services/localservice.subscription.payment.service');
 const { recordAudit } = require('../services/localservice.audit.service');
 
 const PLAN_TRANSITIONS = {
@@ -78,28 +78,57 @@ const updatePlanStatus = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ plan });
 });
 
-const subscribe = catchAsync(async (req, res) => {
+const listPartnerSubscriptions = catchAsync(async (req, res) => {
   const Provider = require('../models/localservice.provider.model');
-  const provider = await Provider.findOne({ owner: req.user._id, status: 'ACTIVE' });
-  if (!provider) {
-    const e = new Error('Provider not active');
-    e.statusCode = 403;
-    throw e;
+  const provider = await Provider.findOne({ owner: req.user._id });
+  const plans = await LocalServiceSubscriptionPlan.find({ status: 'active' }).lean();
+  let subscription = null;
+  let pending = null;
+  if (provider) {
+    [subscription, pending] = await Promise.all([
+      LocalServiceSubscription.findOne({ provider: provider._id, status: 'active' })
+        .populate('plan')
+        .lean(),
+      LocalServiceSubscription.findOne({ provider: provider._id, status: 'pending_payment' })
+        .sort({ createdAt: -1 })
+        .populate('plan')
+        .lean(),
+    ]);
   }
-  const plan = await LocalServiceSubscriptionPlan.findById(req.body.plan);
-  if (!plan || plan.status !== 'active') {
-    const e = new Error('Plan not active');
-    e.statusCode = 400;
-    throw e;
-  }
-  const doc = await LocalServiceSubscription.create({
-    provider: provider._id,
-    plan: plan._id,
-    status: 'active',
-    startedAt: new Date(),
-    renewAt: growth.nextRenewAt(new Date(), plan.interval),
+  res.status(httpStatus.OK).send({ plans, subscription, pending });
+});
+
+const subscribe = catchAsync(async (req, res) => {
+  const { subscription, initiation } = await subscriptionPayment.subscribe({
+    ownerId: req.user._id,
+    planId: req.body.plan,
+    paymentConfigId: req.body.paymentConfig || null,
   });
-  res.status(httpStatus.CREATED).send({ subscription: doc });
+  await recordAudit(req, {
+    event: 'subscription.created',
+    targetType: 'subscription',
+    targetId: subscription._id,
+    details: `Subscribed to ${subscription.planSnapshot?.code || 'plan'}`,
+    metadata: { provider: subscription.provider, plan: subscription.plan, amount: subscription.amount },
+  });
+  res.status(httpStatus.CREATED).send({
+    subscription,
+    payLink: initiation ? String(initiation._id) : null,
+  });
+});
+
+const paySubscription = catchAsync(async (req, res) => {
+  const { subscription, initiation } = await subscriptionPayment.initiateSubscriptionPayment({
+    subscriptionId: req.params.id,
+    ownerId: req.user._id,
+    paymentConfigId: req.body.paymentConfig || null,
+    paymentRef: req.body.paymentRef,
+  });
+  res.status(httpStatus.OK).send({
+    subscription,
+    payLink: String(initiation._id),
+    paymentInitiation: initiation,
+  });
 });
 
 const createFeatured = catchAsync(async (req, res) => {
@@ -157,7 +186,9 @@ module.exports = {
   createPlan,
   listPlans,
   updatePlanStatus,
+  listPartnerSubscriptions,
   subscribe,
+  paySubscription,
   createFeatured,
   listFeatured,
   updateFeaturedStatus,

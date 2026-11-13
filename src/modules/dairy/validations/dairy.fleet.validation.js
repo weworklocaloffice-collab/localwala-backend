@@ -33,8 +33,30 @@ const driverParams = {
 /** Inviting a rider by phone. */
 const driverInviteValidation = {
   body: Joi.object().keys({
-    mobile: Joi.number().required(),
+    mobile: Joi.number().integer().min(1000000000).max(9999999999).required(),
     countryCode: Joi.string().trim().default('+91'),
+  }),
+};
+
+/** Owner-created account details. The driver chooses their password after OTP verification. */
+const driverCreateValidation = {
+  body: Joi.object().keys({
+    firstName: Joi.string().trim().min(1).max(100).required(),
+    lastName: Joi.string().trim().min(1).max(100).required(),
+    email: Joi.string().trim().email().max(254).required(),
+    mobile: Joi.number().integer().min(1000000000).max(9999999999).required(),
+    countryCode: Joi.string().trim().default('+91'),
+    locale: Joi.string().trim().default('en'),
+    vehicleType: Joi.string().valid('cycle', 'bike', 'mini_truck', 'on_foot').default('cycle'),
+    payoutMode: Joi.string().valid('per_litre', 'per_can', 'salary').default('per_can'),
+    canCapacity: Joi.number().integer().min(0).max(10000).default(0),
+    identity: Joi.string().trim().allow('', null),
+    identityNumber: Joi.string().trim().allow('', null),
+    identityProof: Joi.string().trim().allow('', null),
+    licence: Joi.string().trim().allow('', null),
+    licenceExpiry: Joi.date().allow('', null),
+    age: Joi.number().integer().min(18).max(100).allow('', null),
+    dob: Joi.date().allow('', null),
   }),
 };
 
@@ -48,6 +70,12 @@ const driverInviteRevokeValidation = {
   }),
   body: Joi.object().keys({
     reason: Joi.string().allow('', null).trim(),
+  }),
+};
+
+const driverActivationReissueValidation = {
+  params: Joi.object().keys({
+    invite: Joi.string().custom(objectId).required(),
   }),
 };
 
@@ -105,8 +133,10 @@ const cashDepositValidation = {
 
 module.exports = {
   driverInviteValidation,
+  driverCreateValidation,
   driverInviteListValidation,
   driverInviteRevokeValidation,
+  driverActivationReissueValidation,
   driverApprovalValidation,
   driverRemoveValidation,
   driverPayoutValidation,

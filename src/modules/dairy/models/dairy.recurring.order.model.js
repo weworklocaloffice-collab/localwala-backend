@@ -170,6 +170,17 @@ const dairyRecurringOrderSchema = mongoose.Schema(
       required: false,
       default: false,
     },
+    /** FEFO packaged-product lots held for this delivery occurrence. */
+    inventoryLotAllocations: {
+      type: [
+        {
+          lot: { type: mongoose.SchemaTypes.ObjectId, ref: 'DairySkuInventoryLot', required: true },
+          lotNo: { type: String, required: false },
+          quantity: { type: Number, required: true, min: 0 },
+        },
+      ],
+      default: [],
+    },
     status: {
       type: String,
       required: false,

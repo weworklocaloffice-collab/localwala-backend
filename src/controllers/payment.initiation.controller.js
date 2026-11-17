@@ -611,8 +611,6 @@ const successPayment = catchAsync(async (req, res) => {
                 const uid = (p.users && (p.users.id || p.users._id)) || p.user || null;
                 console.error(`[paid_success ${req.params.id}] pushFailed reason=${reason} oid=${oid} uid=${uid}`);
                 if (!oid) return;
-                const { fcmNotificationService } = require('../services');
-                fcmNotificationService.userPaymentFailed(oid, uid, reason).catch(() => {});
               } catch (pushErr) {
                 void pushErr;
               }
@@ -656,30 +654,11 @@ const successPayment = catchAsync(async (req, res) => {
               });
               // Local Stores subjects are handled (and the redirect left to run) before the food-vertical chain.
               await dispatchPaidCallback(paymentInfo.payments);
-              // Echo live references for the app success screen (no mocks).
-              // method = gateway truth (upi/card/netbanking/wallet/emi); app
-              // falls back to its locally-chosen label when absent.
-              // orderId = local Mongo order _id for Track Order -> history_detail.
-              let echoOrderNo = '';
-              let echoOrderId = '';
-              try {
-                const linkedOrder = paymentInfo.payments && paymentInfo.payments.orders;
-                const from = paymentInfo.payments && paymentInfo.payments.paymentFrom;
-                if (from === 'order' && linkedOrder && ordersService && ordersService.getOrderById) {
-                  const liveOrder = await ordersService.getOrderById(linkedOrder);
-                  if (liveOrder && liveOrder.orderNo !== undefined && liveOrder.orderNo !== null) {
-                    echoOrderNo = `${liveOrder.orderNo}`;
-                  }
-                  echoOrderId = `${linkedOrder}`;
-                }
-              } catch (echoErr) {
-                void echoErr;
-              }
               return res.status(httpStatus.OK).json({
                 success: true,
                 message: 'Payment verified',
-                orderNo: echoOrderNo,
-                orderId: echoOrderId,
+                orderNo: '',
+                orderId: '',
                 method: (verifyResponse.body && verifyResponse.body.method) || '',
               });
             } catch (error) {
@@ -1640,40 +1619,6 @@ const reconcileStuckRazorpayPayments = async (olderThanMin = 30, limit = 50) => 
   return { checked: stuck.length, paid };
 };
 
-/**
- * Enterprise: remind pending-payment orders once, ~5 min before expiry.
- * Window math mirrors the app (30-min payPendingAmountBeforeMinutesOffCreation):
- * reminds orders aged [20,25) min so each order matches exactly one 5-min
- * sweep. Idempotent by window — no schema flag needed.
- */
-const remindPendingPayments = async (windowMin = 30, remindAtMin = 25, limit = 100) => {
-  const { Orders } = require('../models');
-  const { fcmNotificationService } = require('../services');
-  const now = Date.now();
-  const olderThan = new Date(now - remindAtMin * 60 * 1000);
-  const newerThan = new Date(now - (remindAtMin + 5) * 60 * 1000);
-  const stuck = await Orders.find(
-    { status: 'pending_payments', createdAt: { $gte: newerThan, $lt: olderThan } },
-    { user: 1 }
-  )
-    .sort({ createdAt: 1 })
-    .limit(limit)
-    .lean();
-  if (!stuck || stuck.length === 0) return { checked: 0, reminded: 0 };
-  let reminded = 0;
-  const minutesLeft = Math.max(windowMin - remindAtMin, 1);
-  for (const row of stuck) {
-    try {
-      const r = await fcmNotificationService.userPaymentExpiring(row._id, row.user, minutesLeft);
-      if (r && !r.skipped) reminded += 1;
-    } catch (sweepErr) {
-      // Keep pending — next sweep retries. Never throw out of cron.
-      void sweepErr;
-    }
-  }
-  return { checked: stuck.length, reminded };
-};
-
 module.exports = {
   create,
   makePayment,
@@ -1683,7 +1628,6 @@ module.exports = {
   repeatedPayment,
   razorpayWebhook,
   reconcileStuckRazorpayPayments,
-  remindPendingPayments,
   getUserOrderTransaction,
   getUserDiningTransaction,
   getUserFoodSubscriptionTransaction,

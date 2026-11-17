@@ -17,6 +17,7 @@
  */
 
 const { toPaise, fromPaise } = require('../../../utils/money');
+const ApiError = require('../../../utils/ApiError');
 
 /**
  * localservice.policy.service — cancellation/reschedule/dispute rules (pure).
@@ -76,9 +77,7 @@ const EXCEPTION_OUTCOMES = Object.freeze({
 function exceptionOutcome(scenario) {
   const row = EXCEPTION_OUTCOMES[scenario];
   if (!row) {
-    const e = new Error(`Unknown exception scenario ${scenario}`);
-    e.statusCode = 400;
-    throw e;
+    throw new ApiError(400, `Unknown exception scenario ${scenario}`);
   }
   return { scenario, ...row };
 }

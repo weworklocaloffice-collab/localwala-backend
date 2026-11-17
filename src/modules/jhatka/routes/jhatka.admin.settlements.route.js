@@ -1,8 +1,8 @@
-/**
- * LocalWala – Local Commerce & Delivery Platform
+﻿/**
+ * LocalWala â€“ Local Commerce & Delivery Platform
  * (NodeJS, MongoDB, Angular & Flutter)
  *
- * Copyright © 2026 WeWorkLocal Private Limited
+ * Copyright Â© 2026 WeWorkLocal Private Limited
  * https://weworklocal.in/
  *
  * WeWorkLocal Private Limited
@@ -17,7 +17,7 @@
  */
 
 /**
- * jhatka.admin.settlements.route.js — B1.6
+ * jhatka.admin.settlements.route.js â€” B1.6
  *
  * Settlements, rider payouts, supplier payables and commission rules.
  *
@@ -40,7 +40,7 @@
  * balance, rather than trusting that the 02:00 job got it right.
  *
  * That check is the reason this route exists as more than a viewer. `disputed` sits
- * between the two and means an operator has refused to sign it off — which is a real
+ * between the two and means an operator has refused to sign it off â€” which is a real
  * state, not an excuse, because "I do not agree with this number" is the most common
  * and most legitimate thing a partner says about a settlement.
  */
@@ -62,6 +62,7 @@ const router = express.Router();
 const validate = require('../../../middlewares/validate');
 const V = require('../validations/jhatka.admin.validation');
 const notifyService = require('../services/jhatka.notify.service');
+const supplierPayableService = require('../services/jhatka.supplier.payable.service');
 
 const SETTLEMENT_STATUS = ['draft', 'finalised', 'disputed'];
 const PAYOUT_STATUS = ['draft', 'approved', 'paid', 'disputed', 'void'];
@@ -121,7 +122,7 @@ router.get('/settlements', webAuth('jhatka_settlement_read'), async (req, res, n
   }
 });
 
-/** GET /v1/jhatka/admin/settlements/payouts — rider payouts. */
+/** GET /v1/jhatka/admin/settlements/payouts â€” rider payouts. */
 router.get('/settlements/payouts', webAuth('jhatka_settlement_read'), async (req, res, next) => {
   try {
     const query = {};
@@ -270,7 +271,7 @@ router.post('/settlements/payouts/:payout/pay', webAuth('jhatka_settlement_write
   }
 });
 
-/** GET /v1/jhatka/admin/settlements/payables — supplier payables. */
+/** GET /v1/jhatka/admin/settlements/payables â€” supplier payables. */
 router.get('/settlements/payables', webAuth('jhatka_payables_read'), async (req, res, next) => {
   try {
     const query = {};
@@ -298,6 +299,91 @@ router.get('/settlements/payables', webAuth('jhatka_payables_read'), async (req,
     return next(error);
   }
 });
+
+router.post(
+  '/settlements/payables/generate',
+  webAuth('jhatka_payables_manage'),
+  validate(V.payableGenerateBody),
+  async (req, res, next) => {
+    try {
+      const payable = await supplierPayableService.generatePayable(req.body);
+      return res.status(httpStatus.CREATED).json({ payable: payable.toJSON(), generated: true });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
+router.patch(
+  '/settlements/payables/:payable/approve',
+  webAuth('jhatka_payables_manage'),
+  validate(V.namedParam('payable')),
+  validate(V.payableApproveBody),
+  async (req, res, next) => {
+    try {
+      const payable = await supplierPayableService.approvePayable(
+        req.params.payable,
+        req.user,
+        req.body
+      );
+      return res.json({ payable: payable.toJSON() });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
+router.patch(
+  '/settlements/payables/:payable/dispute',
+  webAuth('jhatka_payables_manage'),
+  validate(V.namedParam('payable')),
+  validate(V.payableReasonBody),
+  async (req, res, next) => {
+    try {
+      const payable = await supplierPayableService.disputePayable(
+        req.params.payable,
+        req.body.reason
+      );
+      return res.json({ payable: payable.toJSON() });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
+router.patch(
+  '/settlements/payables/:payable/void',
+  webAuth('jhatka_payables_manage'),
+  validate(V.namedParam('payable')),
+  validate(V.payableReasonBody),
+  async (req, res, next) => {
+    try {
+      const payable = await supplierPayableService.voidPayable(
+        req.params.payable,
+        req.user,
+        req.body.reason
+      );
+      return res.json({ payable: payable.toJSON() });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
+router.post(
+  '/settlements/payables/:payable/pay',
+  webAuth('jhatka_payables_manage'),
+  validate(V.namedParam('payable')),
+  validate(V.payablePayBody),
+  async (req, res, next) => {
+    try {
+      const payable = await supplierPayableService.payPayable(req.params.payable, req.body);
+      return res.json({ payable: payable.toJSON(), paid: true });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
 
 /** GET /v1/jhatka/admin/settlements/commission-rules */
 router.get('/settlements/commission-rules', webAuth('jhatka_commission_read'), async (req, res, next) => {
@@ -336,7 +422,7 @@ router.get('/settlements/commission-rules', webAuth('jhatka_commission_read'), a
  * POST /v1/jhatka/admin/settlements/commission-rules
  *
  * Created `draft`. Activating a commission rule changes what every partner is paid, so
- * it is a separate deliberate act — the same reasoning as outlet activation.
+ * it is a separate deliberate act â€” the same reasoning as outlet activation.
  */
 router.post('/settlements/commission-rules', webAuth('jhatka_commission_write'), validate(V.commissionRuleAdminBody), async (req, res, next) => {
   try {
@@ -380,11 +466,11 @@ router.post('/settlements/commission-rules', webAuth('jhatka_commission_write'),
       revenueShareBasis: revenueShareBasis || undefined,
       settlementCycle: settlementCycle || 'monthly',
       // The model field is `ratePercent`. This used to write `commissionPct`,
-      // which the schema does not define — Mongoose silently stripped it, so
+      // which the schema does not define â€” Mongoose silently stripped it, so
       // every rule created through this API was saved with NO rate at all
       // while looking complete in the response.
       // `platformFeePercent` is the OTHER rate: the platform's charge,
-      // deducted from payouts. The two must never be netted — one is the
+      // deducted from payouts. The two must never be netted â€” one is the
       // partner's earning, the other is what LocalWala keeps.
       ratePercent: ratePercent === undefined ? undefined : Number(ratePercent),
       platformFeePercent:
@@ -489,8 +575,8 @@ router.patch('/settlements/commission-rules/:rule', webAuth('jhatka_commission_w
  * Recompute the margin from a settlement's own stored totals.
  *
  * Deliberately the SAME formula as `utils/commercial.arithmetic.contributionMargin`,
- * restated here in the RUPEES a hydrated document yields. The alternative —
- * re-reading the line items — is not possible: a settlement stores aggregated totals,
+ * restated here in the RUPEES a hydrated document yields. The alternative â€”
+ * re-reading the line items â€” is not possible: a settlement stores aggregated totals,
  * not its orders, and reaching back to them would be a different question from "does
  * this settlement's arithmetic close".
  */
@@ -551,7 +637,7 @@ router.get('/settlements/:settlement', webAuth('jhatka_settlement_read'), valida
  *
  * The check is `contributionMarginPct` only, NOT every total: the margin is derived
  * from the others, so if it agrees then the inputs agree. Asserting every field would
- * be theatre — and would block legitimate settlements over a rounding rupee.
+ * be theatre â€” and would block legitimate settlements over a rounding rupee.
  */
 router.post('/settlements/:settlement/finalise', webAuth('jhatka_settlement_write'), validate(V.namedParam('settlement')), validate(V.settlementDecisionBody), async (req, res, next) => {
   try {
@@ -570,7 +656,7 @@ router.post('/settlements/:settlement/finalise', webAuth('jhatka_settlement_writ
     if (!settlement.totals || settlement.totals.orderCount === 0) {
       throw new ApiError(
         httpStatus.CONFLICT,
-        'An empty settlement cannot be finalised — it has no orders',
+        'An empty settlement cannot be finalised â€” it has no orders',
         true, '', { code: 'EMPTY_SETTLEMENT' }
       );
     }
@@ -630,7 +716,7 @@ router.post('/settlements/:settlement/dispute', webAuth('jhatka_settlement_write
     if (!req.body?.disputeReason || String(req.body.disputeReason).trim().length < 10) {
       throw new ApiError(
         httpStatus.BAD_REQUEST,
-        'disputeReason (at least 10 characters) is required — a disputed settlement without a reason cannot be resolved',
+        'disputeReason (at least 10 characters) is required â€” a disputed settlement without a reason cannot be resolved',
         true, '', { code: 'REASON_REQUIRED' }
       );
     }
@@ -652,3 +738,4 @@ module.exports.SETTLEMENT_TRANSITIONS = SETTLEMENT_TRANSITIONS;
 module.exports.recomputeMargin = recomputeMargin;
 module.exports.SETTLEMENT_STATUS = SETTLEMENT_STATUS;
 module.exports.PAYOUT_STATUS = PAYOUT_STATUS;
+

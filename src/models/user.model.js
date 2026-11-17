@@ -127,6 +127,7 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    verticals: { type: [String], default: [] },
   },
   {
     timestamps: true,
@@ -180,4 +181,3 @@ userSchema.pre('save', async function () {
 const User = mongoose.model('User', userSchema);
 
 module.exports = User;
-

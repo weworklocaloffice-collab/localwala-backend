@@ -32,12 +32,12 @@ const DOCUMENT_ACCESS = path.join(API_ROOT, 'src/modules/realestate/middlewares/
 const SEARCH_SERVICE = path.join(API_ROOT, 'src/modules/realestate/services/realestate.property.search.service.js');
 
 const APP_ENDPOINTS = path.join(APP_ROOT, 'lib/app/core/config/api_endpoints.dart');
-const APP_REPO = path.join(APP_ROOT, 'lib/app/core/repositories/real_estate_repository.dart');
-const APP_MODELS = path.join(APP_ROOT, 'lib/app/core/models/real_estate_property_model.dart');
-const APP_PURCHASES = path.join(APP_ROOT, 'lib/app/presentation/pages/real_estate/purchases.dart');
-const APP_HOLD_DETAIL = path.join(APP_ROOT, 'lib/app/presentation/pages/real_estate/hold_detail.dart');
-const APP_HOME = path.join(APP_ROOT, 'lib/app/presentation/pages/real_estate/real_estate_home.dart');
-const APP_PROPERTY_DETAIL = path.join(APP_ROOT, 'lib/app/presentation/pages/real_estate/property_detail.dart');
+const APP_REPO = path.join(APP_ROOT, 'lib/app/features/real_estate/repositories/real_estate_repository.dart');
+const APP_MODELS = path.join(APP_ROOT, 'lib/app/features/real_estate/models/real_estate_property_model.dart');
+const APP_PURCHASES = path.join(APP_ROOT, 'lib/app/features/real_estate/purchases.dart');
+const APP_HOLD_DETAIL = path.join(APP_ROOT, 'lib/app/features/real_estate/hold_detail.dart');
+const APP_HOME = path.join(APP_ROOT, 'lib/app/features/real_estate/real_estate_home.dart');
+const APP_PROPERTY_DETAIL = path.join(APP_ROOT, 'lib/app/features/real_estate/property_detail.dart');
 
 const V = require(VALIDATION);
 const router = require(ROUTE);

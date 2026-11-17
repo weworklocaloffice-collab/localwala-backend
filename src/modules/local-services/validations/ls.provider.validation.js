@@ -36,7 +36,7 @@ const providerBody = {
       stateCode,
       contactName: Joi.string().max(200).allow('', null),
       contactPhone: Joi.string().max(20).allow('', null),
-      providerType: Joi.string().valid('independent', 'business', 'salon', 'hotel', 'rental', 'trainer', 'multi_location'),
+      providerType: Joi.string().max(64).allow('', null),
       serviceKeys: Joi.array().items(Joi.string().max(64)),
     })
     .unknown(false),
@@ -52,7 +52,7 @@ const updateProviderBody = {
       stateCode,
       contactName: Joi.string().max(200).allow('', null),
       contactPhone: Joi.string().max(20).allow('', null),
-      providerType: Joi.string().valid('independent', 'business', 'salon', 'hotel', 'rental', 'trainer', 'multi_location'),
+      providerType: Joi.string().max(64).allow('', null),
       serviceKeys: Joi.array().items(Joi.string().max(64)),
     })
     .min(1)

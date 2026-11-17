@@ -122,6 +122,9 @@ async function transitionBooking(bookingId, to, { reason, actorType, actorId } =
   const History = HistoryModel || require('../models/localservice.status.history.model');
   const booking = await Booking.findById(bookingId);
   if (!booking) throw new ApiError(httpStatus.NOT_FOUND, 'Booking not found');
+  if (actorType === 'customer' && (!actorId || String(booking.customer) !== String(actorId))) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'Not your booking');
+  }
   assertTransition(booking.status, to);
   assertActorTransition(actorType, booking.status, to);
   if (

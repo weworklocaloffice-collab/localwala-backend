@@ -53,6 +53,7 @@ const {
   JhatkaProcurementReceipt,
   JhatkaOrder,
   JhatkaCompliance,
+  JhatkaQualityRejectionReason,
 } = require('../../../models');
 const validate = require('../../../middlewares/validate');
 const V = require('../validations/jhatka.partner.inventory.validation');
@@ -355,6 +356,22 @@ router.post('/purchase-orders/:po/place', ...invAuth, cap('procurement.manage'),
 });
 
 /**
+ * GET /jhatka/partner/inventory/rejection-reasons
+ *
+ * The controlled vocabulary for the receipt rejection picker. Declared before
+ * `/:id` so Express does not treat the literal as an inventory item id.
+ */
+router.get('/rejection-reasons', ...invAuth, cap('procurement.read'), async (req, res, next) => {
+  try {
+    return res.json(await receiptService.listRejectionReasons({
+      models: { JhatkaQualityRejectionReason },
+    }));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
  * GET /jhatka/partner/inventory/receipts
  */
 router.get('/receipts', ...invAuth, cap('procurement.read'), validate(V.receiptListQuery), async (req, res, next) => {
@@ -415,6 +432,63 @@ router.post('/receipts', ...invAuth, cap('procurement.manage'), validate(V.recei
     });
 
     return res.status(httpStatus.CREATED).json({ receipt: receiptResponse });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * POST /jhatka/partner/inventory/receipts/:receipt/accept
+ *
+ * Human quality decision on one pending line. Acceptance makes the received
+ * quantity saleable and payable; posting then creates its batch. A soft gate
+ * finding (odour, colour, shortfall) waits for this decision instead of
+ * auto-rejecting the delivery.
+ */
+router.post('/receipts/:receipt/accept', ...invAuth, cap('procurement.manage'), validate(V.receiptParam, V.receiptAcceptBody), async (req, res, next) => {
+  try {
+    const receipt = await JhatkaProcurementReceipt.findOne({
+      _id: req.params.receipt,
+      outlet: req.outletId,
+    });
+    if (!receipt) throw new ApiError(httpStatus.NOT_FOUND, 'Receipt not found for this outlet');
+
+    const result = await receiptService.acceptReceiptLine({
+      receipt,
+      lineIndex: req.body.lineIndex,
+      note: req.body.note,
+      actor: { _id: req.user._id, name: req.user.name },
+    });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * POST /jhatka/partner/inventory/receipts/:receipt/reject
+ *
+ * Reject one pending line with governed reasons. Rejecting accepted goods is
+ * refused with `REVERSE_BATCH_FIRST`: their batch already owns stock and
+ * allocations, so the batch is the only correct thing to reverse.
+ */
+router.post('/receipts/:receipt/reject', ...invAuth, cap('procurement.manage'), validate(V.receiptParam, V.receiptRejectBody), async (req, res, next) => {
+  try {
+    const receipt = await JhatkaProcurementReceipt.findOne({
+      _id: req.params.receipt,
+      outlet: req.outletId,
+    });
+    if (!receipt) throw new ApiError(httpStatus.NOT_FOUND, 'Receipt not found for this outlet');
+
+    const result = await receiptService.rejectReceiptLine({
+      receipt,
+      lineIndex: req.body.lineIndex,
+      rejectionReasons: req.body.rejectionReasons,
+      note: req.body.note,
+      actor: { _id: req.user._id, name: req.user.name },
+      models: { JhatkaQualityRejectionReason },
+    });
+    return res.json(result);
   } catch (error) {
     return next(error);
   }

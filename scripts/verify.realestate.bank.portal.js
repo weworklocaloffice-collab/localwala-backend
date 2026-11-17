@@ -65,7 +65,7 @@ const NOTIFICATION_MODEL = path.join(
 const FCM = path.join(API_ROOT, 'src/services/fcm.notification.service.js');
 
 const PORTAL = path.join(APP_ROOT, 'src/app/pages/bank-team');
-const CUSTOMER_PAGES = path.join(CUSTOMER_ROOT, 'lib/app/presentation/pages/real_estate');
+const CUSTOMER_PAGES = path.join(CUSTOMER_ROOT, 'lib/app/features/real_estate');
 
 const read = (p) => fs.readFileSync(p, 'utf8');
 
@@ -371,10 +371,10 @@ const customerLoanDetail = read(
   path.join(CUSTOMER_PAGES, 'loan_application_detail.dart')
 );
 const customerRepo = read(
-  path.join(CUSTOMER_ROOT, 'lib/app/core/repositories/real_estate_repository.dart')
+  path.join(CUSTOMER_ROOT, 'lib/app/features/real_estate/repositories/real_estate_repository.dart')
 );
 const customerModels = read(
-  path.join(CUSTOMER_ROOT, 'lib/app/core/models/real_estate_property_model.dart')
+  path.join(CUSTOMER_ROOT, 'lib/app/features/real_estate/models/real_estate_property_model.dart')
 );
 const customerL10n = read(
   path.join(CUSTOMER_PAGES, 'real_estate_l10n.dart')

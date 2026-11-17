@@ -58,6 +58,7 @@ const registerPartner = catchAsync(async (req, res) => {
     user: created.user,
     tokens,
     profile,
+    verticals: ['jhatka'],
     business: pick(created.business, ['_id', 'name', 'businessModel', 'verified']),
     outlet: pick(created.outlet, ['_id', 'name', 'outletCode', 'status']),
   });

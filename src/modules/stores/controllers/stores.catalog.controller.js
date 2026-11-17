@@ -39,7 +39,7 @@ const createProduct = catchAsync(async (req, res) => {
 });
 
 const updateProduct = catchAsync(async (req, res) => {
-  const product = await catalogService.updateProduct(req.params.product, req.body, { chain: req.chainId });
+  const product = await catalogService.updateProduct(req.params.product, req.body, { chain: req.chainId, actorRole: req.role });
   res.status(httpStatus.OK).send({ product });
 });
 
@@ -50,7 +50,7 @@ const deleteProduct = catchAsync(async (req, res) => {
 
 const generateVariants = catchAsync(async (req, res) => {
   const product = await catalogService.getProduct(req.params.product, { chain: req.chainId });
-  const result = await catalogService.generateVariants({ product, ...req.body });
+  const result = await catalogService.generateVariants({ product, ...req.body, actorRole: req.role });
   res.status(httpStatus.OK).send(result);
 });
 

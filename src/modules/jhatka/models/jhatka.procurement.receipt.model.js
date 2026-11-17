@@ -51,10 +51,11 @@ const { quantitySchema } = require('../utils/quantity');
  *
  * ## `payability` is what makes the payable statement work
  *
- * `pending` means **not yet owed**. §10.2 claims only lines that are
- * `accepted` AND `payability: 'pending'`, so a received-but-rejected line is never
- * invoiced and an already-paid line is never claimed twice. This is a copy of
- * `DairyProviderPayable.claimableCollections`, and the semantics must match.
+ * `pending` means **not yet owed**. §10.2 claims only accepted quantity on a
+ * `payability: 'pending'` line, so a received-but-rejected line is never invoiced,
+ * a partially accepted line is paid only for what was accepted, and an
+ * already-paid line is never claimed twice. This follows
+ * `DairyProviderPayable.claimableCollections`, with the partial case added.
  *
  * ## Partial acceptance is the normal case
  *
@@ -284,7 +285,7 @@ lines: [
 
         /**
          * §10.2. `pending` = not yet owed. The payable statement claims
-         * `accepted` + `pending` only.
+         * accepted quantity on pending lines, including partial acceptance.
          */
         payability: {
           type: String,
@@ -393,13 +394,51 @@ jhatkaProcurementReceiptSchema.statics.rollUpQualityStatus = function (lines) {
 /**
  * Is this receipt claimable on a supplier payable statement?
  *
- * §10.2: `accepted` lines with `payability: 'pending'` only. This is the single
- * rule that stops a rejected line being paid for, and a paid line being paid for
- * twice.
+ * §10.2: accepted quantity with `payability: 'pending'` only. A partially
+ * accepted line is claimable for its accepted quantity. This is the single rule
+ * that stops a rejected line being paid for, and a paid line being paid for twice.
  */
 jhatkaProcurementReceiptSchema.methods.claimableLines = function () {
   if (this.status !== 'posted') return [];
-  return (this.lines || []).filter((l) => l.qualityStatus === 'accepted' && l.payability === 'pending');
+  return (this.lines || []).filter((l) => {
+    if (l.payability !== 'pending') return false;
+    if (l.qualityStatus !== 'accepted' && l.qualityStatus !== 'partially_accepted') return false;
+    const accepted = Number(l.acceptedQty?.value ?? (l.qualityStatus === 'accepted' ? l.receivedQty?.value : 0));
+    return accepted > 0;
+  });
+};
+
+/**
+ * Recompute the receipt's derived totals from its lines. Pure bookkeeping.
+ *
+ * Called after an accept/reject decision so the statement header and the
+ * rejection-rate report never disagree with the line they describe.
+ */
+jhatkaProcurementReceiptSchema.methods.recalculateTotals = function () {
+  const lines = this.lines || [];
+  const totalReceived = lines.reduce((sum, l) => sum + Number(l.receivedQty?.value || 0), 0);
+  const totalAccepted = lines.reduce((sum, l) => sum + Number(l.acceptedQty?.value || 0), 0);
+  const totalRejected = lines.reduce((sum, l) => sum + Number(l.rejectedQty?.value || 0), 0);
+  const totalAcceptedValue = lines.reduce((sum, l) => sum + Number(l.amount || 0), 0);
+  const totalRejectedValue = lines.reduce((sum, l) => sum + Number(l.rejectedValue || 0), 0);
+
+  this.totals.lineCount = lines.length;
+  this.totals.totalReceivedQty = totalReceived;
+  this.totals.totalAcceptedQty = totalAccepted;
+  this.totals.totalRejectedQty = totalRejected;
+  this.totals.totalAcceptedValue = totalAcceptedValue;
+  this.totals.totalRejectedValue = totalRejectedValue;
+  this.rejectionRatePct =
+    totalReceived > 0 ? Number(((totalRejected / totalReceived) * 100).toFixed(2)) : 0;
+  this.qualityStatus = jhatkaProcurementReceiptSchema.statics.rollUpQualityStatus(lines);
+  return this.totals;
+};
+
+const lineDecisionError = (message, code, details = {}) => {
+  const error = new Error(message);
+  error.code = code;
+  Object.assign(error, details);
+  return error;
 };
 
 /**
@@ -409,14 +448,116 @@ jhatkaProcurementReceiptSchema.methods.claimableLines = function () {
  * referencing it, and rejecting the line would leave those allocations pointing at
  * rejected stock. Reverse the batch instead.
  *
+ * A line can be rejected while the receipt is still a draft (the normal quality
+ * decision) or, for legacy/partial-post data, while it is posted but has no batch.
+ * Accepted, partially accepted, already-rejected and batched lines cannot.
+ *
  * @param {number} lineIndex
  * @returns {boolean}
  */
 jhatkaProcurementReceiptSchema.methods.canRejectLine = function (lineIndex) {
-  if (this.status !== 'posted') return false;
+  if (this.status !== 'draft' && this.status !== 'posted') return false;
   const line = (this.lines || [])[lineIndex];
   if (!line) return false;
-  return line.qualityStatus !== 'accepted';
+  if (line.batch) return false;
+  return line.qualityStatus === 'pending';
+};
+
+/**
+ * Reject one line. The caller (service) resolves rejection reasons to governed
+ * `JhatkaQualityRejectionReason` references first; this method owns the line
+ * state transition and the derived totals.
+ *
+ * Throws a plain Error with a stable `.code` so the HTTP layer can map it to a
+ * 409 (`REVERSE_BATCH_FIRST`, `LINE_ALREADY_REJECTED`) or 400.
+ *
+ * @param {number} lineIndex
+ * @param {Array<{reason: object, code: string, note?: string}>} rejectionReasons
+ * @param {{note?: string, actor?: object, at?: Date}} [meta]
+ * @returns {object} the mutated line
+ */
+jhatkaProcurementReceiptSchema.methods.rejectLine = function (lineIndex, rejectionReasons = [], meta = {}) {
+  const line = (this.lines || [])[lineIndex];
+  if (!line) throw lineDecisionError('Receipt line not found', 'LINE_NOT_FOUND');
+  if (this.status === 'cancelled') {
+    throw lineDecisionError('A cancelled receipt cannot be changed', 'RECEIPT_CANCELLED');
+  }
+  if (line.batch || line.qualityStatus === 'accepted' || line.qualityStatus === 'partially_accepted') {
+    throw lineDecisionError(
+      'Accepted goods cannot be rejected - reverse the batch first',
+      'REVERSE_BATCH_FIRST',
+      { batchId: line.batch }
+    );
+  }
+  if (line.qualityStatus === 'rejected') {
+    throw lineDecisionError('This line is already rejected', 'LINE_ALREADY_REJECTED');
+  }
+  if (!this.canRejectLine(lineIndex)) {
+    throw lineDecisionError('This receipt line cannot be rejected', 'LINE_NOT_REJECTABLE');
+  }
+  if (!Array.isArray(rejectionReasons) || rejectionReasons.length === 0) {
+    throw lineDecisionError('At least one rejection reason is required', 'REJECTION_REASON_REQUIRED');
+  }
+
+  const unit = line.receivedQty?.unit;
+  const received = Number(line.receivedQty?.value || 0);
+  line.qualityStatus = 'rejected';
+  line.acceptedQty = { value: 0, unit };
+  line.rejectedQty = { value: received, unit };
+  line.amount = 0;
+  line.rejectedValue = Math.round(Number(line.unitPrice || 0) * received);
+  line.rejectionReasons = rejectionReasons;
+  line.payability = 'disputed';
+  if (meta.note !== undefined) line.qualityNotes = meta.note;
+  line.weighedBy = meta.actor?._id;
+  line.weighedByName = meta.actor?.name;
+  line.weighedAt = meta.at || new Date();
+
+  this.recalculateTotals();
+  return line;
+};
+
+/**
+ * Accept one pending line, normally before posting. Acceptance makes the full
+ * received quantity payable and saleable.
+ *
+ * @param {number} lineIndex
+ * @param {{note?: string, actor?: object, at?: Date}} [meta]
+ * @returns {object} the mutated line
+ */
+jhatkaProcurementReceiptSchema.methods.acceptLine = function (lineIndex, meta = {}) {
+  const line = (this.lines || [])[lineIndex];
+  if (!line) throw lineDecisionError('Receipt line not found', 'LINE_NOT_FOUND');
+  if (this.status !== 'draft') {
+    throw lineDecisionError('Quality decisions must be made before posting', 'RECEIPT_NOT_DRAFT');
+  }
+  if (line.batch) {
+    throw lineDecisionError(
+      'Accepted goods cannot be accepted again - reverse the batch first',
+      'REVERSE_BATCH_FIRST',
+      { batchId: line.batch }
+    );
+  }
+  if (line.qualityStatus !== 'pending') {
+    throw lineDecisionError('This receipt line is already decided', 'LINE_ALREADY_DECIDED');
+  }
+
+  const unit = line.receivedQty?.unit;
+  const received = Number(line.receivedQty?.value || 0);
+  line.qualityStatus = 'accepted';
+  line.acceptedQty = { value: received, unit };
+  line.rejectedQty = { value: 0, unit };
+  line.amount = Math.round(Number(line.unitPrice || 0) * received);
+  line.rejectedValue = 0;
+  line.rejectionReasons = [];
+  line.payability = 'pending';
+  if (meta.note !== undefined) line.qualityNotes = meta.note;
+  line.weighedBy = meta.actor?._id;
+  line.weighedByName = meta.actor?.name;
+  line.weighedAt = meta.at || new Date();
+
+  this.recalculateTotals();
+  return line;
 };
 
 /**

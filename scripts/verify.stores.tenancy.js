@@ -519,7 +519,50 @@ const run = async () => {
     `got ${stale.outlet._id}, expected ${outletA._id}`
   );
 
-    console.log(`\n${checks - failures}/${checks} checks passed`);
+  // ---- 17. route-rights enforcement (§6.23, through the middleware helper) ----
+  //
+  // `storeAuth` calls `assertRouteRights` after the outlet resolves, so this is the
+  // exact decision every partner route makes once identity and scope are known.
+  // Testing it directly is what makes the 403 table visible without an HTTP server.
+  const tenant = require('../src/modules/stores/middlewares/stores.tenant');
+
+  const allows = (role, right) => {
+    try {
+      tenant.assertRouteRights({ role }, [right]);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  };
+
+  check('17. dispatcher cannot manage an order', !allows('dispatcher', 'stores_order_manage'));
+  check('17b. dispatcher can read the ready queue', allows('dispatcher', 'stores_order_read'));
+  check('17c. dispatcher can assign a driver', allows('dispatcher', 'stores_driver_assign'));
+  check('17d. manager cannot read settlements', !allows('manager', 'stores_settlement_read'));
+  check('17e. manager can run orders', allows('manager', 'stores_order_manage'));
+  check('17f. owner can read settlements', allows('owner', 'stores_settlement_read'));
+  check('17g. inventory_manager can adjust stock', allows('inventory_manager', 'stores_inventory_adjust'));
+  check('17h. inventory_manager cannot manage orders', !allows('inventory_manager', 'stores_order_manage'));
+  check('17i. staff cannot manage an order', !allows('staff', 'stores_order_manage'));
+  check('17j. an unknown route right is denied even to the owner', !allows('owner', 'stores_made_up'));
+  check('17k. a driver keeps only the context reads', allows('driver', 'stores_chain_read') && !allows('driver', 'stores_order_read'));
+
+  let denial = null;
+  try {
+    tenant.assertRouteRights({ role: 'dispatcher' }, ['stores_order_manage']);
+  } catch (error) {
+    denial = error;
+  }
+  check(
+    '17l. the denial is 403 STORE_PERMISSION_DENIED with the offending right',
+    denial?.statusCode === httpStatus.FORBIDDEN &&
+      denial?.extra?.code === 'STORE_PERMISSION_DENIED' &&
+      denial?.extra?.right === 'stores_order_manage' &&
+      String(denial?.message).includes("Role 'dispatcher' may not use this route"),
+    denial ? `${denial.statusCode} ${denial.extra?.code}` : 'no rejection'
+  );
+
+  console.log(`\n${checks - failures}/${checks} checks passed`);
     if (failures === 0) {
       console.log('ALL STORES TENANCY CHECKS PASSED');
     } else {

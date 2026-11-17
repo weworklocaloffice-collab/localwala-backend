@@ -18,6 +18,7 @@
 
 const Joi = require('joi');
 const { objectId: objectIdCustom } = require('../../../validations/custom.validation');
+const { BOOKING_STATUSES } = require('../constants/booking.modes');
 
 const objectId = Joi.string().custom(objectIdCustom);
 
@@ -77,7 +78,13 @@ const bookingIdParam = {
 };
 
 const transitionParam = {
-  params: Joi.object().keys({ id: objectId.required(), status: Joi.string().required() }),
+  params: Joi.object().keys({
+    id: objectId.required(),
+    status: Joi.string()
+      .uppercase()
+      .valid(...BOOKING_STATUSES)
+      .required(),
+  }),
 };
 
 const paymentBody = {
@@ -97,6 +104,19 @@ const quoteBody = {
       partsAmount: Joi.number().min(0).required(),
       scopeOfWork: Joi.string().max(2000).allow(''),
       expiresAt: Joi.date().required(),
+    })
+    .unknown(false),
+};
+
+const reviseQuoteBody = {
+  params: Joi.object().keys({ id: objectId.required() }),
+  body: Joi.object()
+    .keys({
+      labourAmount: Joi.number().min(0).required(),
+      partsAmount: Joi.number().min(0).required(),
+      note: Joi.string().max(2000).allow(''),
+      scopeOfWork: Joi.string().max(2000).allow(''),
+      expiresAt: Joi.date(),
     })
     .unknown(false),
 };
@@ -155,6 +175,17 @@ const refundDecisionBody = {
     .unknown(false),
 };
 
+const reviewListQuery = {
+  query: Joi.object()
+    .keys({
+      provider: objectId.required(),
+      sortBy: Joi.string().trim().max(64),
+      limit: Joi.number().min(1).max(100),
+      page: Joi.number().min(1),
+    })
+    .unknown(false),
+};
+
 const favoriteServiceParam = {
   params: Joi.object().keys({ service: objectId.required() }),
 };
@@ -166,4 +197,4 @@ const favoriteListQuery = {
   }),
 };
 
-module.exports = { createBookingBody, bookingIdParam, transitionParam, paymentBody, quoteBody, rescheduleBody, disputeBody, reviewBody, assignBody, complaintBody, refundDecisionBody, favoriteServiceParam, favoriteListQuery };
+module.exports = { createBookingBody, bookingIdParam, transitionParam, paymentBody, quoteBody, reviseQuoteBody, rescheduleBody, disputeBody, reviewBody, assignBody, complaintBody, refundDecisionBody, reviewListQuery, favoriteServiceParam, favoriteListQuery };

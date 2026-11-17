@@ -34,8 +34,8 @@ const { payoutDecision } = require('../utils/commercial.arithmetic');
  *   2. **`netAmount` is positive when the platform owes.** The same sign
  *      convention as a commission partner's statement, so the two are read the
  *      same way.
- *   3. **Only `accepted` + `payability: 'pending'` is claimable.** A rejected line
- *      is never paid for, and a paid line is never paid for twice.
+ *   3. **Only accepted quantity on a `pending` line is claimable.** A rejected
+ *      line is never paid for, and a paid line is never paid for twice.
  *   4. **Generation is COMPENSATABLE, not atomic.** Write the statement, claim the
  *      receipts, and void the statement if the claim fails. MongoDB is standalone
  *      in development, so `withOptionalTransaction` degrades to sequential writes
@@ -43,10 +43,11 @@ const { payoutDecision } = require('../utils/commercial.arithmetic');
  *
  * ## Uniqueness is an INDEX, not a query
  *
- * `DairyProviderPayable` uses `{provider, 'period.from'}` unique. So does this.
- * `stores.settlement.service` queries for an existing settlement with no index
- * behind it (F-3) — two concurrent generators, two settlements, double the money.
- * That is the pattern NOT to copy.
+ * `DairyProviderPayable` uses `{provider, 'period.from'}` unique. This adds the
+ * outlet because a supplier is global and may deliver to several outlets in the
+ * same period. `stores.settlement.service` queries for an existing settlement
+ * with no index behind it (F-3) — two concurrent generators, two settlements,
+ * double the money. That is the pattern NOT to copy.
  */
 const PAYABLE_STATUSES = ['draft', 'approved', 'paid', 'disputed', 'void'];
 
@@ -91,7 +92,7 @@ const jhatkaSupplierPayableSchema = mongoose.Schema(
     totals: {
       receiptCount: { type: Number, required: false, default: 0, min: 0 },
       lineCount: { type: Number, required: false, default: 0, min: 0 },
-      /** Accepted quantity, summed across lines. Integer, in each line's unit. */
+      /** Accepted quantity, raw-summed across lines; mixed units are not convertible. */
       acceptedQty: { type: Number, required: false, default: 0 },
       rejectedQty: { type: Number, required: false, default: 0 },
       /** What we accepted, at intake rates. */
@@ -198,11 +199,16 @@ jhatkaSupplierPayableSchema.index({ payableNo: 1 }, { unique: true });
 /**
  * THE IDEMPOTENCY ANCHOR. Copied from `DairyProviderPayable`.
  *
- * UNIQUE on `{supplier, 'period.from'}` — one statement per supplier per period.
- * This is an index, not the query-as-lock that `stores.settlement.service` uses
- * (F-3), which permits two concurrent generations to both find nothing.
+ * UNIQUE on `{outlet, supplier, 'period.from'}` — one live statement per outlet
+ * and supplier per period. Voided statements are exempt so a failed generation
+ * can be reissued without deleting audit history. This is an index, not the
+ * query-as-lock that `stores.settlement.service` uses (F-3), which permits two
+ * concurrent generations to both find nothing.
  */
-jhatkaSupplierPayableSchema.index({ supplier: 1, 'period.from': 1 }, { unique: true });
+jhatkaSupplierPayableSchema.index(
+  { outlet: 1, supplier: 1, 'period.from': 1 },
+  { unique: true, partialFilterExpression: { voidedAt: { $exists: false } } }
+);
 // The weekly generator's hot query.
 jhatkaSupplierPayableSchema.index({ outlet: 1, status: 1, 'period.from': -1 });
 jhatkaSupplierPayableSchema.index({ supplier: 1, status: 1, 'period.from': -1 });

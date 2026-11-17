@@ -35,6 +35,7 @@ const createCategory = catchAsync(async (req, res) => {
 const listCategories = catchAsync(async (req, res) => {
   const filter = pick(req.query, ['status', 'parent']);
   if (String(req.query.subcategories) === 'true') filter.parent = { $ne: null };
+  if (String(req.query.topLevel) === 'true') filter.parent = null;
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
   res.status(httpStatus.OK).send(await Category.paginate(filter, options));
 });
@@ -103,6 +104,9 @@ const updateDoc = (Model, allowed) => catchAsync(async (req, res) => {
   if (!doc) throw new ApiError(httpStatus.NOT_FOUND, 'Not found');
   if (Model === Category && req.body.key && req.body.key !== doc.key) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Category key is immutable');
+  }
+  if (Model === Category && req.body.parent !== undefined && req.body.parent && String(req.body.parent) === String(doc._id)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Category cannot be its own parent');
   }
   for (const k of allowed) {
     if (req.body[k] !== undefined) doc[k] = req.body[k];
@@ -254,7 +258,24 @@ const publicCategories = catchAsync(async (req, res) => {
 
 const publicServices = catchAsync(async (req, res) => {
   const filter = { status: 'active' };
-  if (req.query.category) filter.category = req.query.category;
+  if (req.query.category) {
+    // A category may be a parent: include services tagged to it OR to any of
+    // its descendant subcategories so browsing a parent shows the whole tree.
+    try {
+      const catId = req.query.category;
+      const descendants = await Category.find({ parent: catId }).select('_id').lean();
+      const ids = [catId, ...descendants.map((d) => String(d._id))];
+      // Also pull grandchildren (3-level taxonomy).
+      if (descendants.length) {
+        const grand = await Category.find({ parent: { $in: descendants.map((d) => d._id) } }).select('_id').lean();
+        ids.push(...grand.map((d) => String(d._id)));
+      }
+      filter.category = { $in: ids };
+    } catch (e) {
+      filter.category = req.query.category;
+    }
+  }
+  if (req.query.subcategory) filter.category = req.query.subcategory;
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
   const skip = (page - 1) * limit;
@@ -380,7 +401,7 @@ const publicSubcategories = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ results: rows });
 });
 
-const updateCategory = updateDoc(Category, ['name', 'description', 'icon', 'sortOrder', 'allowedBookingModes', 'status']);
+const updateCategory = updateDoc(Category, ['name', 'description', 'icon', 'image', 'sortOrder', 'parent', 'allowedBookingModes', 'status']);
 const updateFacet = updateDoc(Facet, ['name', 'label', 'description', 'icon', 'sortOrder', 'options', 'required', 'searchable', 'filterable', 'status']);
 const updateService = updateDoc(Service, ['name', 'description', 'image', 'bookingMode', 'pricingMode', 'baseDurationMinutes', 'minPrice', 'maxPrice', 'inspectionFee', 'inspectionFeeTreatment', 'depositPercent', 'allowedPaymentModes', 'allowedBookingModes', 'status']);
 const updateVariant = updateDoc(Variant, ['name', 'sku', 'durationMinutes', 'basePrice', 'includedWork', 'status']);

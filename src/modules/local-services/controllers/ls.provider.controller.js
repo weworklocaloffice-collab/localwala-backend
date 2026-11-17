@@ -24,7 +24,10 @@ const Provider = require('../models/localservice.provider.model');
 const Offering = require('../models/localservice.offering.model');
 const Service = require('../models/localservice.service.model');
 const Variant = require('../models/localservice.variant.model');
+const LocalServiceDocument = require('../models/localservice.document.model');
+const Booking = require('../models/localservice.booking.model');
 const { recordAudit } = require('../services/localservice.audit.service');
+const providerTypeService = require('../services/localservice.providertype.service');
 
 const PROVIDER_TRANSITIONS = {
   DRAFT: ['SUBMITTED'],
@@ -39,6 +42,9 @@ const PROVIDER_TRANSITIONS = {
 };
 
 const registerProvider = catchAsync(async (req, res) => {
+  if (req.body.providerType && !(await providerTypeService.isActiveType(req.body.providerType))) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Unknown provider type');
+  }
   const doc = await Provider.create({ owner: req.user._id, ...req.body, status: 'DRAFT', bookable: false });
   res.status(httpStatus.CREATED).send({ provider: doc });
 });
@@ -99,6 +105,13 @@ const createPartnerComplaint = catchAsync(async (req, res) => {
 const updateMyProvider = catchAsync(async (req, res) => {
   const doc = await Provider.findOne({ _id: req.params.id, owner: req.user._id });
   if (!doc) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
+  if (
+    req.body.providerType &&
+    req.body.providerType !== doc.providerType &&
+    !(await providerTypeService.isActiveType(req.body.providerType))
+  ) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Unknown provider type');
+  }
   const fields = ['businessName', 'businessAddress', 'gstin', 'stateCode', 'contactName', 'contactPhone', 'providerType', 'serviceKeys'];
   for (const field of fields) {
     if (req.body[field] !== undefined) doc[field] = req.body[field];
@@ -108,14 +121,66 @@ const updateMyProvider = catchAsync(async (req, res) => {
 });
 
 const adminListProviders = catchAsync(async (req, res) => {
-  const filter = { ...pick(req.query, ['status']) };
+  const filter = pick(req.query, ['status', 'providerType']);
+  Object.keys(filter).forEach((key) => {
+    if (filter[key] === '' || filter[key] === undefined) delete filter[key];
+  });
   if (req.query.statuses) filter.status = { $in: String(req.query.statuses).split(',') };
+  if (req.query.search) {
+    const rx = new RegExp(String(req.query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    filter.$or = [{ businessName: rx }, { contactName: rx }, { contactPhone: rx }, { gstin: rx }];
+  }
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
-  res.status(httpStatus.OK).send(await Provider.paginate(filter, options));
+  if (!options.sortBy) options.sortBy = 'createdAt:desc';
+  options.populate = { path: 'owner', select: 'firstName lastName email countryCode mobile' };
+  const result = await Provider.paginate(filter, options);
+  const ids = result.results.map((doc) => doc._id);
+  let docGroups = [];
+  let offeringGroups = [];
+  let bookingGroups = [];
+  if (ids.length) {
+    [docGroups, offeringGroups, bookingGroups] = await Promise.all([
+      LocalServiceDocument.aggregate([
+        { $match: { provider: { $in: ids } } },
+        { $group: { _id: { provider: '$provider', status: '$status' }, count: { $sum: 1 } } },
+      ]),
+      Offering.aggregate([
+        { $match: { provider: { $in: ids } } },
+        { $group: { _id: '$provider', count: { $sum: 1 } } },
+      ]),
+      Booking.aggregate([
+        { $match: { provider: { $in: ids } } },
+        { $group: { _id: '$provider', count: { $sum: 1 } } },
+      ]),
+    ]);
+  }
+  const docCounts = {};
+  docGroups.forEach((group) => {
+    const key = String(group._id.provider);
+    if (!docCounts[key]) docCounts[key] = { pending: 0, verified: 0, rejected: 0 };
+    docCounts[key][group._id.status] = group.count;
+  });
+  const offeringCounts = {};
+  offeringGroups.forEach((group) => { offeringCounts[String(group._id)] = group.count; });
+  const bookingCounts = {};
+  bookingGroups.forEach((group) => { bookingCounts[String(group._id)] = group.count; });
+  const rows = result.results.map((doc) => {
+    const key = String(doc._id);
+    return {
+      ...doc.toJSON(),
+      docCounts: docCounts[key] || { pending: 0, verified: 0, rejected: 0 },
+      offeringCount: offeringCounts[key] || 0,
+      bookingCount: bookingCounts[key] || 0,
+    };
+  });
+  res.status(httpStatus.OK).send({ ...result, results: rows });
 });
 
 const adminGetProvider = catchAsync(async (req, res) => {
-  const doc = await Provider.findById(req.params.id);
+  const doc = await Provider.findById(req.params.id).populate(
+    'owner',
+    'firstName lastName email countryCode mobile'
+  );
   if (!doc) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
   res.status(httpStatus.OK).send({ provider: doc });
 });
@@ -134,6 +199,7 @@ const adminUpdateProvider = catchAsync(async (req, res) => {
 const adminListOfferings = catchAsync(async (req, res) => {
   const filter = { ...pick(req.query, ['status', 'provider', 'service']) };
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  options.populate = { path: 'service', select: 'name categoryKey bookingMode pricingMode' };
   res.status(httpStatus.OK).send(await Offering.paginate(filter, options));
 });
 
@@ -141,6 +207,7 @@ const adminListDocuments = catchAsync(async (req, res) => {
   const Document = require('../models/localservice.document.model');
   const filter = { ...pick(req.query, ['status', 'provider']) };
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  if (!options.sortBy) options.sortBy = 'createdAt:desc';
   res.status(httpStatus.OK).send(await Document.paginate(filter, options));
 });
 
@@ -635,4 +702,36 @@ const adminListAssignments = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(result);
 });
 
-module.exports = { registerProvider, myProvider, myPolicies, createPartnerComplaint, updateMyProvider, adminListProviders, adminGetProvider, adminUpdateProvider, adminListOfferings, adminListDocuments, adminListAssignments, submitProvider, transitionProvider, createOffering, updateOffering, listMyOfferings, submitOffering, transitionOffering, listOpenBookings, claimBooking, partnerTransitionBooking, listMyBookings, getBookingDetail, assignBooking, releaseAssignment, uploadDocument, listMyDocuments, verifyDocument, myEarnings, PROVIDER_TRANSITIONS, OFFERING_TRANSITIONS };
+const bulkTransitionProviders = catchAsync(async (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+  const status = req.body.status;
+  if (!ids.length || !status) throw new ApiError(httpStatus.BAD_REQUEST, 'ids and status are required');
+  const allowedAll = PROVIDER_TRANSITIONS[status] ? true : true;
+  const results = [];
+  for (const id of ids) {
+    const doc = await Provider.findById(id);
+    if (!doc) { results.push({ id, ok: false, error: 'not found' }); continue; }
+    const allowed = PROVIDER_TRANSITIONS[doc.status] || [];
+    if (!allowed.includes(status)) { results.push({ id, ok: false, error: `illegal ${doc.status} -> ${status}` }); continue; }
+    const from = doc.status;
+    doc.status = status;
+    if (status === 'ACTIVE') doc.bookable = true;
+    if (status === 'SUSPENDED' || status === 'INACTIVE') doc.bookable = false;
+    if (status === 'REJECTED') doc.rejectReason = req.body.reason || 'rejected';
+    await doc.save();
+    await recordAudit(req, {
+      event: `provider.${status.toLowerCase()}`,
+      targetType: 'provider',
+      targetId: doc._id,
+      details: `Provider ${doc.businessName} moved ${from} -> ${status}`,
+      metadata: { from, to: status, reason: req.body.reason, bulk: true },
+    });
+    results.push({ id, ok: true });
+  }
+  res.status(httpStatus.OK).send({ results });
+});
+
+module.exports = { registerProvider, myProvider, myPolicies, createPartnerComplaint, updateMyProvider, adminListProviders, 
+adminGetProvider, adminUpdateProvider, adminListOfferings, adminListDocuments, adminListAssignments, submitProvider, transitionProvider, bulkTransitionProviders, createOffering, updateOffering, listMyOfferings, 
+submitOffering, transitionOffering, listOpenBookings, claimBooking, partnerTransitionBooking, listMyBookings, getBookingDetail, assignBooking, releaseAssignment, uploadDocument, listMyDocuments, 
+verifyDocument, myEarnings, PROVIDER_TRANSITIONS, OFFERING_TRANSITIONS };

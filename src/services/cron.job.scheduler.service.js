@@ -653,7 +653,7 @@ scheduledTasks.push(job); // Store the reference to the scheduled job
       process.env.CRON_PAYMENTS_REMINDER || '*/5 * * * *',
       async () => {
         try {
-          const { remindPendingPayments } = require('../controllers/payment.initiation.controller');
+          const { remindPendingPayments } = require('./payment.reminder.service');
           const windowMin = parseInt(process.env.PAYMENTS_WINDOW_MIN || '30', 10);
           const result = await remindPendingPayments(windowMin, windowMin - 5, 100);
           logger.info(`payments reminder: ${JSON.stringify(result)}`);

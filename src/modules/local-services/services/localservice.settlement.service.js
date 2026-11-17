@@ -83,6 +83,67 @@ function summarizeEntries(entries = []) {
  */
 const HELD_BOOKING_STATUSES = Object.freeze(['DISPUTED']);
 
+const PAYOUT_LEASE_MS = 30 * 60 * 1000;
+
+async function releaseSettlementEntries(Entry, settlementId) {
+  if (!Entry || typeof Entry.updateMany !== 'function') return;
+  await Entry.updateMany({ settlement: settlementId }, { $unset: { settlement: 1 } });
+}
+
+async function discardSettlement(Settlement, settlement) {
+  if (!settlement) return;
+  try {
+    if (typeof Settlement.deleteOne === 'function') {
+      await Settlement.deleteOne({ _id: settlement._id, status: 'pending' });
+      return;
+    }
+    if (typeof settlement.save === 'function') {
+      settlement.status = 'failed';
+      settlement.failureReason = 'Settlement batch discarded after entry claim failure';
+      await settlement.save();
+    }
+  } catch (e) {
+    void e;
+  }
+}
+
+/**
+ * Claim the payout right for one settlement.
+ *
+ * Only pending (or a processing row whose lease has expired) may start a
+ * payout. The atomic findOneAndUpdate is what stops two admins from paying the
+ * same batch twice; the lease lets a crashed payout be retried without making
+ * every transient failure a permanent block.
+ */
+async function claimSettlementPayout(Settlement, doc, settlementId) {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - PAYOUT_LEASE_MS);
+  if (typeof Settlement.findOneAndUpdate === 'function') {
+    return Settlement.findOneAndUpdate(
+      {
+        _id: settlementId,
+        $or: [
+          { status: 'pending' },
+          { status: 'processing', payoutStartedAt: null },
+          { status: 'processing', payoutStartedAt: { $exists: false } },
+          { status: 'processing', payoutStartedAt: { $lte: cutoff } },
+        ],
+      },
+      { $set: { status: 'processing', payoutStartedAt: now } },
+      { new: true }
+    );
+  }
+  if (doc.status !== 'pending' && doc.status !== 'processing') return null;
+  if (doc.status === 'processing' && doc.payoutStartedAt) {
+    const started = new Date(doc.payoutStartedAt).getTime();
+    if (Number.isFinite(started) && now.getTime() - started < PAYOUT_LEASE_MS) return null;
+  }
+  doc.status = 'processing';
+  doc.payoutStartedAt = now;
+  if (typeof doc.save === 'function') await doc.save();
+  return doc;
+}
+
 async function loadHeldBookingIds(entries, { BookingModel } = {}) {
   const ids = [...new Set((entries || []).map((e) => e.bookingId).filter(Boolean))];
   if (!ids.length) return new Set();
@@ -147,9 +208,7 @@ async function generateSettlement(
   const Settlement = SettlementModel || require('../../../kernel/settlement/models/settlement.model');
   const provider = await Provider.findById(providerId);
   if (!provider) {
-    const e = new Error('Provider not found');
-    e.statusCode = 404;
-    throw e;
+    throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
   }
   const q = {
     provider: providerId,
@@ -190,13 +249,29 @@ async function generateSettlement(
     },
     status: 'pending',
   });
-  // Consume the included entries so a repeated generate cannot pay twice. The
-  // update is skipped for pure stubs (unit tests) that do not implement it.
+  // Consume the included entries so a repeated generate cannot pay twice.
+  // The claim is guarded (settlement: null, still applied): if a concurrent
+  // run consumed part of the batch we release OUR claims and discard this
+  // settlement rather than leaving a payable batch with a partial ledger.
   if (entries.length && typeof Entry.updateMany === 'function') {
-    await Entry.updateMany(
-      { _id: { $in: entries.map((e) => e._id) } },
-      { $set: { settlement: settlement._id } }
-    );
+    const claimFilter = {
+      ...q,
+      _id: { $in: entries.map((e) => e._id) },
+    };
+    let claim;
+    try {
+      claim = await Entry.updateMany(claimFilter, { $set: { settlement: settlement._id } });
+    } catch (e) {
+      await releaseSettlementEntries(Entry, settlement._id);
+      await discardSettlement(Settlement, settlement);
+      throw e;
+    }
+    const claimed = claim && typeof claim.matchedCount === 'number' ? claim.matchedCount : null;
+    if (claimed !== null && claimed !== entries.length) {
+      await releaseSettlementEntries(Entry, settlement._id);
+      await discardSettlement(Settlement, settlement);
+      throw new ApiError(httpStatus.CONFLICT, 'Settlement entries changed while batching; retry');
+    }
   }
   return { settlement, summary, held: heldSummary };
 }
@@ -217,20 +292,18 @@ async function paySettlement(
 ) {
   const Settlement = SettlementModel || require('../../../kernel/settlement/models/settlement.model');
   const Provider = ProviderModel || require('../models/localservice.provider.model');
-  const doc = await Settlement.findById(settlementId);
+  let doc = await Settlement.findById(settlementId);
   if (!doc) throw new ApiError(httpStatus.NOT_FOUND, 'Settlement not found');
-  if (doc.status !== 'processing' && doc.status !== 'pending') {
-    throw new ApiError(httpStatus.CONFLICT, `Settlement is ${doc.status}, not payable`);
-  }
   const amount = Number((doc.totals && doc.totals.netAmount) || 0);
   if (!(amount > 0)) {
     throw new ApiError(httpStatus.CONFLICT, 'Settlement has no payable amount');
   }
 
-  if (doc.status === 'pending') {
-    doc.status = 'processing';
-    await doc.save();
+  const claimed = await claimSettlementPayout(Settlement, doc, settlementId);
+  if (!claimed) {
+    throw new ApiError(httpStatus.CONFLICT, `Settlement is ${doc.status}, not payable`);
   }
+  doc = claimed;
 
   if (method === 'wallet') {
     // The settlement's counterparty is the provider's linked Business; the
@@ -246,11 +319,13 @@ async function paySettlement(
       amountRupees: amount,
       bookingCode: `SETTLEMENT-${doc.settlementNo}`,
       reason: note || `Local Services settlement ${doc.settlementNo}`,
+      idempotencyKey: `SETTLEMENT-${doc._id}`,
     });
     doc.payoutMethod = 'wallet';
     doc.gatewayReference = result.transactionId || '';
     doc.status = 'settled';
     doc.settlementDate = new Date();
+    doc.payoutStartedAt = undefined;
     if (note) doc.notes = note;
     await doc.save();
     try {
@@ -277,21 +352,27 @@ async function paySettlement(
     if (!fundAccountId) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Provider has no fund account configured for gateway payout');
     }
-    const payout = require('./localservice.gateway.payout').payout;
-    const result = await payout({
-      gateway: 'razorpay',
-      fundAccountId,
-      amountPaise: Math.round(amount * 100),
-      referenceId: `SETTLEMENT-${doc.settlementNo}`,
-      narration: note || `Local Services settlement ${doc.settlementNo}`,
-      accountNumber: account && account.accountNumber,
-      credentials: account && account.credentials,
-    });
+    let result;
+    if (doc.gatewayReference) {
+      result = { gatewayPayoutId: doc.gatewayReference, status: 'settled' };
+    } else {
+      const payout = require('./localservice.gateway.payout').payout;
+      result = await payout({
+        gateway: 'razorpay',
+        fundAccountId,
+        amountPaise: Math.round(amount * 100),
+        referenceId: `SETTLEMENT-${doc.settlementNo}`,
+        narration: note || `Local Services settlement ${doc.settlementNo}`,
+        accountNumber: account && account.accountNumber,
+        credentials: account && account.credentials,
+      });
+    }
     doc.payoutMethod = 'gateway';
     doc.payoutDetails = { ...(doc.payoutDetails || {}), ...(account || {}), fundAccountId };
-    doc.gatewayReference = result.gatewayPayoutId || '';
+    doc.gatewayReference = result.gatewayPayoutId || doc.gatewayReference || '';
     doc.status = 'settled';
     doc.settlementDate = new Date();
+    doc.payoutStartedAt = undefined;
     if (note) doc.notes = note;
     await doc.save();
     try {
@@ -320,6 +401,7 @@ async function paySettlement(
   doc.gatewayReference = reference;
   doc.status = 'settled';
   doc.settlementDate = new Date();
+  doc.payoutStartedAt = undefined;
   if (note) doc.notes = note;
   await doc.save();
   return { settlement: doc, payout: { method: 'bank', amount, reference } };
@@ -336,7 +418,7 @@ module.exports = {
 };
 
 const SETTLEMENT_TRANSITIONS = {
-  pending: ['processing', 'settled', 'failed'],
+  pending: ['processing', 'failed'],
   processing: ['settled', 'failed', 'disputed'],
   settled: ['reversed'],
   failed: ['processing'],
@@ -349,21 +431,44 @@ async function markSettlement(settlementId, to, { note } = {}, { SettlementModel
   const Entry = EntryModel || require('../models/localservice.revenue.entry.model');
   const doc = await Settlement.findById(settlementId);
   if (!doc) {
-    const e = new Error('Settlement not found');
-    e.statusCode = 404;
-    throw e;
+    throw new ApiError(httpStatus.NOT_FOUND, 'Settlement not found');
   }
   if (!(SETTLEMENT_TRANSITIONS[doc.status] || []).includes(to)) {
-    const e = new Error(`Illegal settlement transition ${doc.status} -> ${to}`);
-    e.statusCode = 409;
-    throw e;
+    throw new ApiError(httpStatus.CONFLICT, `Illegal settlement transition ${doc.status} -> ${to}`);
+  }
+  if (to === 'settled') {
+    throw new ApiError(httpStatus.CONFLICT, 'Use paySettlement to settle a batch');
+  }
+  // Claw back money already paid when a settled batch is reversed.
+  if (to === 'reversed' && doc.status === 'settled' && doc.payoutMethod === 'wallet') {
+    const amount = Number((doc.totals && doc.totals.netAmount) || 0);
+    if (amount > 0) {
+      const Provider = require('../models/localservice.provider.model');
+      const provider = await Provider.findOne({ business: doc.counterparty }).catch(() => null);
+      const owner = provider && provider.owner;
+      if (owner) {
+        const { debitWallet } = require('./localservice.wallet.payment');
+        await debitWallet({
+          userId: owner,
+          amountRupees: amount,
+          bookingCode: `SETTLEMENT-REVERSE-${doc.settlementNo}`,
+          reason: note || `Reversal of Local Services settlement ${doc.settlementNo}`,
+          idempotencyKey: `SETTLEMENT-REVERSE-${doc._id}`,
+        });
+      }
+    }
+  }
+  // A failed/reversed transition must atomically release the entries. We do
+  // this before saving so a crash between the two leaves the settlement still
+  // marked as the previous status with its entries intact, not a reversed
+  // batch whose entries are still consumed.
+  if (to === 'failed' || to === 'reversed') {
+    if (typeof Entry.updateMany === 'function') {
+      await Entry.updateMany({ settlement: doc._id }, { $unset: { settlement: 1 } });
+    }
   }
   doc.status = to;
   if (note) doc.notes = note;
   await doc.save();
-  // A failed/reversed batch releases its entries back to the unsettled pool.
-  if ((to === 'failed' || to === 'reversed') && typeof Entry.updateMany === 'function') {
-    await Entry.updateMany({ settlement: doc._id }, { $unset: { settlement: 1 } });
-  }
   return doc;
 }

@@ -215,6 +215,17 @@ localServiceBooking: {
 // add plugin that converts mongoose to json & convert to unique slug
 paymentInitiationSchema.plugin(toJSON);
 
+paymentInitiationSchema.index(
+  { paymentFrom: 1, paymentRef: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      paymentFrom: 'localServiceBooking',
+      paymentRef: { $type: 'string' },
+    },
+  }
+);
+
 /**
  * @typedef PaymentInitiation
  */

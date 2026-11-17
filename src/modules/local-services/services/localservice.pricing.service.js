@@ -17,6 +17,7 @@
  */
 
 const { toPaise, fromPaise } = require('../../../utils/money');
+const ApiError = require('../../../utils/ApiError');
 
 /**
  * localservice.pricing.service — SOLE service-price authority (revenue.service
@@ -132,13 +133,9 @@ module.exports = { priceBooking, assertPriceBand };
 function assertPriceBand(price, min, max) {
   const p = Number(price);
   if (Number(min) > 0 && p < Number(min)) {
-    const e = new Error(`Price ${p} below minimum ${min}`);
-    e.statusCode = 400;
-    throw e;
+    throw new ApiError(400, `Price ${p} below minimum ${min}`);
   }
   if (Number(max) > 0 && p > Number(max)) {
-    const e = new Error(`Price ${p} above maximum ${max}`);
-    e.statusCode = 400;
-    throw e;
+    throw new ApiError(400, `Price ${p} above maximum ${max}`);
   }
 }

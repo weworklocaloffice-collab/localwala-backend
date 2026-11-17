@@ -31,16 +31,6 @@ const idParam = {
   }),
 };
 
-const payBody = {
-  body: Joi.object()
-    .keys({
-      paymentReference: Joi.string(),
-      notes: Joi.string(),
-    })
-    .unknown(true),
-};
-
 module.exports = {
   idParam,
-  payBody,
 };

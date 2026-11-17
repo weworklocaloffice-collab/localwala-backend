@@ -54,11 +54,17 @@ require('../src/modules/stores/models/store.outlet.product.model');
 require('../src/modules/stores/models/store.review.model');
 require('../src/modules/stores/models/store.outlet.model');
 require('../src/modules/stores/models/chain.product.model');
+require('../src/modules/stores/models/store.driver.model');
+require('../src/modules/stores/models/store.delivery.model');
+require('../src/modules/stores/models/store.subscription.model');
+require('../src/modules/stores/models/store.compliance.document.model');
+require('../src/modules/stores/models/store.chain.model');
 
 const StoreOrder = mongoose.model('StoreOrder');
 const StoreOutletStockItem = mongoose.model('StoreOutletStockItem');
 const StoreReview = mongoose.model('StoreReview');
 const StoreOutlet = mongoose.model('StoreOutlet');
+const StoreChain = mongoose.model('StoreChain');
 
 let failures = 0;
 const ck = (label, condition, detail) => {
@@ -93,7 +99,12 @@ const cleanup = async () => {
   await StoreOrder.deleteMany({ outlet: { $in: [OUTLET, OTHER_OUTLET] } });
   await StoreOutletStockItem.deleteMany({ outlet: { $in: [OUTLET, OTHER_OUTLET] } });
   await StoreReview.deleteMany({ outlet: { $in: [OUTLET, OTHER_OUTLET] } });
+  await mongoose.model('StoreDelivery').deleteMany({ outlet: { $in: [OUTLET, OTHER_OUTLET] } });
+  await mongoose.model('StoreDriver').deleteMany({ outlet: { $in: [OUTLET, OTHER_OUTLET] } });
+  await mongoose.model('StoreSubscription').deleteMany({ chain: CHAIN });
+  await mongoose.model('StoreComplianceDocument').deleteMany({ outlet: { $in: [OUTLET, OTHER_OUTLET] } });
   await StoreOutlet.deleteMany({ _id: { $in: [OUTLET, OTHER_OUTLET] } });
+  await StoreChain.deleteMany({ _id: CHAIN });
 };
 
 const run = async () => {
@@ -101,12 +112,25 @@ const run = async () => {
 
   console.log('\n=== an empty outlet returns zeros, not nulls ===\n');
 
+  await StoreChain.create({
+    _id: CHAIN,
+    business: new mongoose.Types.ObjectId(),
+    name: 'analytics chain',
+    slug: 'analytics-chain-' + STAMP,
+  });
   await StoreOutlet.create({ _id: OUTLET, chain: CHAIN, outletCode: 'ANL-' + STAMP, name: 'analytics suite', status: 'active' });
   const empty = await analyticsService.getOutletDashboard(OUTLET, {});
   ck('orders section is zeroed', empty.orders.totalOrders === 0 && empty.orders.totalRevenue === 0);
   ck('inventory section is zeroed', empty.inventory.totalSkus === 0 && empty.inventory.lowStock === 0);
   ck('reviews section is zeroed', empty.reviews.totalReviews === 0 && empty.reviews.avgRating === 0);
   ck('top products is an empty list, not null', Array.isArray(empty.topProducts) && empty.topProducts.length === 0);
+  ck('the header carries the outlet and chain display names',
+    empty.outlet === 'analytics suite' && empty.chain === 'analytics chain',
+    JSON.stringify({ outlet: empty.outlet, chain: empty.chain }));
+  ck('no subscription is null, not an object of zeroes', empty.subscription === null);
+  ck('alerts default to no-driver and zero counts',
+    empty.alerts.noActiveDriver === true && empty.alerts.lowStockCount === 0 && empty.alerts.expiringDocs === 0,
+    JSON.stringify(empty.alerts));
 
   console.log('\n=== order stats sum the outlet window ===\n');
 
@@ -154,10 +178,20 @@ const run = async () => {
     { outlet: OUTLET, chain: CHAIN, product: new mongoose.Types.ObjectId(), productVariant: stockRows[0].variant, price: 100, priceInPaise: 10000, status: 'active', costPrice: 60 },
     { outlet: OUTLET, chain: CHAIN, product: new mongoose.Types.ObjectId(), productVariant: stockRows[1].variant, price: 100, priceInPaise: 10000, status: 'active', costPrice: 40 },
   ]);
-  const valued = await analyticsService.getOutletDashboard(OUTLET, {});
+  const valued = await analyticsService.getOutletDashboard(OUTLET, {}, 'owner');
   // onHand 10 @ 60 + onHand 3 @ 40 + onHand 0 @ untracked(0) = 600 + 120 + 0
   ck('totalValue reflects on-hand costed stock', Number(valued.inventory.totalValue) === 720,
     `totalValue=${valued.inventory.totalValue}`);
+  // §6.23.1: cost price is owner-only. A manager runs the shop and sees the counts,
+  // but the valuation at cost must not be in their payload at all.
+  const managerView = await analyticsService.getOutletDashboard(OUTLET, {}, 'manager');
+  ck('manager sees stock counts', managerView.inventory.totalSkus === 3 && managerView.inventory.lowStock === 2,
+    `skus=${managerView.inventory.totalSkus} low=${managerView.inventory.lowStock}`);
+  ck('manager payload carries no cost valuation', managerView.inventory.totalValue === undefined,
+    `totalValue=${managerView.inventory.totalValue}`);
+  const omView = await analyticsService.getOutletDashboard(OUTLET, {}, 'order_manager');
+  ck('order_manager payload carries no cost valuation', omView.inventory.totalValue === undefined,
+    `totalValue=${omView.inventory.totalValue}`);
   await StoreOutletProduct.deleteMany({ outlet: OUTLET });
 
   console.log('\n=== reviews count approved only ===\n');
@@ -185,6 +219,67 @@ const run = async () => {
   const ranked = await analyticsService.getOutletDashboard(OUTLET, {});
   ck('the best seller ranks first', ranked.topProducts.length > 0 && String(ranked.topProducts[0]._id) === String(topA));
   ck('at most ten products are returned', ranked.topProducts.length <= 10);
+
+  console.log('\n=== dashboard head: queue, sales windows, drivers, recent ===\n');
+
+  const StoreDriver = mongoose.model('StoreDriver');
+  const StoreDelivery = mongoose.model('StoreDelivery');
+  await makeOrder({ grandTotal: 250, lifecycle: 'accepted' });
+  const [driverA, driverB] = await StoreDriver.create([
+    { user: new mongoose.Types.ObjectId(), outlet: OUTLET, chain: CHAIN, driverCode: 'ANL-A-' + STAMP, licenseNumber: 'L-A', licenseExpiry: new Date(), status: 'active', isAvailable: true },
+    { user: new mongoose.Types.ObjectId(), outlet: OUTLET, chain: CHAIN, driverCode: 'ANL-B-' + STAMP, licenseNumber: 'L-B', licenseExpiry: new Date(), status: 'active', isAvailable: false },
+  ]);
+  await StoreDelivery.create([
+    { order: new mongoose.Types.ObjectId(), outlet: OUTLET, chain: CHAIN, driver: driverA._id, status: 'out_for_delivery' },
+    { order: new mongoose.Types.ObjectId(), outlet: OUTLET, chain: CHAIN, driver: driverB._id, status: 'delivered' },
+  ]);
+  const head = await analyticsService.getOutletDashboard(OUTLET, {});
+  ck('the action queue counts only actionable lifecycles', head.totals.newOrders === 1, `new=${head.totals.newOrders}`);
+  ck('today tiles are today-scoped', head.totals.orderCount === 4 && head.totals.revenue === 1550,
+    `count=${head.totals.orderCount} revenue=${head.totals.revenue}`);
+  ck('sales carry three separate windows', head.sales.today === 1550 && head.sales.week === 1550 && head.sales.month === 1550,
+    JSON.stringify(head.sales));
+  ck('a 30-day-old order is outside the month window', head.sales.month === 1550,
+    'month=' + head.sales.month);
+  ck('driver strip separates total from available', head.drivers.total === 2 && head.drivers.available === 1,
+    JSON.stringify(head.drivers));
+  ck('on-delivery counts open handovers only (not delivered)', head.drivers.onDelivery === 1,
+    JSON.stringify(head.drivers));
+  ck('recent orders are newest first and capped at six', head.recentOrders.length === 5 &&
+    head.recentOrders[0].grandTotal === 250 &&
+    head.recentOrders[head.recentOrders.length - 1].grandTotal === 7777,
+    'len=' + head.recentOrders.length + ' first=' + (head.recentOrders[0] && head.recentOrders[0].grandTotal));
+
+  console.log('\n=== dashboard banners: subscription + alerts ===\n');
+
+  const StoreSubscription = mongoose.model('StoreSubscription');
+  const StoreComplianceDocument = mongoose.model('StoreComplianceDocument');
+  await StoreSubscription.create({
+    chain: CHAIN,
+    business: new mongoose.Types.ObjectId(),
+    plan: 'chain_pro',
+    status: 'payment_due',
+    amount: 499,
+    nextPaymentDueAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+    graceEndsAt: new Date(Date.now() + 6 * 24 * 60 * 60 * 1000),
+  });
+  await StoreComplianceDocument.create([
+    { outlet: OUTLET, chain: CHAIN, type: 'fssai', status: 'approved', expiresAt: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000) },
+    { outlet: OUTLET, chain: CHAIN, type: 'gst_registration', status: 'approved', expiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000) },
+  ]);
+  const banners = await analyticsService.getOutletDashboard(OUTLET, {});
+  ck('subscription rides the same payload',
+    banners.subscription && banners.subscription.plan === 'chain_pro' && banners.subscription.status === 'payment_due',
+    JSON.stringify(banners.subscription));
+  ck('daysToBilling counts whole days to the due date', banners.subscription.daysToBilling === 3,
+    'days=' + banners.subscription.daysToBilling);
+  ck('subscription carries countdown dates', !!banners.subscription.nextBillingDate && !!banners.subscription.graceEndsAt);
+  ck('the no-driver alert clears once an active driver exists', banners.alerts.noActiveDriver === false,
+    JSON.stringify(banners.alerts));
+  ck('low stock count mirrors the inventory tile', banners.alerts.lowStockCount === banners.inventory.lowStock,
+    'alert=' + banners.alerts.lowStockCount + ' tile=' + banners.inventory.lowStock);
+  ck('expiring docs count only the 30-day window', banners.alerts.expiringDocs === 1,
+    'expiring=' + banners.alerts.expiringDocs);
 
   console.log('\n=== chain analytics ===\n');
 

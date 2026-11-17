@@ -575,7 +575,7 @@ const PARTNER_APP_ROLES = ['dairyPartner', 'dairyDriver', 'jhatkaPartner', 'jhat
  * 'realestate'). Empty means no partner access.
  */
 const resolvePartnerVerticals = async (user) => {
-  const verticals = [];
+  const verticals = Array.isArray(user.verticals) ? [...user.verticals] : [];
   if (PARTNER_APP_ROLES.includes(user.role)) {
     if (user.role === 'dairyPartner' || user.role === 'dairyDriver') verticals.push('dairy');
     if (user.role === 'jhatkaPartner' || user.role === 'jhatkaDriver') verticals.push('jhatka');
@@ -589,6 +589,14 @@ const resolvePartnerVerticals = async (user) => {
     if (driverRecord && !verticals.includes('stores')) verticals.push('stores');
   } catch (e) { /* ignore */ }
   try {
+    const StoreOnboarding = require('../modules/stores/models/store.onboarding.model');
+    const application = await StoreOnboarding.findOne({
+      owner: user._id,
+      status: { $in: ['draft', 'submitted', 'under_review', 'changes_required'] },
+    }).select('_id').lean();
+    if (application && !verticals.includes('stores')) verticals.push('stores');
+  } catch (e) { /* ignore */ }
+  try {
     const provider = await LSProvider.findOne({ owner: user._id }).lean();
     if (provider) verticals.push('local_services');
   } catch (e) { /* ignore */ }
@@ -600,6 +608,10 @@ const resolvePartnerVerticals = async (user) => {
     const executive = await RealEstateExecutive.findOne({ user: user._id }).lean();
     if (executive && !verticals.includes('realestate')) verticals.push('realestate');
   } catch (e) { /* ignore */ }
+  // Legacy Local Services registrants have role 'user' and no verticals
+  // until onboarding; everyone else keeps only the verticals resolved above.
+  // Kept last so a Real Estate record never also resolves as Local Services.
+  if (user.role === 'user' && verticals.length === 0) verticals.push('local_services');
   return [...new Set(verticals)];
 };
 

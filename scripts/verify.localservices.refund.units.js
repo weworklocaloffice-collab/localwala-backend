@@ -160,8 +160,8 @@ const runOverRefund = async () => {
       {
         RefundModel: { findById: async () => refund },
         BookingModel: { findById: async () => booking },
-        PaymentInitiationModel: { findById: async () => ({ payResponse: { id: 'pay_1' } }) },
-        PaymentConfigModel: { findById: async () => ({ slug: 'razorpay', credentials: {} }) },
+        PaymentInitiationModel: { findById: async () => ({ payResponse: { id: 'pay_1' }, payment: 'pc1' }) },
+        PaymentConfigModel: { findById: async () => ({ _id: 'pc1', slug: 'razorpay', credentials: { key: 'k', secret: 's' } }) },
         gatewayRefund: async () => ({ gatewayRefundId: 'rf_x' }),
       },
     );

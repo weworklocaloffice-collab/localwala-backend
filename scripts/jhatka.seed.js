@@ -57,27 +57,28 @@ async function seedCategories() {
   console.log('\n--- Seeding launch root categories ---');
 
   const roots = [
-    { code: 'chicken', name: 'Chicken', displayOrder: 1, description: 'Fresh chicken cuts and portions' },
-    { code: 'mutton', name: 'Mutton', displayOrder: 2, description: 'Fresh mutton/goat cuts and portions' },
-    { code: 'fish_seafood', name: 'Fish & Seafood', displayOrder: 3, description: 'Fresh fish, prawns, and seafood' },
-    { code: 'eggs', name: 'Eggs', displayOrder: 4, description: 'Fresh eggs (count-based, no weighing)' },
+    { key: 'chicken', name: 'Chicken', sortOrder: 1, description: 'Fresh chicken cuts and portions' },
+    { key: 'mutton', name: 'Mutton', sortOrder: 2, description: 'Fresh mutton/goat cuts and portions' },
+    { key: 'fish_seafood', name: 'Fish & Seafood', sortOrder: 3, description: 'Fresh fish, prawns, and seafood' },
+    { key: 'eggs', name: 'Eggs', sortOrder: 4, description: 'Fresh eggs (count-based, no weighing)' },
   ];
 
   for (const r of roots) {
-    const existing = await JhatkaCategory.findOne({ code: r.code, parent: { $exists: false } });
+    const existing = await JhatkaCategory.findOne({ key: r.key, parent: { $exists: false } });
     if (existing) {
-      console.log(`  ${r.code}: exists (${existing._id})`);
+      console.log(`  ${r.key}: exists (${existing._id})`);
     } else {
       const cat = new JhatkaCategory({
-        code: r.code,
+        key: r.key,
         name: r.name,
-        displayOrder: r.displayOrder,
+        sortOrder: r.sortOrder,
         description: r.description,
-        status: 'active',
+        status: true,
+        defaultMeasurementMode: r.key === 'eggs' ? 'COUNT' : 'WEIGHT',
         // parent: undefined = root
       });
       await cat.save();
-      console.log(`  ${r.code}: created (${cat._id})`);
+      console.log(`  ${r.key}: created (${cat._id})`);
     }
   }
 
@@ -90,22 +91,158 @@ async function seedRejectionReasons() {
   console.log('\n--- Seeding quality rejection reasons ---');
 
   const reasons = [
-    { code: 'temp_abuse', label: 'Temperature Abuse', description: 'Product received above safe temperature threshold', isActive: true },
-    { code: 'off_odour', label: 'Off Odour', description: 'Unpleasant or sour smell indicating spoilage', isActive: true },
-    { code: 'discoloration', label: 'Discoloration', description: 'Grey-green patches or unnatural colour', isActive: true },
-    { code: 'slime', label: 'Surface Slime', description: 'Excessive slime or biofilm on surface', isActive: true },
-    { code: 'packaging_damage', label: 'Packaging Damage', description: 'Torn vacuum seal, leaking tray, broken seal', isActive: true },
-    { code: 'weight_short', label: 'Weight Shortfall', description: 'Received weight below ordered weight beyond tolerance', isActive: true },
-    { code: 'foreign_matter', label: 'Foreign Matter', description: 'Bone fragments, plastic, metal, or other contaminants', isActive: true },
-    { code: 'expired', label: 'Expired / Near Expiry', description: 'Use-by date passed or within 24 hours', isActive: true },
-    { code: 'wrong_cut', label: 'Wrong Cut / Specification', description: 'Cut does not match purchase order specification', isActive: true },
-    { code: 'other', label: 'Other', description: 'Any other quality issue not covered above', isActive: true },
+    {
+      code: 'temp_abuse',
+      label: 'Temperature Abuse',
+      description: 'Product received above safe temperature threshold',
+      category: 'temperature',
+      severity: 'hard',
+      autoReject: true,
+      fault: 'supplier',
+      wastageCause: 'SPOILAGE',
+      affectsSupplierRating: true,
+      sortOrder: 10,
+      status: true,
+    },
+    {
+      code: 'off_odour',
+      label: 'Off Odour',
+      description: 'Unpleasant or sour smell indicating spoilage',
+      category: 'freshness',
+      severity: 'hard',
+      autoReject: false,
+      fault: 'supplier',
+      wastageCause: 'SPOILAGE',
+      affectsSupplierRating: true,
+      sortOrder: 20,
+      status: true,
+    },
+    {
+      code: 'discoloration',
+      label: 'Discoloration',
+      description: 'Grey-green patches or unnatural colour',
+      category: 'freshness',
+      severity: 'soft',
+      autoReject: false,
+      fault: 'supplier',
+      wastageCause: 'QUALITY_REJECTION',
+      affectsSupplierRating: true,
+      sortOrder: 30,
+      status: true,
+    },
+    {
+      code: 'slime',
+      label: 'Surface Slime',
+      description: 'Excessive slime or biofilm on surface',
+      category: 'freshness',
+      severity: 'hard',
+      autoReject: false,
+      fault: 'supplier',
+      wastageCause: 'SPOILAGE',
+      affectsSupplierRating: true,
+      sortOrder: 40,
+      status: true,
+    },
+    {
+      code: 'packaging_damage',
+      label: 'Packaging Damage',
+      description: 'Torn vacuum seal, leaking tray, broken seal',
+      category: 'packaging',
+      severity: 'hard',
+      autoReject: false,
+      fault: 'transporter',
+      wastageCause: 'PACKAGING_DAMAGE',
+      affectsSupplierRating: false,
+      sortOrder: 50,
+      status: true,
+    },
+    {
+      code: 'weight_short',
+      label: 'Weight Shortfall',
+      description: 'Received weight below ordered weight beyond tolerance',
+      category: 'weight_shortfall',
+      severity: 'soft',
+      autoReject: false,
+      fault: 'supplier',
+      wastageCause: 'OTHER',
+      affectsSupplierRating: true,
+      sortOrder: 60,
+      status: true,
+    },
+    {
+      code: 'foreign_matter',
+      label: 'Foreign Matter',
+      description: 'Bone fragments, plastic, metal, or other contaminants',
+      category: 'contamination',
+      severity: 'hard',
+      autoReject: false,
+      fault: 'supplier',
+      wastageCause: 'QUALITY_REJECTION',
+      affectsSupplierRating: true,
+      sortOrder: 70,
+      status: true,
+    },
+    {
+      code: 'expired',
+      label: 'Expired / Near Expiry',
+      description: 'Use-by date passed or within 24 hours',
+      category: 'freshness',
+      severity: 'hard',
+      autoReject: true,
+      fault: 'supplier',
+      wastageCause: 'EXPIRY',
+      affectsSupplierRating: true,
+      sortOrder: 80,
+      status: true,
+    },
+    {
+      code: 'wrong_cut',
+      label: 'Wrong Cut / Specification',
+      description: 'Cut does not match purchase order specification',
+      category: 'specification',
+      severity: 'soft',
+      autoReject: false,
+      fault: 'supplier',
+      wastageCause: 'OTHER',
+      affectsSupplierRating: true,
+      sortOrder: 90,
+      status: true,
+    },
+    {
+      code: 'other',
+      label: 'Other',
+      description: 'Any other quality issue not covered above',
+      category: 'other',
+      severity: 'soft',
+      autoReject: false,
+      fault: 'unknown',
+      wastageCause: 'OTHER',
+      affectsSupplierRating: false,
+      sortOrder: 100,
+      status: true,
+    },
   ];
 
   for (const r of reasons) {
-    const existing = await JhatkaQualityRejectionReason.findOne({ code: r.code });
+    const existing = await JhatkaQualityRejectionReason.findOne({ code: r.code })
+      .select('_id category severity status isActive')
+      .lean();
     if (existing) {
-      console.log(`  ${r.code}: exists (${existing._id})`);
+      // Repair rows written under the old schema without overwriting values an admin
+      // has since changed. `isActive` was never a model field; remove the stray key.
+      const patch = {};
+      if (!existing.category) patch.category = r.category;
+      if (!existing.severity) patch.severity = r.severity;
+      if (existing.status === undefined) patch.status = r.status;
+      const update = {};
+      if (Object.keys(patch).length) update.$set = patch;
+      if (existing.isActive !== undefined) update.$unset = { isActive: '' };
+      if (Object.keys(update).length) {
+        await JhatkaQualityRejectionReason.updateOne({ _id: existing._id }, update);
+        console.log(`  ${r.code}: repaired (${existing._id})`);
+      } else {
+        console.log(`  ${r.code}: exists (${existing._id})`);
+      }
     } else {
       const reason = new JhatkaQualityRejectionReason(r);
       await reason.save();

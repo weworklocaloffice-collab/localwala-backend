@@ -324,9 +324,9 @@ console.log('\n-- F-3: uniqueness must be an index --');
   ok('stores.settlement uses a QUERY for this and has no index — F-3', true);
 
   const sIdx = Payable.schema.indexes();
-  ok('supplier payable is unique on {supplier, period.from}',
-     sIdx.some((i) => i[1] && i[1].unique &&
-       JSON.stringify(i[0]) === JSON.stringify({ supplier: 1, 'period.from': 1 })),
+  ok('supplier payable is unique on {outlet, supplier, period.from}',
+     sIdx.some((i) => i[1] && i[1].unique && i[1].partialFilterExpression &&
+       JSON.stringify(i[0]) === JSON.stringify({ outlet: 1, supplier: 1, 'period.from': 1 })),
      JSON.stringify(sIdx.filter((i) => i[1] && i[1].unique).map((i) => i[0])));
 
   const rIdx = Rule.schema.indexes();

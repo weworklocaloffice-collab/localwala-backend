@@ -53,13 +53,14 @@ router
   .route('/bookings/:id/invoice/pdf')
   .get(appAuth('localservices_partner_read'), validate(BV.bookingIdParam), bookingController.partnerInvoicePdf);
 
-router.route('/bookings/:id/:status').post(appAuth('localservices_partner_read'), validate(BV.transitionParam), controller.partnerTransitionBooking);
-
 router.route('/bookings/:id/assign').post(appAuth('localservices_partner_read'), validate(BV.assignBody), controller.assignBooking);
 
 router.route('/bookings/:id/quote').post(appAuth('localservices_partner_read'), validate(BV.quoteBody), bookingController.submitQuote);
 
 router.route('/bookings/:id/release').post(appAuth('localservices_partner_read'), validate(BV.bookingIdParam), controller.releaseAssignment);
+
+// Target status is a route param + Joi allow-list; keep this generic route last.
+router.route('/bookings/:id/:status').post(appAuth('localservices_partner_read'), validate(BV.transitionParam), controller.partnerTransitionBooking);
 
 router.route('/documents').post(appAuth('localservices_partner_read'), validate(V.documentBody), controller.uploadDocument).get(appAuth('localservices_partner_read'), controller.listMyDocuments);
 
@@ -75,6 +76,10 @@ router
 const revenueController = require('../controllers/ls.revenue.controller');
 
 router.route('/quotes').get(appAuth('localservices_partner_read'), bookingController.listPartnerQuotes);
+
+router
+  .route('/quotes/:id/revise')
+  .post(appAuth('localservices_partner_read'), validate(BV.reviseQuoteBody), bookingController.reviseQuote);
 
 router.route('/settlements').get(appAuth('localservices_partner_read'), revenueController.mySettlements);
 

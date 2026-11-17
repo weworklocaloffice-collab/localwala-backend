@@ -53,10 +53,10 @@ router.route('/settlements').get(webAuth(READ), controller.listSettlements);
 
 router.route('/settlements/generate').post(webAuth(APPROVE), validate(V.settlementBody), controller.generateSettlement);
 
-router.route('/settlements/:id/:status').post(webAuth(APPROVE), controller.markSettlement);
-
 // Payout moves money: a wallet credit for the provider, or a recorded bank
 // reference for the finance team to execute.
 router.route('/settlements/:id/pay').post(webAuth(APPROVE), validate(V.settlementPayBody), controller.paySettlement);
+
+router.route('/settlements/:id/:status').post(webAuth(APPROVE), controller.markSettlement);
 
 module.exports = router;

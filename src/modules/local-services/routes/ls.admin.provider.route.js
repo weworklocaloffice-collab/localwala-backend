@@ -29,8 +29,12 @@ const router = express.Router();
 // NOTE: '/' + '/:id' are GETs; '/:id/:status' etc are POSTs — no overlap.
 router.route('/').get(webAuth('localservices_catalog_read'), controller.adminListProviders);
 router.route('/offerings').get(webAuth('localservices_catalog_read'), controller.adminListOfferings);
+// Verification queue across providers (filter ?status=pending).
+// Must be declared before '/:id' or Express treats 'documents' as an id.
+router.route('/documents').get(webAuth('localservices_catalog_read'), controller.adminListDocuments);
 router.route('/:id').get(webAuth('localservices_catalog_read'), validate(V.idParam), controller.adminGetProvider);
 router.route('/:id').patch(webAuth('localservices_catalog_write'), validate(V.idParam), controller.adminUpdateProvider);
+router.route('/bulk-transition').post(webAuth('localservices_catalog_write'), controller.bulkTransitionProviders);
 router.route('/:id/:status').post(webAuth('localservices_catalog_write'), validate(V.statusParam), controller.transitionProvider);
 
 // Offering moderation: draft -> pending -> active, active <-> inactive.
@@ -38,8 +42,5 @@ router.route('/offerings/:id/:status').post(webAuth('localservices_catalog_write
 
 // Document verification: pending -> verified (immutable) | rejected.
 router.route('/documents/:id/:status').post(webAuth('localservices_catalog_write'), validate(V.statusParam), controller.verifyDocument);
-
-// Verification queue across providers (filter ?status=pending).
-router.route('/documents').get(webAuth('localservices_catalog_read'), controller.adminListDocuments);
 
 module.exports = router;

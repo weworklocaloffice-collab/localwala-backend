@@ -332,9 +332,11 @@ const updateLocation = catchAsync(async (req, res) => {
  * Counts for the app's home screen.
  */
 const dashboard = catchAsync(async (req, res) => {
-  const [visits, leads] = await Promise.all([
+  const RealEstateFollowUp = require('../models/realestate.followup.model');
+  const [visits, leads, followUps] = await Promise.all([
     visitService.findVisits({ executive: req.actorId }),
     leadService.findLeads({ executive: req.actorId }),
+    RealEstateFollowUp.find({ executive: req.actorId }).lean(),
   ]);
 
   const byStatus = visits.reduce((acc, v) => {
@@ -342,11 +344,35 @@ const dashboard = catchAsync(async (req, res) => {
     return acc;
   }, {});
 
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
+
+  const todayVisits = visits.filter((v) => v.scheduledAt && v.scheduledAt >= startOfDay && v.scheduledAt < endOfDay).length;
+  const upcomingVisits = visits.filter((v) => v.scheduledAt && v.scheduledAt >= now && !['COMPLETED', 'CANCELLED'].includes(v.status)).length;
+
+  const newLeads = leads.filter((l) => l.status === 'NEW').length;
+  const pendingFollowUps = followUps.filter((f) => f.status === 'PENDING').length;
+  const overdueFollowUps = followUps.filter((f) => f.status === 'PENDING' && f.nextFollowUpAt && new Date(f.nextFollowUpAt) < now).length;
+  const interestedCustomers = leads.filter((l) => l.interest && (l.interest.level === 'VERY_INTERESTED' || l.interest.level === 'INTERESTED')).length;
+  const loanLeads = leads.filter((l) => l.interest && l.interest.reason === 'LOAN_REQUIRED').length;
+  const heldProperties = leads.filter((l) => l.status === 'HOLD' || l.hold).length;
+  const sales = leads.filter((l) => l.status === 'SALE').length;
+
   res.send({
     data: {
       totalVisits: visits.length,
       visitsByStatus: byStatus,
       activeLeads: leads.length,
+      todayVisits,
+      upcomingVisits,
+      newLeads,
+      followUps: pendingFollowUps,
+      overdueFollowUps,
+      interestedCustomers,
+      loanLeads,
+      heldProperties,
+      sales,
     },
   });
 });

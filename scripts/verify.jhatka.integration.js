@@ -660,6 +660,7 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       'jhatka_recall_read',
       'jhatka_inventory_read',
       'jhatka_payables_read',
+      'jhatka_payables_manage',
     ],
   };
   financeAdmin.userId = fx.managerUserId;
@@ -1727,6 +1728,331 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
     ok('reposting is refused with 409', repost.status === 409, `${repost.status}`);
     const batchCount = await models4.JhatkaBatch.countDocuments({ procurementReceipt: receiptId });
     ok('...and created no second batch', batchCount === 1, `batches=${batchCount}`);
+
+    // ---------------------------------------------------------------------
+    section('Phase 4 - supplier payable lifecycle claims, pays and releases lines');
+    // ---------------------------------------------------------------------
+    const periodFrom = new Date(Date.now() - 86400000).toISOString();
+    const periodTo = new Date(Date.now() + 86400000).toISOString();
+    const generateBody = {
+      outlet: String(fx.outlet._id),
+      supplier: String(supplier._id),
+      from: periodFrom,
+      to: periodTo,
+      notes: 'Integration payable',
+    };
+
+    const generated = await request(
+      adminApp,
+      'POST',
+      '/jhatka/admin/settlements/payables/generate',
+      generateBody
+    );
+    ok('a posted receipt generates a payable', generated.status === 201,
+       `${generated.status} ${JSON.stringify(generated.body)}`);
+    const payable = generated.body?.payable;
+    ok('the payable starts as a draft', payable?.status === 'draft', payable?.status);
+    ok('the payable freezes the posted receipt',
+       payable?.receipts?.length === 1 && String(payable.receipts[0].intake) === String(receiptId),
+       JSON.stringify(payable?.receipts));
+    ok('the payable carries a positive rupee net amount',
+       Number(payable?.totals?.netAmount) > 0, String(payable?.totals?.netAmount));
+
+    const claimedReceipt = await models4.JhatkaProcurementReceipt.findById(receiptId).lean();
+    ok('generation CLAIMS the receipt line', claimedReceipt.lines[0].payability === 'claimed',
+       claimedReceipt.lines[0].payability);
+
+    const duplicate = await request(
+      adminApp,
+      'POST',
+      '/jhatka/admin/settlements/payables/generate',
+      generateBody
+    );
+    ok('a second live payable for the same period is refused with 409',
+       duplicate.status === 409, `${duplicate.status}`);
+
+    const approved = await request(
+      adminApp,
+      'PATCH',
+      `/jhatka/admin/settlements/payables/${payable.id}/approve`,
+      { notes: 'Approved in integration' }
+    );
+    ok('a draft payable can be approved', approved.status === 200 && approved.body?.payable?.status === 'approved',
+       `${approved.status} ${approved.body?.payable?.status}`);
+    ok('approval records the Admin actor',
+       approved.body?.payable?.approvedByName === 'Finance Admin',
+       approved.body?.payable?.approvedByName);
+
+    const paid = await request(
+      adminApp,
+      'POST',
+      `/jhatka/admin/settlements/payables/${payable.id}/pay`,
+      { paymentReference: `IT-PAY-${Date.now()}` }
+    );
+    ok('an approved payable can be paid', paid.status === 200 && paid.body?.payable?.status === 'paid',
+       `${paid.status} ${JSON.stringify(paid.body)}`);
+    ok('payment records the full net payout',
+       Math.abs(Number(paid.body?.payable?.totals?.amountPaid) - Number(paid.body?.payable?.netPayout)) < 0.01,
+       JSON.stringify({ amountPaid: paid.body?.payable?.totals?.amountPaid, netPayout: paid.body?.payable?.netPayout }));
+
+    const paidReceipt = await models4.JhatkaProcurementReceipt.findById(receiptId).lean();
+    ok('payment SETTLES the claimed receipt line', paidReceipt.lines[0].payability === 'paid',
+       paidReceipt.lines[0].payability);
+
+    const repay = await request(
+      adminApp,
+      'POST',
+      `/jhatka/admin/settlements/payables/${payable.id}/pay`,
+      { paymentReference: `IT-PAY-AGAIN-${Date.now()}` }
+    );
+    ok('a paid payable cannot be paid twice', repay.status === 400, `${repay.status}`);
+
+    const voidSupplier = await models4.JhatkaSupplier.create({
+      code: `SUP-P4-VOID-${Date.now()}`,
+      name: 'Phase 4 Void Supplier',
+      status: 'active',
+    });
+    const voidDraft = await request(partnerApp, 'POST', '/jhatka/partner/inventory/receipts', {
+      supplier: String(voidSupplier._id),
+      lines: [{
+        product: String(fx.weightProduct._id),
+        rawSku: 'P4-VOID-RAW',
+        receivedQty: { value: 1000, unit: 'GRAM' },
+        unitPrice: 350,
+        readings: { temperatureC: 4 },
+      }],
+    });
+    const voidReceiptId = voidDraft.body?.receipt?.id;
+    const voidPost = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${voidReceiptId}/post`,
+      {}
+    );
+    ok('the second receipt posts', voidPost.status === 200, `${voidPost.status}`);
+
+    const voidGenerateBody = { ...generateBody, supplier: String(voidSupplier._id) };
+    const voidGenerated = await request(
+      adminApp,
+      'POST',
+      '/jhatka/admin/settlements/payables/generate',
+      voidGenerateBody
+    );
+    ok('the second supplier generates its own payable', voidGenerated.status === 201,
+       `${voidGenerated.status} ${JSON.stringify(voidGenerated.body)}`);
+    const voidPayableId = voidGenerated.body?.payable?.id;
+
+    const voided = await request(
+      adminApp,
+      'PATCH',
+      `/jhatka/admin/settlements/payables/${voidPayableId}/void`,
+      { reason: 'Integration void and reissue' }
+    );
+    ok('a draft payable can be voided', voided.status === 200 && voided.body?.payable?.status === 'void',
+       `${voided.status} ${voided.body?.payable?.status}`);
+
+    const releasedReceipt = await models4.JhatkaProcurementReceipt.findById(voidReceiptId).lean();
+    ok('voiding RELEASES the claimed receipt line', releasedReceipt.lines[0].payability === 'pending',
+       releasedReceipt.lines[0].payability);
+
+    const reissued = await request(
+      adminApp,
+      'POST',
+      '/jhatka/admin/settlements/payables/generate',
+      voidGenerateBody
+    );
+    ok('a voided period can be reissued', reissued.status === 201,
+       `${reissued.status} ${JSON.stringify(reissued.body)}`);
+
+    const disputed = await request(
+      adminApp,
+      'PATCH',
+      `/jhatka/admin/settlements/payables/${reissued.body?.payable?.id}/dispute`,
+      { reason: 'Integration dispute path' }
+    );
+    ok('a live payable can be disputed', disputed.status === 200 && disputed.body?.payable?.status === 'disputed',
+       `${disputed.status} ${disputed.body?.payable?.status}`);
+
+    // ---------------------------------------------------------------------
+    section('Phase 4 - quality decisions and reverse-batch-first');
+    // ---------------------------------------------------------------------
+    const decisionSupplier = await models4.JhatkaSupplier.create({
+      code: `SUP-P4-DEC-${Date.now()}`,
+      name: 'Phase 4 Decision Supplier',
+      status: 'active',
+    });
+    const softReason = await models4.JhatkaQualityRejectionReason.create({
+      code: `it_soft_${Date.now()}`,
+      label: 'Integration soft rejection',
+      category: 'freshness',
+      severity: 'soft',
+      fault: 'supplier',
+      status: true,
+    });
+    const inactiveReason = await models4.JhatkaQualityRejectionReason.create({
+      code: `it_inactive_${Date.now()}`,
+      label: 'Integration inactive rejection',
+      category: 'freshness',
+      severity: 'soft',
+      fault: 'supplier',
+      status: false,
+    });
+
+    const reasonCatalog = await request(
+      partnerApp,
+      'GET',
+      '/jhatka/partner/inventory/rejection-reasons'
+    );
+    const catalogReasons = Array.isArray(reasonCatalog.body?.reasons) ? reasonCatalog.body.reasons : [];
+    const activeCatalogReason = catalogReasons.find((r) => r.code === softReason.code);
+    ok('the rejection picker receives the active controlled vocabulary',
+       reasonCatalog.status === 200
+       && !!activeCatalogReason
+       && activeCatalogReason.label === softReason.label
+       && activeCatalogReason.severity === 'soft',
+       `${reasonCatalog.status} ${JSON.stringify(reasonCatalog.body)}`);
+    ok('an inactive rejection reason is not offered to the picker',
+       !catalogReasons.some((r) => r.code === inactiveReason.code),
+       JSON.stringify(catalogReasons.map((r) => r.code)));
+
+    const pendingDraft = await request(partnerApp, 'POST', '/jhatka/partner/inventory/receipts', {
+      supplier: String(decisionSupplier._id),
+      lines: [{
+        product: String(fx.weightProduct._id),
+        rawSku: 'P4-DECISION-RAW',
+        receivedQty: { value: 1000, unit: 'GRAM' },
+        unitPrice: 350,
+        readings: { temperatureC: 4, packagingIntact: false },
+      }],
+    });
+    ok('a borderline receipt persists with a PENDING quality decision',
+       pendingDraft.status === 201 && pendingDraft.body?.receipt?.lines?.[0]?.qualityStatus === 'pending',
+       `${pendingDraft.status} ${JSON.stringify(pendingDraft.body?.receipt?.lines?.[0])}`);
+    const pendingId = pendingDraft.body?.receipt?.id;
+
+    const postPending = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${pendingId}/post`,
+      {}
+    );
+    ok('posting is refused while a quality decision is pending',
+       postPending.status === 409
+       && (postPending.body?.extra?.code || postPending.body?.detail?.code) === 'QUALITY_DECISION_PENDING',
+       `${postPending.status} ${JSON.stringify(postPending.body)}`);
+
+    const unknownReason = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${pendingId}/reject`,
+      { lineIndex: 0, rejectionReasons: [{ code: `not_a_reason_${Date.now()}` }] }
+    );
+    ok('an unknown rejection reason is refused, not stored as free text',
+       unknownReason.status === 400, `${unknownReason.status} ${JSON.stringify(unknownReason.body)}`);
+
+    const rejected = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${pendingId}/reject`,
+      {
+        lineIndex: 0,
+        rejectionReasons: [{ code: softReason.code, note: 'borderline temperature' }],
+        note: 'condemned at the door',
+      }
+    );
+    ok('a pending line can be rejected with a governed reason',
+       rejected.status === 200 && rejected.body?.receipt?.lines?.[0]?.qualityStatus === 'rejected',
+       `${rejected.status} ${JSON.stringify(rejected.body?.receipt?.lines?.[0])}`);
+    ok('rejection updates receipt totals and the overall verdict',
+       rejected.body?.receipt?.qualityStatus === 'rejected'
+       && Number(rejected.body?.receipt?.totals?.totalRejectedQty) === 1000
+       && Number(rejected.body?.receipt?.totals?.totalAcceptedQty) === 0,
+       JSON.stringify(rejected.body?.receipt?.totals));
+    ok('a rejected line is disputed, never payable',
+       rejected.body?.receipt?.lines?.[0]?.payability === 'disputed',
+       rejected.body?.receipt?.lines?.[0]?.payability);
+
+    const rejectTwice = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${pendingId}/reject`,
+      { lineIndex: 0, rejectionReasons: [{ code: softReason.code }] }
+    );
+    ok('a rejected line cannot be rejected twice', rejectTwice.status === 409,
+       `${rejectTwice.status} ${JSON.stringify(rejectTwice.body)}`);
+
+    const postRejected = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${pendingId}/post`,
+      {}
+    );
+    ok('a fully rejected receipt can be posted', postRejected.status === 200, `${postRejected.status}`);
+    ok('...but creates no stock batch',
+       (await models4.JhatkaBatch.countDocuments({ procurementReceipt: pendingId })) === 0,
+       'batch exists');
+
+    const acceptDraft = await request(partnerApp, 'POST', '/jhatka/partner/inventory/receipts', {
+      supplier: String(decisionSupplier._id),
+      lines: [{
+        product: String(fx.weightProduct._id),
+        rawSku: 'P4-ACCEPT-RAW',
+        receivedQty: { value: 1200, unit: 'GRAM' },
+        unitPrice: 350,
+        readings: { temperatureC: 4, packagingIntact: false },
+      }],
+    });
+    const acceptId = acceptDraft.body?.receipt?.id;
+
+    const accepted = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${acceptId}/accept`,
+      { lineIndex: 0, note: 'supervisor accepted the borderline crate' }
+    );
+    ok('a pending line can be accepted by a human',
+       accepted.status === 200 && accepted.body?.receipt?.lines?.[0]?.qualityStatus === 'accepted',
+       `${accepted.status} ${JSON.stringify(accepted.body?.receipt?.lines?.[0])}`);
+    ok('acceptance contributes the accepted quantity and value',
+       Number(accepted.body?.receipt?.totals?.totalAcceptedQty) === 1200
+       && Number(accepted.body?.receipt?.totals?.totalAcceptedValue) === 42000000,
+       JSON.stringify(accepted.body?.receipt?.totals));
+
+    const rejectAccepted = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${acceptId}/reject`,
+      { lineIndex: 0, rejectionReasons: [{ code: softReason.code }] }
+    );
+    ok('rejecting accepted goods demands reversing the batch first',
+       rejectAccepted.status === 409
+       && (rejectAccepted.body?.extra?.code || rejectAccepted.body?.detail?.code) === 'REVERSE_BATCH_FIRST',
+       `${rejectAccepted.status} ${JSON.stringify(rejectAccepted.body)}`);
+
+    const postAccepted = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${acceptId}/post`,
+      {}
+    );
+    ok('an accepted receipt posts', postAccepted.status === 200, `${postAccepted.status}`);
+
+    const acceptedReceipt = await models4.JhatkaProcurementReceipt.findById(acceptId).lean();
+    const acceptedBatch = await models4.JhatkaBatch.findOne({ procurementReceipt: acceptId }).lean();
+    ok('posting backfills the receipt line with its batch',
+       !!acceptedBatch && String(acceptedReceipt?.lines?.[0]?.batch) === String(acceptedBatch._id),
+       JSON.stringify({ lineBatch: acceptedReceipt?.lines?.[0]?.batch, batch: acceptedBatch?._id }));
+
+    const rejectPosted = await request(
+      partnerApp,
+      'POST',
+      `/jhatka/partner/inventory/receipts/${acceptId}/reject`,
+      { lineIndex: 0, rejectionReasons: [{ code: softReason.code }] }
+    );
+    ok('a posted accepted line is still refused with REVERSE_BATCH_FIRST',
+       rejectPosted.status === 409
+       && (rejectPosted.body?.extra?.code || rejectPosted.body?.detail?.code) === 'REVERSE_BATCH_FIRST',
+       `${rejectPosted.status} ${JSON.stringify(rejectPosted.body)}`);
   }
   // -----------------------------------------------------------------------
   section('F-5 / Phase 8 - a refund actually MOVES money and records gatewayRefundId');

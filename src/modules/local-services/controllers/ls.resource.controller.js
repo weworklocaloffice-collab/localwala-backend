@@ -18,6 +18,7 @@
 
 const { status: httpStatus } = require('http-status');
 const catchAsync = require('../../../utils/catchAsync');
+const ApiError = require('../../../utils/ApiError');
 const pick = require('../../../utils/pick');
 const Resource = require('../models/localservice.resource.model');
 const Provider = require('../models/localservice.provider.model');
@@ -25,18 +26,14 @@ const Provider = require('../models/localservice.provider.model');
 const ownProvider = async (userId) => {
   const provider = await Provider.findOne({ owner: userId }).sort({ createdAt: -1 });
   if (!provider) {
-    const e = new Error('No provider profile');
-    e.statusCode = 404;
-    throw e;
+    throw new ApiError(httpStatus.NOT_FOUND, 'No provider profile');
   }
   return provider;
 };
 
 const duplicateCode = (error) => {
   if (error && error.code === 11000) {
-    const e = new Error('Resource code already exists');
-    e.statusCode = 409;
-    return e;
+    return new ApiError(httpStatus.CONFLICT, 'Resource code already exists');
   }
   return error;
 };
@@ -68,9 +65,7 @@ const updateResource = catchAsync(async (req, res) => {
       { new: true, runValidators: true }
     );
     if (!doc) {
-      const e = new Error('Resource not found');
-      e.statusCode = 404;
-      throw e;
+      throw new ApiError(httpStatus.NOT_FOUND, 'Resource not found');
     }
     res.status(httpStatus.OK).send({ resource: doc });
   } catch (e) {

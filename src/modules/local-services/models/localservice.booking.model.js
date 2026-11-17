@@ -97,7 +97,7 @@ const localServiceBookingSchema = mongoose.Schema(
     cancelReason: { type: String, required: false, trim: true },
     completedAt: { type: Date, required: false },
   },
-  { timestamps: true, toJSON: { getters: true } }
+  { timestamps: true, toJSON: { getters: true }, optimisticConcurrency: true }
 );
 
 localServiceBookingSchema.plugin(toJSON);

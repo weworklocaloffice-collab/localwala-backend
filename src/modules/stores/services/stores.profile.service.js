@@ -450,7 +450,11 @@ const can = (role, right) => {
 
   // prefix match, so 'orders.*' satisfies 'orders.accept'
   const [head] = right.split('.');
-  return granted.includes(`${head}.*`);
+  if (granted.includes(`${head}.*`)) return true;
+
+  // capability word, so a plan grant of 'stock_adjust' / 'assign_driver'
+  // satisfies 'inventory.stock_adjust' / 'delivery.assign_driver'
+  return granted.includes(right.split('.').pop());
 };
 
 /**
@@ -468,6 +472,104 @@ const assertCan = (role, right) => {
     );
   }
   return true;
+};
+
+/**
+ * Route rights are the `stores_*` strings declared at the route, kept from the
+ * platform-rights era. They are NOT role permissions: §6.23 speaks in
+ * `orders.read` / `settlement.view` terms. This table is the single translation
+ * between the two, so a route can never silently opt out of the role map.
+ *
+ * A `null` value means "any mapped partner role" — session/bootstrap reads
+ * (chain, outlet picker, policies, review list, the subscription banner) that
+ * every role needs to render its own header and must not be blocked by the
+ * role map, which only speaks about actions.
+ *
+ * An array is OR: the role needs any ONE of the listed permissions. `can()`
+ * applies OWNER_ONLY and the wildcard rules, so `*` roles pass unless the
+ * permission is explicitly owner-only money (`costprice.*`, `settlement.*`,
+ * `subscription.manage`, `payout.bank_details`).
+ */
+const ROUTE_RIGHTS = Object.freeze({
+  // session bootstrap: every role renders its own outlet header
+  stores_chain_read: null,
+  stores_outlet_read: null,
+  stores_session_outlet_switch: null,
+  stores_policy_read: null,
+  stores_review_read: null,
+  stores_subscription_read: null,
+
+  // catalogue and inventory
+  stores_catalog_read: ['catalogue.read'],
+  stores_catalog_write: ['catalogue.write'],
+  stores_inventory_read: ['inventory.read'],
+  stores_inventory_adjust: ['inventory.stock_adjust'],
+
+  // orders: the dispatcher reads the ready queue but never manages an order
+  stores_order_read: ['orders.read', 'ready_orders.read'],
+  stores_order_manage: ['orders.write'],
+  stores_order_pick: ['picking.read'],
+  stores_order_pack: ['packing.write'],
+
+  // plans and billing (OWNER_ONLY)
+  stores_subscription_manage: ['subscription.manage'],
+
+  // drivers and delivery
+  stores_driver_read: ['drivers.read', 'delivery.read'],
+  stores_driver_write: ['drivers.write', 'delivery.write'],
+  stores_driver_assign: ['delivery.write', 'assign_driver'],
+  stores_delivery_read: ['delivery.read'],
+  stores_delivery_update: ['delivery.write'],
+
+  // money (OWNER_ONLY): even a regional_manager's '*' stops here
+  stores_settlement_read: ['settlement.view'],
+  stores_settlement_write: ['settlement.pay'],
+  stores_remittance_read: ['remittance.read'],
+  stores_remittance_manage: ['remittance.manage'],
+
+  // after-sales
+  stores_warranty_read: ['returns.read', 'customers.read'],
+  stores_warranty_write: ['returns.write', 'customers.write'],
+  stores_complaint_read: ['returns.read', 'customers.read'],
+  stores_complaint_write: ['returns.write', 'customers.write'],
+  stores_return_read: ['returns.read'],
+  stores_return_manage: ['returns.write'],
+
+  // storefront
+  stores_promotion_read: ['promotions.read'],
+  stores_promotion_write: ['promotions.write'],
+  stores_featured_read: ['promotions.read'],
+  stores_featured_write: ['promotions.write'],
+
+  // owner surface: managers run the shop, they do not sign its terms
+  stores_outlet_write: ['outlet.write'],
+  stores_policy_write: ['policy.write'],
+  stores_review_write: ['reviews.write'],
+  stores_staff_read: ['staff.read'],
+  stores_staff_write: ['staff.write', 'staff.read'],
+
+  // analytics carry cost and margin; the floor stays out
+  stores_analytics_read: ['analytics.read'],
+});
+
+/**
+ * May this role use a route that declares `declaredRight`?
+ * Unknown rights fail closed: a new route must be added to ROUTE_RIGHTS, or it
+ * cannot ship unauthorised by accident.
+ *
+ * @param {string} role
+ * @param {string} declaredRight e.g. 'stores_order_manage'
+ * @returns {boolean}
+ */
+const canRoute = (role, declaredRight) => {
+  if (!Object.prototype.hasOwnProperty.call(ROUTE_RIGHTS, declaredRight)) return false;
+  const required = ROUTE_RIGHTS[declaredRight];
+  // A driver has no role-map entry; `storeScope` still resolves their permitted set
+  // (it is a read-only map), so context routes stay open to them. Every action route
+  // is denied — drivers act through their own `appAuth` driver routes.
+  if (role === 'driver') return required === null;
+  if (!required) return Boolean(ROLE_PERMISSIONS[role]);
+  return required.some((right) => can(role, right));
 };
 
 /** Every outlet in a chain that a role assignment would cover. Used by the picker. */
@@ -504,5 +606,7 @@ module.exports = {
   assertCan,
   listAssignableOutlets,
   ROLE_PERMISSIONS,
+  ROUTE_RIGHTS,
+  canRoute,
   OWNER_ONLY,
 };

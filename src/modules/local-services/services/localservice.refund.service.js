@@ -88,6 +88,88 @@ async function loadDoc(Model, id) {
   return doc || null;
 }
 
+const PROCESSING_LEASE_MS = 30 * 60 * 1000;
+
+async function claimRefund(Refund, refund, refundId) {
+  if (typeof Refund.findOneAndUpdate === 'function') {
+    const staleBefore = new Date(Date.now() - PROCESSING_LEASE_MS);
+    return Refund.findOneAndUpdate(
+      {
+        _id: refundId,
+        $or: [
+          { status: { $in: ['approved', 'failed'] } },
+          {
+            status: 'processing',
+            $or: [
+              { processingAt: { $lte: staleBefore } },
+              { processingAt: null },
+              { processingAt: { $exists: false } },
+            ],
+          },
+        ],
+      },
+      { $set: { status: 'processing', processingAt: new Date(), failureReason: undefined } },
+      { new: true }
+    );
+  }
+  if (!['approved', 'failed', 'processing'].includes(refund.status)) return null;
+  refund.status = 'processing';
+  refund.processingAt = new Date();
+  refund.failureReason = undefined;
+  await refund.save();
+  return refund;
+}
+
+async function reserveRefundAmount(Booking, booking, amount) {
+  const amountPaise = toPaise(amount);
+  if (Booking.collection && typeof Booking.collection.findOneAndUpdate === 'function') {
+    const raw = await Booking.collection.findOneAndUpdate(
+      {
+        _id: booking._id,
+        $expr: {
+          $lte: [
+            { $add: [{ $ifNull: ['$refundedAmount', 0] }, amountPaise] },
+            { $ifNull: ['$amountPaid', 0] },
+          ],
+        },
+      },
+      { $inc: { refundedAmount: amountPaise } },
+      { returnDocument: 'after' }
+    );
+    const updated = raw && raw.value !== undefined ? raw.value : raw;
+    return updated || null;
+  }
+  const paid = toPaise(booking.amountPaid || 0);
+  const already = toPaise(booking.refundedAmount || 0);
+  if (already + amountPaise > paid) return null;
+  booking.refundedAmount = fromPaise(already + amountPaise);
+  if (typeof booking.save === 'function') await booking.save();
+  return booking;
+}
+
+async function releaseRefundAmount(Booking, bookingId, amount, booking) {
+  const amountPaise = toPaise(amount);
+  if (Booking.collection && typeof Booking.collection.updateOne === 'function') {
+    const result = await Booking.collection.updateOne(
+      { _id: bookingId, refundedAmount: { $gte: amountPaise } },
+      { $inc: { refundedAmount: -amountPaise } }
+    );
+    return result.matchedCount === 1;
+  }
+  if (!booking) return false;
+  const next = Math.max(0, Number((Number(booking.refundedAmount || 0) - Number(amount)).toFixed(2)));
+  booking.refundedAmount = next;
+  if (typeof booking.save === 'function') await booking.save();
+  return true;
+}
+
+async function markBookingRefundStatus(Booking, bookingId, booking, paymentStatus) {
+  if (typeof Booking.updateOne === 'function') {
+    await Booking.updateOne({ _id: bookingId }, { $set: { paymentStatus } });
+  }
+  if (booking) booking.paymentStatus = paymentStatus;
+}
+
 /**
  * Execute an approved refund.
  *
@@ -99,7 +181,7 @@ async function loadDoc(Model, id) {
  * @returns {Promise<{refund: object, booking: object, amount: number, mode: string, reference: string}>}
  */
 async function executeRefund(
-  { refundId, actorId = null, gatewayRefund: gatewayCall, walletCredit: walletCall } = {},
+  { refundId, actorId = null, manualReference = null, gatewayRefund: gatewayCall, walletCredit: walletCall } = {},
   {
     RefundModel,
     BookingModel,
@@ -117,91 +199,142 @@ async function executeRefund(
   const gatewayFn = gatewayCall || gatewayCallAlt || gatewayRefund.refundPayment;
   const walletFn = walletCall || walletCallAlt;
 
-  const refund = await Refund.findById(refundId);
-  if (!refund) throw new ApiError(httpStatus.NOT_FOUND, 'Refund request not found');
-  if (!['approved', 'processing', 'failed'].includes(refund.status)) {
-    throw new ApiError(httpStatus.BAD_REQUEST, `Refund is ${refund.status}, not executable`);
+  const loaded = await Refund.findById(refundId);
+  if (!loaded) throw new ApiError(httpStatus.NOT_FOUND, 'Refund request not found');
+  if (!['approved', 'processing', 'failed'].includes(loaded.status)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, `Refund is ${loaded.status}, not executable`);
   }
+
+  const refund = await claimRefund(Refund, loaded, refundId);
+  if (!refund) throw new ApiError(httpStatus.CONFLICT, 'Refund is already being processed');
 
   const booking = await Booking.findById(refund.booking);
   if (!booking) throw new ApiError(httpStatus.NOT_FOUND, 'Booking not found');
 
-  const amount = refundableAmount({
-    amountPaid: booking.amountPaid,
-    refundedAmount: booking.refundedAmount,
-    requestedAmount: refund.approvedAmount || refund.requestedAmount,
-  });
+  const reserved = Number(refund.reservedAmount || 0);
+  const requested = Number(refund.approvedAmount || refund.requestedAmount || 0);
+  const remaining = Math.max(0, Number((Number(booking.amountPaid || 0) - Number(booking.refundedAmount || 0)).toFixed(2)));
+  if (reserved <= 0 && requested > remaining + 0.005) {
+    refund.status = 'failed';
+    refund.failureReason = 'Refund exceeds the remaining collected amount';
+    refund.processingAt = undefined;
+    await refund.save();
+    throw new ApiError(httpStatus.CONFLICT, 'Refund exceeds the remaining collected amount');
+  }
+  let amount = reserved > 0
+    ? reserved
+    : refundableAmount({
+      amountPaid: booking.amountPaid,
+      refundedAmount: booking.refundedAmount,
+      requestedAmount: refund.approvedAmount || refund.requestedAmount,
+    });
   if (!(amount > 0)) {
+    refund.status = 'failed';
+    refund.failureReason = 'Nothing left to refund on this booking';
+    refund.processingAt = undefined;
+    await refund.save();
     throw new ApiError(httpStatus.CONFLICT, 'Nothing left to refund on this booking');
   }
 
-  // Claim the request: only one execution may be in flight at a time.
-  if (refund.status !== 'processing') {
-    refund.status = 'processing';
-    await refund.save();
+  const cashAlreadyMoved = Boolean(refund.gatewayRefundReference) && Number(refund.completedAmount || 0) > 0;
+  let reservedNow = false;
+  if (!cashAlreadyMoved && !(reserved > 0)) {
+    const reservedBooking = await reserveRefundAmount(Booking, booking, amount);
+    if (!reservedBooking) {
+      refund.status = 'failed';
+      refund.failureReason = 'Refund exceeds the remaining collected amount';
+      refund.processingAt = undefined;
+      await refund.save();
+      throw new ApiError(httpStatus.CONFLICT, 'Refund exceeds the remaining collected amount');
+    }
+    reservedNow = true;
+    refund.reservedAmount = amount;
+    try {
+      await refund.save();
+    } catch (e) {
+      await releaseRefundAmount(Booking, booking._id, amount, booking);
+      throw e;
+    }
   }
 
   const mode = resolveRefundMode(booking);
-  let reference;
-  try {
-    if (mode === 'gateway') {
-      const initiationId = (booking.payments && booking.payments.length
-        ? booking.payments[booking.payments.length - 1]
-        : booking.payment) || refund.payment;
-      const initiation = await loadDoc(PaymentInitiation, initiationId);
-      if (!initiation) throw new ApiError(httpStatus.CONFLICT, 'No payment found to refund');
-      const gatewayPaymentId = gatewayRefund.resolveGatewayPaymentId(initiation.payResponse);
-      if (!gatewayPaymentId) {
-        throw new ApiError(httpStatus.CONFLICT, 'Gateway payment id is missing on this payment');
+  let reference = refund.gatewayRefundReference || '';
+  if (!cashAlreadyMoved) {
+    try {
+      if (manualReference !== undefined && manualReference !== null) {
+        reference = String(manualReference).trim();
+        if (!reference) throw new ApiError(httpStatus.BAD_REQUEST, 'gatewayRefundReference required');
+      } else if (mode === 'gateway') {
+        const initiationId = (booking.payments && booking.payments.length
+          ? booking.payments[booking.payments.length - 1]
+          : booking.payment) || refund.payment;
+        const initiation = await loadDoc(PaymentInitiation, initiationId);
+        if (!initiation) throw new ApiError(httpStatus.CONFLICT, 'No payment found to refund');
+        const gatewayPaymentId = gatewayRefund.resolveGatewayPaymentId(initiation.payResponse);
+        if (!gatewayPaymentId) {
+          throw new ApiError(httpStatus.CONFLICT, 'Gateway payment id is missing on this payment');
+        }
+        const config = await loadDoc(PaymentConfig, initiation.payment);
+        if (!config || !config.credentials) {
+          throw new ApiError(httpStatus.CONFLICT, 'Payment gateway configuration is missing');
+        }
+        const call = gatewayFn;
+        const result = await call({
+          gateway: config.slug || 'razorpay',
+          gatewayPaymentId,
+          amountPaise: toPaise(amount),
+          idempotencyKey: `lsrefund:${refund._id}`,
+          credentials: config.credentials,
+          reason: refund.reason || 'local-services-refund',
+        });
+        reference = result.gatewayRefundId || '';
+      } else if (mode === 'wallet') {
+        const credit = walletFn || require('./localservice.wallet.refund').creditWallet;
+        const result = await credit({
+          userId: booking.customer,
+          amountRupees: amount,
+          bookingCode: booking.bookingCode,
+          reason: refund.reason || 'local-services-refund',
+          idempotencyKey: `LS-WALLET-REFUND:${refund._id}`,
+        });
+        reference = result.transactionId || result.reference || '';
+      } else {
+        // COD / direct: the provider collected the cash in the field. The
+        // platform records the obligation; it does not move money it never had.
+        reference = `provider-credit:${booking.bookingCode}`;
       }
-      const config = await loadDoc(PaymentConfig, initiation.payment);
-      if (!config || !config.credentials) {
-        throw new ApiError(httpStatus.CONFLICT, 'Payment gateway configuration is missing');
-      }
-      const call = gatewayFn;
-      const result = await call({
-        gateway: config.slug || 'razorpay',
-        gatewayPaymentId,
-        amountPaise: toPaise(amount),
-        idempotencyKey: `lsrefund:${refund._id}`,
-        credentials: config.credentials,
-        reason: refund.reason || 'local-services-refund',
-      });
-      reference = result.gatewayRefundId || '';
-    } else if (mode === 'wallet') {
-      const credit = walletFn || require('./localservice.wallet.refund');
-      const result = await credit({
-        userId: booking.customer,
-        amountRupees: amount,
-        bookingCode: booking.bookingCode,
-        reason: refund.reason || 'local-services-refund',
-      });
-      reference = result.transactionId || result.reference || '';
-    } else {
-      // COD / direct: the provider collected the cash in the field. The
-      // platform records the obligation; it does not move money it never had.
-      reference = `provider-credit:${booking.bookingCode}`;
+    } catch (e) {
+      const released = reserved > 0 || reservedNow
+        ? await releaseRefundAmount(Booking, booking._id, amount, booking).catch(() => false)
+        : true;
+      refund.status = 'failed';
+      refund.reservedAmount = released ? 0 : amount;
+      refund.processingAt = undefined;
+      refund.failureReason = String(e.message || e).slice(0, 500);
+      await refund.save();
+      throw e;
     }
-  } catch (e) {
-    refund.status = 'failed';
-    refund.failureReason = String(e.message || e).slice(0, 500);
+
+    refund.gatewayRefundReference = reference;
+    refund.completedAmount = amount;
     await refund.save();
-    throw e;
   }
 
-  const refunded = Number((Number(booking.refundedAmount || 0) + amount).toFixed(2));
-  booking.refundedAmount = refunded;
-  booking.paymentStatus = refunded + 0.01 >= Number(booking.amountPaid || 0) ? 'refunded' : 'partially_refunded';
-  await booking.save();
+  const currentBooking = (await Booking.findById(booking._id)) || booking;
+  const refunded = Number(currentBooking.refundedAmount || 0);
+  const paid = Number(currentBooking.amountPaid || 0);
+  const paymentStatus = refunded + 0.01 >= paid ? 'refunded' : 'partially_refunded';
+  await markBookingRefundStatus(Booking, booking._id, currentBooking, paymentStatus);
 
   refund.status = 'completed';
-  refund.gatewayRefundReference = reference;
+  refund.reservedAmount = 0;
+  refund.processingAt = undefined;
   refund.completedAmount = amount;
   refund.completedAt = new Date();
   refund.failureReason = undefined;
   await refund.save();
 
-  return { refund, booking, amount, mode, reference, actorId };
+  return { refund, booking: currentBooking, amount, mode, reference, actorId };
 }
 
 /**

@@ -51,6 +51,7 @@ const registerPartner = catchAsync(async (req, res) => {
     mobile: parts[1],
     password: req.body.password,
     role: 'user',
+    verticals: ['stores'],
     isMobileVerified: true,
     status: true,
     locale: locale || 'en',

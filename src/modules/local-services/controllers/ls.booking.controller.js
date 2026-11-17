@@ -50,8 +50,22 @@ const createBooking = catchAsync(async (req, res) => {
 
   // REQUEST and quote-priced services may be broadcast without a provider.
   // Everything that has a deterministic price must name the provider whose
-  // offering supplies that price.
-  const quoteFlow = QUOTE_PRICING_MODES.has(service.pricingMode) || req.body.bookingMode === 'REQUEST';
+  // offering supplies that price. The client never chooses the booking mode:
+  // it must match the service (quote flows may also use REQUEST).
+  const requestedBookingMode = req.body.bookingMode || service.bookingMode;
+  const quoteFlow =
+    QUOTE_PRICING_MODES.has(service.pricingMode) || service.bookingMode === 'REQUEST';
+  if (requestedBookingMode === 'REQUEST' && !quoteFlow) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'This service does not accept request quotes');
+  }
+  if (requestedBookingMode !== service.bookingMode && !(quoteFlow && requestedBookingMode === 'REQUEST')) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Unsupported booking mode for this service');
+  }
+  if (Array.isArray(service.allowedBookingModes) && service.allowedBookingModes.length &&
+      !service.allowedBookingModes.includes(requestedBookingMode)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Booking mode is not allowed for this service');
+  }
+  req.body.bookingMode = requestedBookingMode;
   let provider = null;
   if (req.body.provider) {
     provider = await Provider.findOne({ _id: req.body.provider, status: 'ACTIVE', bookable: true }).lean();
@@ -102,9 +116,16 @@ const createBooking = catchAsync(async (req, res) => {
   // Category scope is needed BEFORE pricing: the effective policy (tax,
   // deposit, permitted payment modes) is scoped by it.
   let categoryKey = service.categoryKey || null;
+  let category = null;
   if (!categoryKey && service.category) {
-    const category = await Category.findById(service.category).lean();
+    category = await Category.findById(service.category).lean();
     if (category) categoryKey = category.key;
+  } else if (service.category) {
+    category = await Category.findById(service.category).lean();
+  }
+  if (category && Array.isArray(category.allowedBookingModes) && category.allowedBookingModes.length &&
+      !category.allowedBookingModes.includes(req.body.bookingMode)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Booking mode is not allowed for this category');
   }
   const policyConfig = require('../services/localservice.policy.config.service');
   const effectivePolicy = await policyConfig.loadEffectivePolicy(
@@ -180,12 +201,9 @@ const createBooking = catchAsync(async (req, res) => {
 
   let addressDoc = null;
   if (req.body.address) {
-    try {
-      const Address = require('../../../models/user.address.model');
-      addressDoc = await Address.findById(req.body.address).lean();
-    } catch (e) {
-      // best-effort
-    }
+    const Address = require('../../../models/user.address.model');
+    addressDoc = await Address.findOne({ _id: req.body.address, user: req.user._id }).lean();
+    if (!addressDoc) throw new ApiError(httpStatus.BAD_REQUEST, 'Unknown address');
   }
 
   if (provider && addressDoc) {
@@ -215,19 +233,25 @@ const createBooking = catchAsync(async (req, res) => {
     serviceModes: service.allowedPaymentModes,
     policyModes: effectivePolicy.allowedPaymentModes,
   });
-  if (req.body.paymentMode === 'cod' || req.body.paymentMode === 'direct') {
+  const paymentMode = req.body.paymentMode || 'gateway';
+  if (paymentMode === 'cod' || paymentMode === 'direct') {
     const okMode =
-      req.body.paymentMode === 'cod'
+      paymentMode === 'cod'
         ? allowed.includes('cod')
         : allowed.includes('cod') || allowed.includes('pay_after');
     if (!okMode) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Off-gateway collection is not enabled for this service');
     }
-  }
-  if (req.body.paymentMode === 'wallet') {
+  } else if (paymentMode === 'wallet') {
     if (!allowed.includes('wallet')) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Wallet payment is not enabled for this service');
     }
+  } else if (paymentMode === 'gateway') {
+    if (allowed.length && !allowed.includes('gateway') && !allowed.includes('full_prepay') && !allowed.includes('deposit')) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Gateway payment is not enabled for this service');
+    }
+  } else {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Unsupported payment mode');
   }
   // Advance window and minimum notice come from the policy.
   if (scheduledStart) {
@@ -762,13 +786,39 @@ const voidInvoice = catchAsync(async (req, res) => {
 
 const listReviews = catchAsync(async (req, res) => {
   const { LocalServiceReview } = require('../models/localservice.fulfilment.model');
-  const filter = { ...pick(req.query, ['provider']) };
+  const filter = { provider: req.query.provider };
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
-  res.status(httpStatus.OK).send(await LocalServiceReview.paginate(filter, options));
+  const result = await LocalServiceReview.paginate(filter, options);
+  res.status(httpStatus.OK).send({
+    ...result,
+    results: result.results.map((review) => ({
+      provider: review.provider,
+      rating: review.rating,
+      comment: review.comment,
+      createdAt: review.createdAt,
+    })),
+  });
+});
+
+// Customer-scoped review history: never leaks other customers' reviews.
+const listMyReviews = catchAsync(async (req, res) => {
+  const { LocalServiceReview } = require('../models/localservice.fulfilment.model');
+  const options = {
+    ...pick(req.query, ['sortBy', 'limit', 'page']),
+    populate: [
+      { path: 'provider', select: 'businessName' },
+      { path: 'booking', select: 'bookingCode scheduledAt startAt' },
+    ],
+  };
+  res.status(httpStatus.OK).send(await LocalServiceReview.paginate({ customer: req.user._id }, options));
 });
 
 const createComplaint = catchAsync(async (req, res) => {
   const { LocalServiceComplaint } = require('../models/localservice.fulfilment.model');
+  if (req.body.booking) {
+    const booking = await Booking.findOne({ _id: req.body.booking, customer: req.user._id }).lean();
+    if (!booking) throw new ApiError(httpStatus.NOT_FOUND, 'Booking not found');
+  }
   const doc = await LocalServiceComplaint.create({ raisedBy: req.user._id, ...pick(req.body, ['booking', 'reason']) });
   try {
     const outbox = require('../services/localservice.outbox.service');
@@ -786,7 +836,10 @@ const createComplaint = catchAsync(async (req, res) => {
 
 const listMyComplaints = catchAsync(async (req, res) => {
   const { LocalServiceComplaint } = require('../models/localservice.fulfilment.model');
-  const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  const options = {
+    ...pick(req.query, ['sortBy', 'limit', 'page']),
+    populate: [{ path: 'booking', select: 'bookingCode' }],
+  };
   res.status(httpStatus.OK).send(await LocalServiceComplaint.paginate({ raisedBy: req.user._id }, options));
 });
 
@@ -808,13 +861,27 @@ const resolveComplaint = catchAsync(async (req, res) => {
 
 const listMyBookings = catchAsync(async (req, res) => {
   const filter = { customer: req.user._id, ...pick(req.query, ['status']) };
-  const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  const options = {
+    ...pick(req.query, ['sortBy', 'limit', 'page']),
+    populate: [
+      { path: 'provider', select: 'businessName' },
+      { path: 'service', select: 'name' },
+      { path: 'variant', select: 'name durationMinutes' },
+    ],
+  };
   res.status(httpStatus.OK).send(await Booking.paginate(filter, options));
 });
 
 const listPartnerQuotes = catchAsync(async (req, res) => {
   const Quote = require('../models/localservice.quote.model');
-  const myBookings = await Booking.find({ provider: req.user._id }).select('_id').lean();
+  const Provider = require('../models/localservice.provider.model');
+  const provider = await Provider.findOne({ owner: req.user._id });
+  const providerIds = [];
+  if (provider) {
+    providerIds.push(provider._id);
+    if (provider.business) providerIds.push(provider.business);
+  }
+  const myBookings = await Booking.find({ provider: { $in: providerIds } }).select('_id').lean();
   const ids = myBookings.map((b) => b._id);
   const filter = { booking: { $in: ids }, ...pick(req.query, ['status']) };
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
@@ -874,79 +941,90 @@ const adminListRefunds = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(await LocalServiceRefundRequest.paginate(filter, options));
 });
 
+const reverseRefundRevenue = async (req, { refund, booking, amount }) => {
+  const { reverseRevenueForBooking } = require('../services/localservice.revenue.booking.service');
+  const paid = Number((booking && booking.amountPaid) || 0);
+  const refunded = Number(amount || 0);
+  const refundRatio = paid > 0 ? Math.min(1, Math.max(0, refunded / paid)) : 1;
+  try {
+    await reverseRevenueForBooking({
+      bookingId: String(refund.booking),
+      reason: refund.reason || 'refund-approved',
+      refundId: String(refund._id),
+      refundRatio,
+      actorId: req.user._id,
+    });
+  } catch (e) {
+    if (e.statusCode === 404) return;
+    await recordAudit(req, {
+      event: 'refund.reversal_failed',
+      targetType: 'refund',
+      targetId: refund._id,
+      details: `Revenue reversal failed for booking ${refund.booking}: ${e.message}`,
+      metadata: { booking: refund.booking, amount, refundRatio, error: String(e.message || e) },
+    });
+  }
+};
+
 const decideRefund = catchAsync(async (req, res) => {
   const { LocalServiceRefundRequest } = require('../models/localservice.catalog.ext.model');
   const doc = await LocalServiceRefundRequest.findById(req.params.id);
   if (!doc) throw new ApiError(httpStatus.NOT_FOUND, 'Refund request not found');
   if (doc.status !== 'requested') throw new ApiError(httpStatus.BAD_REQUEST, `Already ${doc.status}`);
+
   if (req.body.decision === 'rejected') {
-    doc.status = 'rejected';
-    await doc.save();
+    const rejected = await LocalServiceRefundRequest.findOneAndUpdate(
+      { _id: doc._id, status: 'requested' },
+      { $set: { status: 'rejected' } },
+      { new: true }
+    );
+    if (!rejected) throw new ApiError(httpStatus.BAD_REQUEST, 'Refund decision already recorded');
     await recordAudit(req, {
       event: 'refund.rejected',
       targetType: 'refund',
-      targetId: doc._id,
-      details: `Refund rejected for booking ${doc.booking}`,
-      metadata: { booking: doc.booking, requestedAmount: doc.requestedAmount, reason: doc.reason },
+      targetId: rejected._id,
+      details: `Refund rejected for booking ${rejected.booking}`,
+      metadata: { booking: rejected.booking, requestedAmount: rejected.requestedAmount, reason: rejected.reason },
     });
-    return res.status(httpStatus.OK).send({ refund: doc });
+    return res.status(httpStatus.OK).send({ refund: rejected });
   }
   if (req.body.decision !== 'approved') throw new ApiError(httpStatus.BAD_REQUEST, 'Use approved|rejected');
-  doc.status = 'approved';
-  doc.approvedAmount = doc.requestedAmount;
-  await doc.save();
-  // Ledger reversal follows approval (original payment untouched). The cash leg
-  // runs next: an approval that never moves money is a promise not kept.
-  const { reverseRevenueForBooking } = require('../services/localservice.revenue.booking.service');
-  try {
-    await reverseRevenueForBooking({ bookingId: String(doc.booking), reason: doc.reason || 'refund-approved', actorId: req.user._id });
-  } catch (e) {
-    if (e.statusCode !== 404) throw e;
-  }
+
+  const approved = await LocalServiceRefundRequest.findOneAndUpdate(
+    { _id: doc._id, status: 'requested' },
+    { $set: { status: 'approved', approvedAmount: doc.requestedAmount } },
+    { new: true }
+  );
+  if (!approved) throw new ApiError(httpStatus.BAD_REQUEST, 'Refund decision already recorded');
   await recordAudit(req, {
     event: 'refund.approved',
     targetType: 'refund',
-    targetId: doc._id,
-    details: `Refund approved for booking ${doc.booking}`,
-    metadata: { booking: doc.booking, requestedAmount: doc.requestedAmount, approvedAmount: doc.approvedAmount },
+    targetId: approved._id,
+    details: `Refund approved for booking ${approved.booking}`,
+    metadata: { booking: approved.booking, requestedAmount: approved.requestedAmount, approvedAmount: approved.approvedAmount },
   });
 
   // A manually recorded gateway reference means the operator already moved
-  // the money outside the platform: honour it instead of paying twice.
-  if (req.body.gatewayRefundReference) {
-    doc.gatewayRefundReference = req.body.gatewayRefundReference;
-    doc.status = 'completed';
-    doc.completedAt = new Date();
-    doc.completedAmount = doc.approvedAmount;
-    await doc.save();
-    const Booking = require('../models/localservice.booking.model');
-    const booking = await Booking.findById(doc.booking);
-    if (booking) {
-      booking.refundedAmount = Number((Number(booking.refundedAmount || 0) + Number(doc.completedAmount || 0)).toFixed(2));
-      booking.paymentStatus =
-        booking.refundedAmount + 0.01 >= Number(booking.amountPaid || 0) ? 'refunded' : 'partially_refunded';
-      await booking.save();
-    }
-    await recordAudit(req, {
-      event: 'refund.completed',
-      targetType: 'refund',
-      targetId: doc._id,
-      details: `Refund completed manually for booking ${doc.booking}`,
-      metadata: { gatewayRefundReference: doc.gatewayRefundReference },
-    });
-    return res.status(httpStatus.OK).send({ refund: doc });
-  }
+  // the money outside the platform: record it instead of paying twice.
+  const manualReference = typeof req.body.gatewayRefundReference === 'string'
+    ? req.body.gatewayRefundReference.trim()
+    : '';
 
-  // Execute the cash leg. A failure is recorded on the refund and reported,
-  // never swallowed: the operator must know the money did not move.
+  // Execute the cash leg first. A failure is recorded on the refund and
+  // reported, never swallowed: the operator must know the money did not move.
   const refundService = require('../services/localservice.refund.service');
   try {
-    const result = await refundService.executeRefund({ refundId: String(doc._id), actorId: req.user._id });
+    const result = await refundService.executeRefund({
+      refundId: String(approved._id),
+      actorId: req.user._id,
+      manualReference: manualReference || undefined,
+    });
+    await reverseRefundRevenue(req, result);
     await recordAudit(req, {
       event: 'refund.completed',
       targetType: 'refund',
-      targetId: doc._id,
-      details: `Refund of ${result.amount} executed for booking ${doc.booking} via ${result.mode}`,
+      targetId: approved._id,
+      details: `Refund of ${result.amount} executed for booking ${approved.booking} via ${result.mode}`,
       metadata: { mode: result.mode, reference: result.reference, amount: result.amount },
     });
     const { notifyUser } = require('../services/localservice.notify.service');
@@ -960,9 +1038,9 @@ const decideRefund = catchAsync(async (req, res) => {
       const outbox = require('../services/localservice.outbox.service');
       await outbox.enqueue({
         aggregateType: 'refund',
-        aggregateId: String(doc._id),
+        aggregateId: String(approved._id),
         eventType: 'refund.completed',
-        payload: { refundId: String(doc._id), bookingId: String(result.booking._id), amount: result.amount },
+        payload: { refundId: String(approved._id), bookingId: String(result.booking._id), amount: result.amount },
       });
     } catch (e) {
       console.error('LocalServices outbox enqueue failed:', e && e.message);
@@ -972,9 +1050,9 @@ const decideRefund = catchAsync(async (req, res) => {
     await recordAudit(req, {
       event: 'refund.failed',
       targetType: 'refund',
-      targetId: doc._id,
-      details: `Refund execution failed for booking ${doc.booking}: ${e.message}`,
-      metadata: { booking: doc.booking, error: String(e.message || e) },
+      targetId: approved._id,
+      details: `Refund execution failed for booking ${approved.booking}: ${e.message}`,
+      metadata: { booking: approved.booking, error: String(e.message || e) },
     });
     throw e;
   }
@@ -990,6 +1068,7 @@ const retryRefund = catchAsync(async (req, res) => {
   const refundService = require('../services/localservice.refund.service');
   try {
     const result = await refundService.executeRefund({ refundId: String(doc._id), actorId: req.user._id });
+    await reverseRefundRevenue(req, result);
     await recordAudit(req, {
       event: 'refund.completed',
       targetType: 'refund',
@@ -1024,4 +1103,4 @@ const adminListReviews = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(await LocalServiceReview.paginate(filter, options));
 });
 
-module.exports = { createBooking, transitionBooking, submitQuote, acceptQuote, reviseQuote, rescheduleBooking, disputeBooking, confirmCompletion, submitReview, listReviews, getInvoice, getInvoicePdf, adminInvoicePdf, partnerInvoicePdf, voidInvoice, createComplaint, listMyComplaints, listAllComplaints, resolveComplaint, listMyBookings, listPartnerQuotes, getMyBooking, initiatePayment, getBookingPayment, adminListBookings, adminGetBooking, adminListRefunds, adminListInvoices, adminListReviews, decideRefund, retryRefund };
+module.exports = { createBooking, transitionBooking, submitQuote, acceptQuote, reviseQuote, rescheduleBooking, disputeBooking, confirmCompletion, submitReview, listReviews, listMyReviews, getInvoice, getInvoicePdf, adminInvoicePdf, partnerInvoicePdf, voidInvoice, createComplaint, listMyComplaints, listAllComplaints, resolveComplaint, listMyBookings, listPartnerQuotes, getMyBooking, initiatePayment, getBookingPayment, adminListBookings, adminGetBooking, adminListRefunds, adminListInvoices, adminListReviews, decideRefund, retryRefund };

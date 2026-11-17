@@ -84,6 +84,45 @@ const failDelivery = async (req, res) => {
   res.status(httpStatus.OK).send({ delivery: deliveryService.sanitizeDelivery(delivery) });
 };
 
+/**
+ * The drop-off address for one of THIS driver's deliveries.
+ *
+ * The delivery row carries no address - it references the order - and the order route is
+ * `storeAuth`-scoped, which a driver token cannot pass. Without this read a rider knows an
+ * order number and nothing about where it goes. Only the fields the handover needs are
+ * returned, and the delivery is matched on `driver` here so another outlet's delivery id
+ * is a 404 rather than an address leak.
+ */
+const getDeliveryOrder = async (req, res) => {
+  const driver = await currentDriver(req);
+  const StoreDelivery = mongoose.model('StoreDelivery');
+  const StoreOrder = mongoose.model('StoreOrder');
+  const delivery = await StoreDelivery.findOne({
+    _id: req.params.delivery,
+    driver: driver._id,
+  })
+    .select('order')
+    .lean();
+  if (!delivery) throw new ApiError(httpStatus.NOT_FOUND, 'Delivery not found');
+  const order = await StoreOrder.findOne({ _id: delivery.order, outlet: driver.outlet })
+    .select('orderNo paymentMode grandTotal codAmount addressSnapshot items customerNote createdAt')
+    .lean();
+  if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+  res.status(httpStatus.OK).send({
+    order: {
+      _id: order._id,
+      orderNo: order.orderNo,
+      paymentMode: order.paymentMode,
+      grandTotal: order.grandTotal,
+      codAmount: order.codAmount,
+      address: order.addressSnapshot,
+      itemCount: Array.isArray(order.items) ? order.items.length : 0,
+      customerNote: order.customerNote,
+      createdAt: order.createdAt,
+    },
+  });
+};
+
 const getDriverEarnings = async (req, res) => {
   const StoreDelivery = mongoose.model('StoreDelivery');
   const StoreDriver = mongoose.model('StoreDriver');
@@ -107,16 +146,25 @@ const getDriverEarnings = async (req, res) => {
   });
 };
 
-router.get('/today', appAuth('storeDriver'), getDriverDeliveries);
-router.get('/deliveries', appAuth('storeDriver'), getDriverDeliveries);
-router.get('/deliveries/:delivery', appAuth('storeDriver'), getDelivery);
+// GUARD WITH RIGHTS, NOT THE ROLE NAME. `appAuth(NAME)` checks that NAME against
+// `roleRights.get(user.role)`, and the `storeDriver` role does not grant a right called
+// `storeDriver` - so every route below 403'd for the exact rider it was written for.
+// The driver's granted rights are the `stores_delivery_*` / `stores_order_read` /
+// `stores_earnings_read` entries in config/roles.js; the per-outlet tenancy is enforced
+// by `currentDriver()` inside each handler, not by the middleware.
+router.get('/today', appAuth('stores_delivery_read'), getDriverDeliveries);
+router.get('/deliveries', appAuth('stores_delivery_read'), getDriverDeliveries);
+router.get('/deliveries/:delivery', appAuth('stores_delivery_read'), getDelivery);
 // LITERALS BEFORE THE `:status` PARAM. `/deliveries/:delivery/deliver` and `/fail` are
 // the OTP handover (BR-29) and the failure path; declared after
 // `/deliveries/:delivery/:status` they were captured by it, so every completion call
 // silently ran the generic transition instead. The OTP proof was never verified.
-router.post('/deliveries/:delivery/deliver', appAuth('storeDriver'), validate(V.deliveryOtpValidation), deliverWithOtp);
-router.post('/deliveries/:delivery/fail', appAuth('storeDriver'), failDelivery);
-router.post('/deliveries/:delivery/:status', appAuth('storeDriver'), validate(V.deliveryDriverTransitionValidation), transitionDelivery);
-router.get('/earnings', appAuth('storeDriver'), getDriverEarnings);
+router.post('/deliveries/:delivery/deliver', appAuth('stores_delivery_otp'), validate(V.deliveryOtpValidation), deliverWithOtp);
+router.post('/deliveries/:delivery/fail', appAuth('stores_delivery_update'), failDelivery);
+router.get('/deliveries/:delivery/order', appAuth('stores_order_read'), getDeliveryOrder);
+// `accepted` is the accept step (`stores_delivery_accept`); every later step is an
+// update. appAuth takes them with OR semantics, matching the driver's grant set.
+router.post('/deliveries/:delivery/:status', appAuth('stores_delivery_update', 'stores_delivery_accept'), validate(V.deliveryDriverTransitionValidation), transitionDelivery);
+router.get('/earnings', appAuth('stores_earnings_read'), getDriverEarnings);
 
 module.exports = router;

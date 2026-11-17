@@ -60,6 +60,7 @@ const webAuth = require('../../../middlewares/webAuth');
 const {
   JhatkaOutletVarianceFlag,
   JhatkaYieldSpec,
+  JhatkaQualityRejectionReason,
   JhatkaOrder,
   JhatkaRefund,
   JhatkaRecurringOrder,
@@ -87,6 +88,160 @@ const CUT_TYPES = [
   'whole', 'curry_cut', 'skinless', 'boneless', 'cleaned',
   'fish_cleaned', 'prawn_peeled', 'portioned',
 ];
+
+const REASON_CODE_RE = /^[a-z0-9_]+$/;
+
+const reasonResponse = (reason) => ({
+  id: String(reason._id || reason.id),
+  code: reason.code,
+  label: reason.label,
+  description: reason.description,
+  category: reason.category,
+  severity: reason.severity,
+  autoReject: !!reason.autoReject,
+  fault: reason.fault,
+  wastageCause: reason.wastageCause,
+  affectsSupplierRating: reason.affectsSupplierRating !== false,
+  sortOrder: reason.sortOrder ?? 0,
+  status: reason.status !== false,
+  translations: reason.translations,
+  createdAt: reason.createdAt,
+  updatedAt: reason.updatedAt,
+});
+
+const reasonMeta = () => ({
+  categories: JhatkaQualityRejectionReason.CATEGORIES,
+  severities: JhatkaQualityRejectionReason.SEVERITIES,
+  faults: JhatkaQualityRejectionReason.FAULTS,
+  wastageCauses: JhatkaQualityRejectionReason.WASTAGE_CAUSES,
+});
+
+const rejectField = (field, code, message, extra = {}) => {
+  throw new ApiError(httpStatus.BAD_REQUEST, message, true, '', {
+    code,
+    field,
+    ...extra,
+  });
+};
+
+/**
+ * Validate and normalize the POST/PATCH body for a rejection reason.
+ * Unknown keys are ignored; only the governed vocabulary is writable here.
+ */
+const normalizeReasonFields = (body, { requireCore = false } = {}) => {
+  const input = body || {};
+  const out = {};
+
+  if (requireCore || input.code !== undefined) {
+    const code = String(input.code || '').trim().toLowerCase();
+    if (!code) rejectField('code', 'MISSING_REQUIRED_FIELD', 'code is required');
+    if (code.length > 64) rejectField('code', 'INVALID_REASON_CODE', 'code must be at most 64 characters');
+    if (!REASON_CODE_RE.test(code)) {
+      rejectField(
+        'code',
+        'INVALID_REASON_CODE',
+        'code must use lowercase letters, numbers and underscores only'
+      );
+    }
+    out.code = code;
+  }
+
+  if (requireCore || input.label !== undefined) {
+    const label = String(input.label || '').trim();
+    if (!label) rejectField('label', 'MISSING_REQUIRED_FIELD', 'label is required');
+    if (label.length > 120) rejectField('label', 'INVALID_LABEL', 'label must be at most 120 characters');
+    out.label = label;
+  }
+
+  if (input.description !== undefined) {
+    const description = String(input.description || '').trim();
+    if (description.length > 1000) {
+      rejectField('description', 'INVALID_DESCRIPTION', 'description must be at most 1000 characters');
+    }
+    out.description = description;
+  }
+
+  if (requireCore || input.category !== undefined) {
+    if (!JhatkaQualityRejectionReason.CATEGORIES.includes(input.category)) {
+      rejectField(
+        'category',
+        'INVALID_REASON_CATEGORY',
+        `category must be one of ${JhatkaQualityRejectionReason.CATEGORIES.join(' | ')}`,
+        { allowed: JhatkaQualityRejectionReason.CATEGORIES, received: input.category }
+      );
+    }
+    out.category = input.category;
+  }
+
+  if (requireCore || input.severity !== undefined) {
+    if (!JhatkaQualityRejectionReason.SEVERITIES.includes(input.severity)) {
+      rejectField(
+        'severity',
+        'INVALID_REASON_SEVERITY',
+        `severity must be one of ${JhatkaQualityRejectionReason.SEVERITIES.join(' | ')}`,
+        { allowed: JhatkaQualityRejectionReason.SEVERITIES, received: input.severity }
+      );
+    }
+    out.severity = input.severity;
+  }
+
+  if (input.fault !== undefined) {
+    if (!JhatkaQualityRejectionReason.FAULTS.includes(input.fault)) {
+      rejectField(
+        'fault',
+        'INVALID_REASON_FAULT',
+        `fault must be one of ${JhatkaQualityRejectionReason.FAULTS.join(' | ')}`,
+        { allowed: JhatkaQualityRejectionReason.FAULTS, received: input.fault }
+      );
+    }
+    out.fault = input.fault;
+  }
+
+  if (input.wastageCause !== undefined) {
+    if (!JhatkaQualityRejectionReason.WASTAGE_CAUSES.includes(input.wastageCause)) {
+      rejectField(
+        'wastageCause',
+        'INVALID_WASTAGE_CAUSE',
+        `wastageCause must be one of ${JhatkaQualityRejectionReason.WASTAGE_CAUSES.join(' | ')}`,
+        {
+          allowed: JhatkaQualityRejectionReason.WASTAGE_CAUSES,
+          received: input.wastageCause,
+        }
+      );
+    }
+    out.wastageCause = input.wastageCause;
+  }
+
+  for (const field of ['autoReject', 'affectsSupplierRating', 'status']) {
+    if (input[field] !== undefined) {
+      if (typeof input[field] !== 'boolean') {
+        rejectField(field, 'INVALID_BOOLEAN', `${field} must be true or false`);
+      }
+      out[field] = input[field];
+    }
+  }
+
+  if (input.sortOrder !== undefined) {
+    const sortOrder = Number(input.sortOrder);
+    if (!Number.isInteger(sortOrder) || sortOrder < 0) {
+      rejectField('sortOrder', 'INVALID_SORT_ORDER', 'sortOrder must be a non-negative integer');
+    }
+    out.sortOrder = sortOrder;
+  }
+
+  if (input.translations !== undefined) {
+    if (
+      !input.translations ||
+      typeof input.translations !== 'object' ||
+      Array.isArray(input.translations)
+    ) {
+      rejectField('translations', 'INVALID_TRANSLATIONS', 'translations must be an object');
+    }
+    out.translations = input.translations;
+  }
+
+  return out;
+};
 
 /** Actions that STOP someone being accused. Deliberately not a linear ladder. */
 const FLAG_ACTION_TRANSITIONS = {
@@ -555,6 +710,106 @@ router.patch('/operations/yield-specs/:spec', webAuth('jhatka_catalog_write'), v
     return next(error);
   }
 });
+
+/**
+ * GET /v1/jhatka/admin/operations/rejection-reasons
+ *
+ * The controlled rejection vocabulary, including inactive rows so an admin can
+ * reactivate one. The partner picker only ever sees `status: true` rows.
+ */
+router.get('/operations/rejection-reasons', webAuth('jhatka_catalog_read'), async (req, res, next) => {
+  try {
+    const query = {};
+    if (req.query.status === 'true' || req.query.status === 'false') {
+      query.status = req.query.status === 'true';
+    }
+    if (req.query.category) query.category = req.query.category;
+    if (req.query.fault) query.fault = req.query.fault;
+
+    const reasons = await JhatkaQualityRejectionReason.find(query)
+      .sort({ category: 1, sortOrder: 1, label: 1 })
+      .lean();
+
+    return res.json({
+      reasons: reasons.map(reasonResponse),
+      count: reasons.length,
+      meta: reasonMeta(),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * POST /v1/jhatka/admin/operations/rejection-reasons
+ *
+ * Creates a governed rejection reason. `category` and `severity` are required:
+ * a reason without them cannot group the picker or drive the human-decision queue.
+ */
+router.post('/operations/rejection-reasons', webAuth('jhatka_catalog_write'), async (req, res, next) => {
+  try {
+    const fields = normalizeReasonFields(req.body, { requireCore: true });
+    const reason = new JhatkaQualityRejectionReason({
+      ...fields,
+      autoReject: fields.autoReject ?? false,
+      fault: fields.fault ?? 'unknown',
+      wastageCause: fields.wastageCause ?? 'QUALITY_REJECTION',
+      affectsSupplierRating: fields.affectsSupplierRating ?? true,
+      sortOrder: fields.sortOrder ?? 0,
+      status: fields.status ?? true,
+    });
+    await reason.save();
+    return res.status(201).json({ reason: reasonResponse(reason) });
+  } catch (error) {
+    if (error && error.code === 11000) {
+      return next(new ApiError(
+        httpStatus.CONFLICT,
+        'A rejection reason with this code already exists',
+        true,
+        '',
+        { code: 'REASON_CODE_EXISTS' }
+      ));
+    }
+    return next(error);
+  }
+});
+
+/**
+ * PATCH /v1/jhatka/admin/operations/rejection-reasons/:reason
+ *
+ * `code` is immutable: historical receipt lines store the code, and renaming it
+ * would orphan those decisions. Deactivate with `status: false` instead.
+ */
+router.patch(
+  '/operations/rejection-reasons/:reason',
+  webAuth('jhatka_catalog_write'),
+  validate(V.namedParam('reason')),
+  async (req, res, next) => {
+    try {
+      const reason = await JhatkaQualityRejectionReason.findById(req.params.reason);
+      if (!reason) throw new ApiError(httpStatus.NOT_FOUND, 'Rejection reason not found');
+
+      if (req.body?.code !== undefined && req.body.code !== reason.code) {
+        throw new ApiError(
+          httpStatus.BAD_REQUEST,
+          'code is immutable. Create a new reason instead.',
+          true,
+          '',
+          { code: 'REASON_CODE_IMMUTABLE' }
+        );
+      }
+
+      const fields = normalizeReasonFields(req.body);
+      delete fields.code;
+      Object.assign(reason, fields);
+      await reason.save();
+
+      return res.json({ reason: reasonResponse(reason) });
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
 
 /**
  * GET /v1/jhatka/admin/analytics — platform-wide summary for the admin panel.

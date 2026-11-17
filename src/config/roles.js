@@ -2027,6 +2027,7 @@ const JHATKA_ADMIN_RIGHTS = [
   'jhatka_inventory_read',
   'jhatka_order_read',
   'jhatka_payables_read',
+  'jhatka_payables_manage',
   'jhatka_procurement_read',
   'jhatka_procurement_write',
   'jhatka_recall_manage',

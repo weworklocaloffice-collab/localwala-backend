@@ -305,9 +305,108 @@ console.log('\n-- Rule C: accepted cannot be rejected --');
 {
   const r = mkReceipt({ lines: [mkLine({ qualityStatus: 'accepted' }), mkLine({ qualityStatus: 'pending' })] });
   ok('an ACCEPTED line cannot be rejected', r.canRejectLine(0) === false);
-  ok('a PENDING line can be rejected', r.canRejectLine(1) === true);
-  ok('a DRAFT receipt cannot reject anything', mkReceipt({ status: 'draft' }).canRejectLine(0) === false);
+  ok('a PENDING posted line with no batch can be rejected', r.canRejectLine(1) === true);
+  ok('a DRAFT pending line can be rejected (the normal quality decision)',
+     mkReceipt({ status: 'draft', lines: [mkLine({ qualityStatus: 'pending' })] }).canRejectLine(0) === true);
+  ok('a line that already owns a batch cannot be rejected',
+     mkReceipt({ status: 'draft', lines: [mkLine({ qualityStatus: 'pending', batch: OID })] }).canRejectLine(0) === false);
   ok('an out-of-range line index is refused, not a crash', r.canRejectLine(99) === false);
+}
+
+// ---- rejection transition and totals --------------------------------------
+console.log('\n-- rejecting a pending line --');
+{
+  const r = mkReceipt({
+    status: 'draft',
+    qualityStatus: 'pending',
+    lines: [mkLine({
+      qualityStatus: 'pending',
+      acceptedQty: g(1400),
+      rejectedQty: g(0),
+      unitPrice: 40,
+      amount: 56000,
+    })],
+  });
+  r.rejectLine(0, [{ reason: OID, code: 'off_odour', note: 'smelled off at intake' }], {
+    note: 'whole crate condemned',
+    actor: { _id: OID, name: 'Asha' },
+  });
+  const line = r.lines[0];
+  ok('the line becomes rejected', line.qualityStatus === 'rejected');
+  ok('accepted quantity is zeroed', Number(line.acceptedQty.value) === 0);
+  ok('rejected quantity carries the whole receipt', Number(line.rejectedQty.value) === 1400);
+  ok('the line is worth nothing to pay', Number(line.amount) === 0);
+  ok('rejected value is recorded for waste attribution', Number(line.rejectedValue) === 56000);
+  ok('the governed reason is embedded', String(line.rejectionReasons[0].reason) === OID && line.rejectionReasons[0].code === 'off_odour');
+  ok('the rejected line is not claimable', line.payability === 'disputed');
+  ok('receipt totals follow the decision', r.totals.totalAcceptedQty === 0
+     && r.totals.totalRejectedQty === 1400
+     && r.totals.totalAcceptedValue === 0
+     && r.totals.totalRejectedValue === 56000);
+  ok('the receipt rolls up to rejected', r.qualityStatus === 'rejected');
+  ok('the rejection rate is 100%', r.rejectionRatePct === 100);
+
+  let code = null;
+  try {
+    r.rejectLine(0, [{ reason: OID, code: 'off_odour' }]);
+  } catch (error) {
+    code = error.code;
+  }
+  ok('a rejected line cannot be rejected twice', code === 'LINE_ALREADY_REJECTED', code);
+}
+
+// ---- reverse-batch-first is the only path for accepted goods --------------
+console.log('\n-- reverse-batch-first guards --');
+{
+  let code = null;
+  try {
+    mkReceipt({ status: 'draft', lines: [mkLine({ qualityStatus: 'accepted', batch: OID, acceptedQty: g(1400) })] })
+      .rejectLine(0, [{ reason: OID, code: 'off_odour' }]);
+  } catch (error) {
+    code = error.code;
+  }
+  ok('rejecting accepted/batched goods returns REVERSE_BATCH_FIRST', code === 'REVERSE_BATCH_FIRST', code);
+
+  let partialCode = null;
+  try {
+    mkReceipt({ status: 'draft', lines: [mkLine({ qualityStatus: 'partially_accepted', acceptedQty: g(700) })] })
+      .rejectLine(0, [{ reason: OID, code: 'off_odour' }]);
+  } catch (error) {
+    partialCode = error.code;
+  }
+  ok('rejecting a partially accepted line also requires reversal', partialCode === 'REVERSE_BATCH_FIRST', partialCode);
+}
+
+// ---- acceptance transition ------------------------------------------------
+console.log('\n-- accepting a pending line --');
+{
+  const r = mkReceipt({
+    status: 'draft',
+    qualityStatus: 'pending',
+    lines: [mkLine({
+      qualityStatus: 'pending',
+      acceptedQty: g(1400),
+      rejectedQty: g(0),
+      unitPrice: 40,
+      amount: 56000,
+    })],
+  });
+  r.acceptLine(0, { note: 'within policy', actor: { _id: OID, name: 'Asha' } });
+  const line = r.lines[0];
+  ok('the line becomes accepted', line.qualityStatus === 'accepted');
+  ok('the whole received quantity is accepted', Number(line.acceptedQty.value) === 1400);
+  ok('nothing is rejected', Number(line.rejectedQty.value) === 0);
+  ok('the line is payable', line.payability === 'pending');
+  ok('the receipt is accepted', r.qualityStatus === 'accepted');
+  ok('acceptance contributes to the accepted value', r.totals.totalAcceptedValue === 56000);
+
+  let code = null;
+  try {
+    r.acceptLine(0);
+  } catch (error) {
+    code = error.code;
+  }
+  ok('an already-decided line is not accepted twice', code === 'LINE_ALREADY_DECIDED', code);
 }
 
 // ---- the partial-acceptance roll-up ---------------------------------------
@@ -331,7 +430,7 @@ console.log('\n-- partial acceptance is the normal case --');
 }
 
 // ---- §10.2 payability -----------------------------------------------------
-console.log('\n-- §10.2 payability: only accepted + pending is claimable --');
+console.log('\n-- §10.2 payability: accepted quantity on pending lines is claimable --');
 {
   const r = mkReceipt({
     lines: [
@@ -351,6 +450,34 @@ console.log('\n-- §10.2 payability: only accepted + pending is claimable --');
   ok('a DRAFT receipt yields nothing claimable', mkReceipt({ status: 'draft' }).claimableLines().length === 0);
   ok('a fully rejected receipt yields nothing claimable',
      mkReceipt({ lines: [mkLine({ qualityStatus: 'rejected' })] }).claimableLines().length === 0);
+
+  const partial = mkReceipt({
+    lines: [
+      mkLine({
+        qualityStatus: 'partially_accepted',
+        payability: 'pending',
+        acceptedQty: g(800),
+        rejectedQty: g(600),
+      }),
+    ],
+  });
+  const partialClaimable = partial.claimableLines();
+  ok('a PARTIALLY accepted line is claimable for its accepted quantity',
+     partialClaimable.length === 1 && partialClaimable[0].acceptedQty.value === 800,
+     String(partialClaimable.length));
+
+  const zeroAccepted = mkReceipt({
+    lines: [
+      mkLine({
+        qualityStatus: 'partially_accepted',
+        payability: 'pending',
+        acceptedQty: g(0),
+        rejectedQty: g(1400),
+      }),
+    ],
+  });
+  ok('a partial line with zero accepted quantity is not claimable',
+     zeroAccepted.claimableLines().length === 0);
 }
 
 // ---- purchase order vs receipt: intention and fact -----------------------

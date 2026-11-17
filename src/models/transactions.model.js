@@ -52,6 +52,10 @@ const transactionSchema = mongoose.Schema(
     uuid: {
       type: String,
     },
+    reference: {
+      type: String,
+      trim: true,
+    },
     confirmed: {
       type: Boolean,
       default: false,
@@ -74,6 +78,11 @@ const transactionSchema = mongoose.Schema(
 // add plugin that converts mongoose to json & convert to unique slug
 transactionSchema.plugin(toJSON);
 transactionSchema.plugin(paginate);
+
+transactionSchema.index(
+  { reference: 1 },
+  { unique: true, partialFilterExpression: { reference: { $type: 'string' } } }
+);
 
 transactionSchema.pre('save', async function () {
   const transactions = this;

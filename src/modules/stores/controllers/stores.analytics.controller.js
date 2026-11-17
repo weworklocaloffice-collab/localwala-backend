@@ -21,7 +21,7 @@ const catchAsync = require('../../../utils/catchAsync');
 const analyticsService = require('../services/stores.analytics.service');
 
 const getOutletDashboard = catchAsync(async (req, res) => {
-  const dashboard = await analyticsService.getOutletDashboard(req.outletId, req.query);
+  const dashboard = await analyticsService.getOutletDashboard(req.outletId, req.query, req.role);
   res.status(httpStatus.OK).send(dashboard);
 });
 

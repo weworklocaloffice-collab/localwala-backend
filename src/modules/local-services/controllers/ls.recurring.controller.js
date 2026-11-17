@@ -66,6 +66,25 @@ const listOccurrences = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send(await Occurrence.paginate(filter, options));
 });
 
+const partnerListAgreements = catchAsync(async (req, res) => {
+  const Provider = require('../models/localservice.provider.model');
+  const provider = await Provider.findOne({ owner: req.user._id });
+  if (!provider) return res.status(httpStatus.OK).send({ results: [], totalResults: 0 });
+  const filter = { provider: provider._id, ...pick(req.query, ['status']) };
+  const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  res.status(httpStatus.OK).send(await Agreement.paginate(filter, options));
+});
+
+const partnerListOccurrences = catchAsync(async (req, res) => {
+  const Provider = require('../models/localservice.provider.model');
+  const provider = await Provider.findOne({ owner: req.user._id });
+  if (!provider) return res.status(httpStatus.OK).send({ results: [], totalResults: 0 });
+  const agreementIds = await Agreement.find({ provider: provider._id }).distinct('_id');
+  const filter = { agreement: { $in: agreementIds }, ...pick(req.query, ['status']) };
+  const options = pick(req.query, ['sortBy', 'limit', 'page']);
+  res.status(httpStatus.OK).send(await Occurrence.paginate(filter, options));
+});
+
 const adminListAgreements = catchAsync(async (req, res) => {
   const filter = pick(req.query, ['status', 'provider', 'customer']);
   const options = pick(req.query, ['sortBy', 'limit', 'page']);
@@ -82,4 +101,4 @@ const adminSetAgreementStatus = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ agreement: doc });
 });
 
-module.exports = { createAgreement, listAgreements, setAgreementStatus, listOccurrences, adminListAgreements, adminSetAgreementStatus };
+module.exports = { createAgreement, listAgreements, setAgreementStatus, listOccurrences, partnerListAgreements, partnerListOccurrences, adminListAgreements, adminSetAgreementStatus };

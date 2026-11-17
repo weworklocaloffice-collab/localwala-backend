@@ -37,9 +37,10 @@ function buildBookingKey(bookingId, rule, event) {
   return `lsrev:${bookingId}:${rule.code}:v${rule.version}:${event}`;
 }
 
-function buildReversalKey(bookingId, rule, reason) {
+function buildReversalKey(bookingId, rule, reason, reference) {
   const safe = String(reason || 'cancel').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'cancel';
-  return `lsrev:${bookingId}:${rule.code}:v${rule.version}:REVERSAL:${safe}`;
+  const ref = String(reference || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+  return `lsrev:${bookingId}:${rule.code}:v${rule.version}:REVERSAL:${safe}${ref ? `:${ref}` : ''}`;
 }
 
 async function applyRevenueForBooking(
@@ -107,14 +108,14 @@ module.exports = { applyRevenueForBooking, reverseRevenueForBooking, buildBookin
 /**
  * Reversal — never edits the original charge. Creates a NEW entry with
  * negative amounts per the rule's refundReversalPolicy:
- *  - full_reverse: mirror entire fee+commission
+ *  - full_reverse: mirror the fee+commission for a full refund
  *  - prorated: scale by refundRatio (0-1)
  *  - no_reverse: returns null (e.g. post-completion no-show keeps fee)
- * Partial refunds pass refundRatio + reason; original stays `applied`,
- * reversal row carries the audit trail.
+ * Partial refunds scale both reversing policies by refundRatio; the original
+ * stays `applied`, and the reversal row carries the audit trail.
  */
 async function reverseRevenueForBooking(
-  { bookingId, reason = 'cancel', refundRatio = 1, actorId = null },
+  { bookingId, reason = 'cancel', refundRatio = 1, refundId = null, actorId = null },
   { EntryModel } = {}
 ) {
   if (!bookingId) throw new ApiError(httpStatus.BAD_REQUEST, 'bookingId required');
@@ -125,9 +126,14 @@ async function reverseRevenueForBooking(
   for (const ch of charges) {
     const policy = (ch.ruleSnapshot && ch.ruleSnapshot.refundReversalPolicy) || ch.refundReversalPolicy || 'full_reverse';
     if (policy === 'no_reverse') continue;
-    const ratio = policy === 'prorated' ? Math.min(1, Math.max(0, Number(refundRatio) || 0)) : 1;
+    const ratio = Math.min(1, Math.max(0, Number(refundRatio) || 0));
     const snap = ch.ruleSnapshot || {};
-    const key = buildReversalKey(bookingId, { code: snap.code || 'RULE', version: snap.version || 1 }, reason);
+    const key = buildReversalKey(
+      bookingId,
+      { code: snap.code || 'RULE', version: snap.version || 1 },
+      reason,
+      refundId || `ratio-${Math.round(ratio * 10000)}`
+    );
     const neg = (v) => -Math.round(Number(v) * ratio * 100) / 100;
     try {
       const rev = await Entry.create({
@@ -136,7 +142,7 @@ async function reverseRevenueForBooking(
         provider: ch.provider || undefined,
         paymentId: ch.paymentId || undefined,
         rule: ch.rule,
-        ruleSnapshot: { ...snap, reversedFrom: String(ch._id || ch.idempotencyKey), reversalReason: reason, refundRatio: ratio },
+        ruleSnapshot: { ...snap, reversedFrom: String(ch._id || ch.idempotencyKey), reversalReason: reason, refundRatio: ratio, refundId: refundId || undefined },
         labourAmount: 0,
         partsAmount: 0,
         serviceValue: 0,

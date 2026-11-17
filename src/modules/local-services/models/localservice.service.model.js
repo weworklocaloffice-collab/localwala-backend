@@ -35,7 +35,9 @@ const localServiceServiceSchema = mongoose.Schema(
     category: { type: mongoose.SchemaTypes.ObjectId, ref: 'LocalServiceCategory', required: true },
     categoryKey: { type: String, required: false, lowercase: true, trim: true },
     bookingMode: { type: String, required: true, enum: BOOKING_MODES },
-    pricingMode: {
+    // Booking modes a client may request for this service. Empty means only
+    // the canonical `bookingMode` is allowed.
+    allowedBookingModes: { type: [String], required: false, default: [] },    pricingMode: {
       type: String,
       required: true,
       enum: ['FIXED', 'VARIANT', 'HOURLY', 'UNIT_BASED', 'DATE_BASED', 'QUOTE', 'INSPECTION_QUOTE'],

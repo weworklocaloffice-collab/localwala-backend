@@ -18,6 +18,7 @@
 
 const { status: httpStatus } = require('http-status');
 const catchAsync = require('../../../utils/catchAsync');
+const ApiError = require('../../../utils/ApiError');
 const pick = require('../../../utils/pick');
 const { LocalServiceStaff, LocalServiceAvailabilityRule, LocalServiceCoverage } = require('../models/localservice.staff.model');
 const Provider = require('../models/localservice.provider.model');
@@ -25,9 +26,7 @@ const Provider = require('../models/localservice.provider.model');
 const ownProvider = async (userId) => {
   const provider = await Provider.findOne({ owner: userId, status: 'ACTIVE' });
   if (!provider) {
-    const e = new Error('Provider not active');
-    e.statusCode = 403;
-    throw e;
+    throw new ApiError(httpStatus.FORBIDDEN, 'Provider not active');
   }
   return provider;
 };
@@ -35,9 +34,7 @@ const ownProvider = async (userId) => {
 const ownProviderProfile = async (userId) => {
   const provider = await Provider.findOne({ owner: userId }).sort({ createdAt: -1 });
   if (!provider) {
-    const e = new Error('No provider profile');
-    e.statusCode = 404;
-    throw e;
+    throw new ApiError(httpStatus.NOT_FOUND, 'No provider profile');
   }
   return provider;
 };
@@ -74,11 +71,16 @@ const updateStaff = catchAsync(async (req, res) => {
     { new: true, runValidators: true }
   );
   if (!doc) {
-    const e = new Error('Staff not found');
-    e.statusCode = 404;
-    throw e;
+    throw new ApiError(httpStatus.NOT_FOUND, 'Staff not found');
   }
   res.status(httpStatus.OK).send({ staff: doc });
+});
+
+const listMyAvailability = catchAsync(async (req, res) => {
+  const provider = await Provider.findOne({ owner: req.user._id });
+  if (!provider) return res.status(httpStatus.OK).send({ results: [] });
+  const docs = await LocalServiceAvailabilityRule.find({ provider: provider._id });
+  res.status(httpStatus.OK).send({ results: docs });
 });
 
 const upsertAvailability = catchAsync(async (req, res) => {
@@ -107,4 +109,4 @@ const getCoverage = catchAsync(async (req, res) => {
   res.status(httpStatus.OK).send({ coverage: doc });
 });
 
-module.exports = { createStaff, listStaff, updateStaff, upsertAvailability, upsertCoverage, getCoverage, adminListAvailabilityRules };
+module.exports = { createStaff, listStaff, updateStaff, listMyAvailability, upsertAvailability, upsertCoverage, getCoverage, adminListAvailabilityRules };

@@ -49,6 +49,7 @@ const POLICY_DEFAULTS = Object.freeze({
   depositPercent: 0,
   taxPercent: 0,
   taxLabel: 'Tax',
+  minimumCharge: 0,
   allowedPaymentModes: [],
 });
 

@@ -115,6 +115,9 @@ const refundSchema = mongoose.Schema(
     requestedAmount: moneyField(0),
     approvedAmount: moneyField(0),
     completedAmount: moneyField(0),
+    // Amount reserved against the booking before the cash leg. Kept while the
+    // refund is processing so a retry never reserves the same money twice.
+    reservedAmount: moneyField(0),
     reason: { type: String, required: true, trim: true },
     policyVersion: { type: Number, required: false },
     status: {
@@ -124,6 +127,8 @@ const refundSchema = mongoose.Schema(
       default: 'requested',
     },
     gatewayRefundReference: { type: String, required: false, trim: true },
+    // Lease marker so only one executor owns the processing state.
+    processingAt: { type: Date, required: false },
     // Why the cash leg failed, so a retry is an informed action.
     failureReason: { type: String, required: false, trim: true },
     completedAt: { type: Date, required: false },

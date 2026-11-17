@@ -46,8 +46,28 @@ const { toJSON, paginate } = require('../../../models/plugins');
  * admin-controlled rather than derived. A reason mis-set to `autoReject: true`
  * silently throws away good stock.
  */
-const REASON_CATEGORIES = ['freshness', 'temperature', 'contamination', 'packaging', 'weight_shortfall', 'documentation'];
+const REASON_CATEGORIES = [
+  'freshness',
+  'temperature',
+  'contamination',
+  'packaging',
+  'weight_shortfall',
+  'documentation',
+  // The seed vocabulary includes a cut/spec mismatch and a genuine catch-all. Neither
+  // fits the original six, and forcing them into `documentation` would put wrong-cut
+  // rejects in the reporting bucket for paperwork failures.
+  'specification',
+  'other',
+];
 const REASON_SEVERITIES = ['hard', 'soft'];
+const REASON_FAULTS = ['supplier', 'platform', 'transporter', 'unknown'];
+const REASON_WASTAGE_CAUSES = [
+  'SPOILAGE',
+  'QUALITY_REJECTION',
+  'EXPIRY',
+  'PACKAGING_DAMAGE',
+  'OTHER',
+];
 
 const jhatkaQualityRejectionReasonSchema = mongoose.Schema(
   {
@@ -105,7 +125,7 @@ const jhatkaQualityRejectionReasonSchema = mongoose.Schema(
     fault: {
       type: String,
       required: false,
-      enum: ['supplier', 'platform', 'transporter', 'unknown'],
+      enum: REASON_FAULTS,
       default: 'unknown',
     },
     /**
@@ -115,7 +135,7 @@ const jhatkaQualityRejectionReasonSchema = mongoose.Schema(
     wastageCause: {
       type: String,
       required: false,
-      enum: ['SPOILAGE', 'QUALITY_REJECTION', 'EXPIRY', 'PACKAGING_DAMAGE', 'OTHER'],
+      enum: REASON_WASTAGE_CAUSES,
       default: 'QUALITY_REJECTION',
     },
     /** Whether rejection should count against the supplier's quality rating. */
@@ -156,6 +176,8 @@ jhatkaQualityRejectionReasonSchema.index({ fault: 1, status: 1 });
 
 jhatkaQualityRejectionReasonSchema.statics.CATEGORIES = REASON_CATEGORIES;
 jhatkaQualityRejectionReasonSchema.statics.SEVERITIES = REASON_SEVERITIES;
+jhatkaQualityRejectionReasonSchema.statics.FAULTS = REASON_FAULTS;
+jhatkaQualityRejectionReasonSchema.statics.WASTAGE_CAUSES = REASON_WASTAGE_CAUSES;
 
 /**
  * Does a failure of this reason require a human decision?

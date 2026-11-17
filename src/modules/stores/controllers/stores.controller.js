@@ -91,6 +91,7 @@ const myScope = catchAsync(async (req, res) => {
     activeOutletId: req.outletId || null,
     activeChainId: req.chainId || null,
     role: req.role,
+    permissions: profileService.ROLE_PERMISSIONS[req.role] || [],
     isDriver: !!req.isStoreDriver,
   });
 });
@@ -225,7 +226,13 @@ const myChainDetail = catchAsync(async (req, res) => {
 const myCapabilities = catchAsync(async (req, res) => {
   const state = await lifecycleService.subscriptionStateFor(req.outlet);
   const caps = lifecycleService.capabilitiesFor(state);
-  res.send(pick({ subscriptionState: state, capabilities: caps }, ['subscriptionState', 'capabilities']));
+  // `role` + `permissions` let the app hide actions this actor cannot perform
+  // (§6.23). That gating is advisory only: every route re-checks server-side.
+  res.send({
+    ...pick({ subscriptionState: state, capabilities: caps }, ['subscriptionState', 'capabilities']),
+    role: req.role,
+    permissions: profileService.ROLE_PERMISSIONS[req.role] || [],
+  });
 });
 
 /** Change this outlet's status. OWNER-ONLY for suspend/reactivate. */

@@ -34,6 +34,7 @@ router.route('/occurrences').get(appAuth('localservices_customer_read'), recurri
 router.route('/leads').post(appAuth('localservices_customer_read'), validate(V.leadBody), lead.createLead).get(appAuth('localservices_customer_read'), lead.listLeads);
 
 // Partner: qualify/invalidate leads + subscribe to plan
+router.route('/partner/leads').get(appAuth('localservices_partner_read'), lead.listLeads);
 router.route('/leads/:id/qualify').post(appAuth('localservices_partner_read'), validate(V.idParam), lead.qualifyLead);
 router.route('/leads/:id/invalidate').post(appAuth('localservices_partner_read'), validate(V.idParam), lead.invalidateLead);
 router.route('/subscriptions').get(appAuth('localservices_partner_read'), growth.listPartnerSubscriptions).post(appAuth('localservices_partner_read'), validate(V.planSubscribeBody), growth.subscribe);

@@ -171,6 +171,47 @@ const payoutPayBody = {
     .unknown(true),
 };
 
+const payableGenerateBody = {
+  body: Joi.object()
+    .keys({
+      outlet: objectId.required(),
+      supplier: objectId.required(),
+      from: Joi.date().required(),
+      to: Joi.date().required(),
+      label: Joi.string().trim().max(160).allow('', null),
+      payoutMethod: Joi.string().valid('bank', 'cash'),
+      tdsApplicable: Joi.boolean(),
+      tdsRatePercent: Joi.number().min(0).max(100),
+      notes: Joi.string().trim().max(500).allow('', null),
+    })
+    .unknown(true),
+};
+
+const payableApproveBody = {
+  body: Joi.object()
+    .keys({
+      notes: Joi.string().trim().max(500).allow('', null),
+    })
+    .unknown(true),
+};
+
+const payableReasonBody = {
+  body: Joi.object()
+    .keys({
+      reason: Joi.string().trim().min(3).max(500).required(),
+    })
+    .unknown(true),
+};
+
+const payablePayBody = {
+  body: Joi.object()
+    .keys({
+      paymentReference: Joi.string().trim().min(3).max(120).required(),
+      notes: Joi.string().trim().max(500).allow('', null),
+    })
+    .unknown(true),
+};
+
 const refundRetryBody = {
   body: Joi.object()
     .keys({
@@ -224,6 +265,10 @@ module.exports = {
   settlementDecisionBody,
   payoutApproveBody,
   payoutPayBody,
+  payableGenerateBody,
+  payableApproveBody,
+  payableReasonBody,
+  payablePayBody,
   refundRetryBody,
   refundResolveBody,
   commissionRuleAdminBody,

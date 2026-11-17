@@ -42,7 +42,28 @@
 
 const { status: httpStatus } = require('http-status');
 const ApiError = require('../../../utils/ApiError');
-const { toPaise } = require('../../../utils/money');
+const { toPaise, debitMoneyField } = require('../../../utils/money');
+
+const settleTransaction = async (Transactions, transaction, confirmed) => {
+  if (!transaction) return;
+  if (typeof transaction.save === 'function') {
+    transaction.confirmed = confirmed;
+    transaction.status = confirmed;
+    await transaction.save();
+    return;
+  }
+  if (transaction._id && typeof Transactions.updateOne === 'function') {
+    await Transactions.updateOne(
+      { _id: transaction._id },
+      { $set: { confirmed, status: confirmed } }
+    );
+  }
+};
+
+const findReplay = async (Transactions, reference) => {
+  if (!reference || typeof Transactions.findOne !== 'function') return null;
+  return Transactions.findOne({ reference });
+};
 
 /**
  * Debit a wallet and pay the booking.
@@ -52,11 +73,12 @@ const { toPaise } = require('../../../utils/money');
  * @param {string} opts.userId wallet holder
  * @param {string} opts.bookingCode reference written on the transaction
  * @param {string} [opts.reason] human reason
+ * @param {string} [opts.idempotencyKey] retry-safe ledger reference
  * @param {object} [deps] injectable models/services (tests)
  * @returns {Promise<{transactionId: string, balance: number, amount: number}>}
  */
 async function debitWallet(
-  { amountRupees, userId, bookingCode, reason } = {},
+  { amountRupees, userId, bookingCode, reason, idempotencyKey } = {},
   { WalletModel, TransactionModel } = {}
 ) {
   const Wallet = WalletModel || require('../../../models/wallet.model');
@@ -67,28 +89,77 @@ async function debitWallet(
     throw new ApiError(httpStatus.BAD_REQUEST, 'amountRupees must be greater than zero');
   }
   const amountPaise = toPaise(amount);
+  const reference = idempotencyKey ? String(idempotencyKey).slice(0, 200) : undefined;
 
   const wallet = await Wallet.findOne({ holderId: userId });
   if (!wallet) {
     throw new ApiError(httpStatus.NOT_FOUND, 'Wallet not found for this customer');
   }
 
-  // Guarded atomic debit: raw paise, no setter, no overdraft.
-  const { debitMoneyField } = require('../../../utils/money');
+  const replay = await findReplay(Transactions, reference);
+  if (replay) {
+    if (replay.confirmed === true) {
+      const fresh = await Wallet.findById(wallet._id);
+      return {
+        transactionId: replay.uuid || String(replay._id),
+        balance: Number((fresh ? fresh.balance : 0) || 0),
+        amount: Number(replay.amount || amount),
+        deduped: true,
+      };
+    }
+    throw new ApiError(httpStatus.CONFLICT, 'WALLET_PAYMENT_IN_PROGRESS');
+  }
+
+  let transaction = null;
+  if (reference) {
+    try {
+      transaction = await Transactions.create({
+        payableId: userId,
+        walletId: wallet._id,
+        type: 'withdrawal',
+        amount,
+        reference,
+        confirmed: false,
+        meta: [{ reason: reason || 'Local Services booking payment', bookingCode: bookingCode || '' }],
+        status: false,
+      });
+    } catch (error) {
+      if (error && error.code === 11000) {
+        const duplicate = await findReplay(Transactions, reference);
+        if (duplicate && duplicate.confirmed === true) {
+          const fresh = await Wallet.findById(wallet._id);
+          return {
+            transactionId: duplicate.uuid || String(duplicate._id),
+            balance: Number((fresh ? fresh.balance : 0) || 0),
+            amount: Number(duplicate.amount || amount),
+            deduped: true,
+          };
+        }
+        throw new ApiError(httpStatus.CONFLICT, 'WALLET_PAYMENT_IN_PROGRESS');
+      }
+      throw error;
+    }
+  }
+
   const { debited } = await debitMoneyField(Wallet, wallet._id, 'balance', amountPaise);
   if (!debited) {
+    await settleTransaction(Transactions, transaction, false);
     throw new ApiError(httpStatus.CONFLICT, 'INSUFFICIENT_WALLET_BALANCE');
   }
 
-  const transaction = await Transactions.create({
-    payableId: userId,
-    walletId: wallet._id,
-    type: 'withdrawal',
-    amount,
-    confirmed: true,
-    meta: [{ reason: reason || 'Local Services booking payment', bookingCode: bookingCode || '' }],
-    status: true,
-  });
+  if (transaction) {
+    await settleTransaction(Transactions, transaction, true);
+  } else {
+    transaction = await Transactions.create({
+      payableId: userId,
+      walletId: wallet._id,
+      type: 'withdrawal',
+      amount,
+      confirmed: true,
+      meta: [{ reason: reason || 'Local Services booking payment', bookingCode: bookingCode || '' }],
+      status: true,
+    });
+  }
 
   const fresh = await Wallet.findById(wallet._id);
   return {

@@ -73,6 +73,22 @@ const resolveOutlet = async (req, res, next) => {
 
     const result = await profileService.resolveActorOutlet(req.user._id, hinted);
 
+    // A driver resolves to an outlet too (they need one for their deliveries), but the
+    // partner surface is not theirs. Hiding it behind empty objects is not authorization,
+    // so they get an explicit 403 here rather than on whichever route remembers to check.
+    // Drivers use the `appAuth` driver routes instead, which enforce outlet tenancy in
+    // `currentDriver()`. `storeScope` is exempt on purpose: it is the read-only scope map
+    // and does not expose outlet data.
+    if (result.role === 'driver') {
+      throw new ApiError(
+        httpStatus.FORBIDDEN,
+        'A store driver may not use partner routes',
+        true,
+        'STORE_DRIVER_PARTNER_FORBIDDEN',
+        { role: result.role }
+      );
+    }
+
     req.outletId = result.outlet._id.toString();
     req.chainId = result.chain._id.toString();
     req.role = result.role;
@@ -93,6 +109,33 @@ const resolveOutlet = async (req, res, next) => {
 };
 
 /**
+ * Refuse the route when the resolved assignment's ROLE may not perform it.
+ *
+ * The route declares platform-era right names (`stores_order_manage`, ...);
+ * `profileService.canRoute` translates them into §6.23 role permissions, applies
+ * wildcard/owner-only rules and fails closed on a right that is not in the map.
+ * Scope was already checked by `resolveOutlet` / `resolveActorScope`; this is the
+ * second, orthogonal gate: a manager inside their own outlet still may not read
+ * the settlement ledger.
+ *
+ * @param {Object} req
+ * @param {string[]} requiredRights
+ */
+const assertRouteRights = (req, requiredRights) => {
+  for (const right of requiredRights) {
+    if (!profileService.canRoute(req.role, right)) {
+      throw new ApiError(
+        httpStatus.FORBIDDEN,
+        `Role '${req.role || 'unknown'}' may not use this route`,
+        true,
+        '',
+        { code: 'STORE_PERMISSION_DENIED', role: req.role, right }
+      );
+    }
+  }
+};
+
+/**
  * Authenticate, then pin the outlet — in that order.
  *
  * They cannot be reversed: `resolveOutlet` needs `req.user`, which only exists once
@@ -100,19 +143,28 @@ const resolveOutlet = async (req, res, next) => {
  * `appAuth(...)` so the outlet is always resolved and a route cannot accidentally opt
  * out of it.
  *
+ * `requiredRights` are enforced after the outlet resolves, against the role chosen
+ * for that outlet, through `profileService.canRoute`.
+ *
  * @param {...string} requiredRights
  * @returns {Function} Express middleware
  */
 const storeAuth = (...requiredRights) => async (req, res, next) => {
-  // Option B: authorization comes from the StoreRoleAssignment (resolved
-  // below), not from the platform User.role rights. `requiredRights` is
-  // retained for call-site compatibility but no longer gates access �?"
-  // the service layer enforces specific permissions via assertCan.
   return appAuth()(req, res, async (authError) => {
     if (authError) {
       return next(authError);
     }
-    return resolveOutlet(req, res, next);
+    return resolveOutlet(req, res, (resolveError) => {
+      if (resolveError) {
+        return next(resolveError);
+      }
+      try {
+        assertRouteRights(req, requiredRights);
+        return next();
+      } catch (error) {
+        return next(error);
+      }
+    });
   });
 };
 
@@ -126,7 +178,17 @@ const storeAuthSuspendedOk = (...requiredRights) => async (req, res, next) => {
     if (authError) {
       return next(authError);
     }
-    return resolveOutlet(req, res, next);
+    return resolveOutlet(req, res, (resolveError) => {
+      if (resolveError) {
+        return next(resolveError);
+      }
+      try {
+        assertRouteRights(req, requiredRights);
+        return next();
+      } catch (error) {
+        return next(error);
+      }
+    });
   });
 };
 
@@ -167,6 +229,7 @@ const storeScope = (...requiredRights) => async (req, res, next) => {
       req.assignment = scope.assignment;
       req.isStoreDriver = scope.isDriver;
       // Deliberately NOT set: outletId, chainId, outlet, chain. See the note above.
+      assertRouteRights(req, requiredRights);
       return next();
     } catch (error) {
       return next(
@@ -212,4 +275,5 @@ module.exports = {
   storeScope,
   requireRole,
   appAuth,
+  assertRouteRights,
 };

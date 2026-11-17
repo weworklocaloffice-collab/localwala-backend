@@ -67,9 +67,6 @@ router.route('/bookings/:id/payment').get(appAuth('localservices_customer_read')
 
 router.route('/bookings/:id/pay').post(appAuth('localservices_customer_read'), validate(V.paymentBody), controller.initiatePayment);
 
-// Target status is route param (realestate pattern), allow-listed by service table.
-router.route('/bookings/:id/:status').post(appAuth('localservices_customer_read'), validate(V.transitionParam), controller.transitionBooking);
-
 router.route('/bookings/:id/quote').post(appAuth('localservices_partner_read'), validate(V.quoteBody), controller.submitQuote);
 
 router.route('/quotes/:id/accept').post(appAuth('localservices_customer_read'), validate(V.bookingIdParam), controller.acceptQuote);
@@ -85,7 +82,12 @@ router.route('/bookings/:id/review').post(appAuth('localservices_customer_read')
 router.route('/bookings/:id/invoice').get(appAuth('localservices_customer_read'), validate(V.bookingIdParam), controller.getInvoice);
 router.route('/bookings/:id/invoice/pdf').get(appAuth('localservices_customer_read'), validate(V.bookingIdParam), controller.getInvoicePdf);
 
-router.route('/reviews').get(controller.listReviews);
+// Target status is a route param + Joi allow-list; keep this generic route last.
+router.route('/bookings/:id/:status').post(appAuth('localservices_customer_read'), validate(V.transitionParam), controller.transitionBooking);
+
+router.route('/reviews').get(validate(V.reviewListQuery), controller.listReviews);
+
+router.route('/my-reviews').get(appAuth('localservices_customer_read'), controller.listMyReviews);
 
 router.route('/complaints').post(appAuth('localservices_customer_read'), validate(V.complaintBody), controller.createComplaint).get(appAuth('localservices_customer_read'), controller.listMyComplaints);
 

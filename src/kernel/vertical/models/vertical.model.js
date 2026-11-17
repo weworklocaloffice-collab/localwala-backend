@@ -17,7 +17,7 @@
  */
 
 const mongoose = require('mongoose');
-const { toJSON, paginate, slugGenerator } = require('../../../models/plugins');
+const { toJSON, paginate } = require('../../../models/plugins');
 
 /**
  * Vertical registry.
@@ -111,10 +111,9 @@ const verticalSchema = mongoose.Schema(
   }
 );
 
-// add plugin that converts mongoose to json & convert to unique slug
+// add plugin that converts mongoose to json
 verticalSchema.plugin(toJSON);
 verticalSchema.plugin(paginate);
-verticalSchema.plugin(slugGenerator);
 // `unique: true` is declared on the field above, so it is not repeated here —
 // declaring it in both places makes Mongoose warn about a duplicate index on every
 // boot.

@@ -180,30 +180,30 @@ router.get('/payouts/:id', moneyAuth, requireRole('owner'), validate(V.idParam),
 /**
  * GET /jhatka/partner/payables
  *
- * Supplier payables for this outlet's business.
+ * Supplier payables for THIS outlet. Read-only: LocalWala finance generates,
+ * approves, pays, disputes and voids statements. A partner must not settle its
+ * own payable - the old POST /payables/:id/pay did, against fields that do not
+ * exist on the model, and is removed rather than left as a second money path.
+ *
+ * Lean reads are raw PAISE (the list convention). The Admin screen formats
+ * them; this endpoint deliberately does not mutate money values.
  */
 router.get('/payables', moneyAuth, requireRole('inventory_staff', 'manager', 'owner'), async (req, res, next) => {
   try {
-    const outlet = await JhatkaOutlet.findById(req.outletId).select('business').lean();
-    if (!outlet) {
-      throw new ApiError(httpStatus.NOT_FOUND, 'Outlet not found');
-    }
-
     const { status, supplier, fromDate, toDate, page = 1, limit = 50 } = req.query;
 
-    const match = { business: outlet.business };
+    const match = { outlet: req.outletId };
     if (status) match.status = status;
     if (supplier) match.supplier = supplier;
     if (fromDate || toDate) {
-      match.invoiceDate = {};
-      if (fromDate) match.invoiceDate.$gte = new Date(fromDate);
-      if (toDate) match.invoiceDate.$lte = new Date(toDate);
+      match['period.from'] = {};
+      if (fromDate) match['period.from'].$gte = new Date(fromDate);
+      if (toDate) match['period.from'].$lte = new Date(toDate);
     }
 
     const payables = await JhatkaSupplierPayable.find(match)
       .populate('supplier', 'name code')
-      .populate('receipt', 'receivedAt status')
-      .sort({ invoiceDate: -1 })
+      .sort({ 'period.from': -1 })
       .skip((page - 1) * limit)
       .limit(limit)
       .lean();
@@ -212,65 +212,11 @@ router.get('/payables', moneyAuth, requireRole('inventory_staff', 'manager', 'ow
       payables: payables.map((p) => ({
         ...p,
         id: String(p._id),
+        outlet: String(p.outlet),
         business: String(p.business),
         supplier: p.supplier ? { ...p.supplier, id: String(p.supplier._id) } : null,
-        receipt: p.receipt ? { ...p.receipt, id: String(p.receipt._id) } : null,
       })),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * POST /jhatka/partner/payables/:id/pay
- *
- * Mark payable as paid.
- * Body: { paymentReference, paidAmountPaise, notes }
- * Role: owner only
- */
-router.post('/payables/:id/pay', moneyAuth, requireRole('owner'), validate(V.idParam), validate(V.payBody), async (req, res, next) => {
-  try {
-    const payable = await JhatkaSupplierPayable.findById(req.params.id);
-    if (!payable) {
-      throw new ApiError(httpStatus.NOT_FOUND, 'Payable not found');
-    }
-    if (String(payable.business) !== String((await JhatkaOutlet.findById(req.outletId).select('business').lean()).business)) {
-      throw new ApiError(httpStatus.FORBIDDEN, 'Payable not in your business');
-    }
-    if (payable.status === 'paid') {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Payable already paid');
-    }
-
-    const { paymentReference, paidAmountPaise, notes } = req.body;
-    const payAmount = Number(paidAmountPaise || payable.amountPaise);
-
-    if (payAmount > payable.amountPaise - payable.paidPaise) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Payment exceeds outstanding amount');
-    }
-
-    payable.paidPaise += payAmount;
-    payable.status = payable.paidPaise >= payable.amountPaise ? 'paid' : 'partially_paid';
-    payable.payments.push({
-      amountPaise: payAmount,
-      paymentReference,
-      paidAt: new Date(),
-      paidBy: req.user._id,
-      notes,
-    });
-    if (payable.status === 'paid') {
-      payable.paidAt = new Date();
-      payable.paidBy = req.user._id;
-    }
-    await payable.save();
-
-    res.json({
-      payable: {
-        id: String(payable._id),
-        status: payable.status,
-        paidPaise: payable.paidPaise,
-        outstandingPaise: payable.amountPaise - payable.paidPaise,
-      },
+      count: payables.length,
     });
   } catch (error) {
     next(error);

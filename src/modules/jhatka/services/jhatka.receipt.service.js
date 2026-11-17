@@ -221,25 +221,157 @@ function buildReceiptDocument({
 
   return {
     receipt,
-    // Response DTO – only the fields the caller sees.
-    receiptResponse: {
-      id: String(receipt._id),
-      receiptNo: receipt.receiptNo,
-      // Draft on purpose: stock has NOT moved yet.
-      status: receipt.status,
-      qualityStatus: receipt.qualityStatus,
-      totals: receipt.totals,
-      rejectionRatePct: receipt.rejectionRatePct,
-      lines: receipt.lines.map((l) => ({
-        rawSku: l.rawSku,
-        receivedQty: l.receivedQty,
-        acceptedQty: l.acceptedQty,
-        rejectedQty: l.rejectedQty,
-        qualityStatus: l.qualityStatus,
-      })),
-      nextStep: 'POST to /inventory/receipts/:receipt/post to move stock',
-    },
+    // Response DTO �?" only the fields the caller sees.
+    receiptResponse: receiptDecisionResponse(receipt),
   };
+}
+
+/**
+ * The receipt shape returned after a quality decision. Same fields as the draft
+ * response so the client does not switch models between intake and decision.
+ */
+function receiptDecisionResponse(receipt) {
+  return {
+    id: String(receipt._id),
+    receiptNo: receipt.receiptNo,
+    status: receipt.status,
+    qualityStatus: receipt.qualityStatus,
+    totals: receipt.totals,
+    rejectionRatePct: receipt.rejectionRatePct,
+    lines: (receipt.lines || []).map((l) => ({
+      id: String(l._id),
+      rawSku: l.rawSku,
+      receivedQty: l.receivedQty,
+      acceptedQty: l.acceptedQty,
+      rejectedQty: l.rejectedQty,
+      qualityStatus: l.qualityStatus,
+      payability: l.payability,
+      qualityNotes: l.qualityNotes,
+      rejectionReasons: l.rejectionReasons,
+      batch: l.batch,
+    })),
+    nextStep: 'POST to /inventory/receipts/:receipt/post to move stock',
+  };
+}
+
+const decisionError = (error) => {
+  const conflictCodes = new Set([
+    'REVERSE_BATCH_FIRST',
+    'LINE_ALREADY_REJECTED',
+    'LINE_ALREADY_DECIDED',
+    'RECEIPT_CANCELLED',
+    'RECEIPT_NOT_DRAFT',
+    'LINE_NOT_REJECTABLE',
+  ]);
+  if (error?.code === 'LINE_NOT_FOUND') {
+    return new ApiError(httpStatus.NOT_FOUND, error.message, true, '', { code: error.code });
+  }
+  if (conflictCodes.has(error?.code)) {
+    return new ApiError(httpStatus.CONFLICT, error.message, true, '', {
+      code: error.code,
+      ...(error.batchId ? { batchId: String(error.batchId) } : {}),
+    });
+  }
+  return new ApiError(httpStatus.BAD_REQUEST, error?.message || 'Receipt decision failed', true, '', {
+    code: error?.code || 'RECEIPT_DECISION_FAILED',
+  });
+};
+
+/**
+ * Decide one pending receipt line. The reasons are governed rows, not free text:
+ * a code the outlet can read on the picker and management can group in the
+ * rejection-rate report. Missing or inactive codes are refused rather than
+ * stored as unknown strings.
+ */
+async function resolveRejectionReasons({ models, rejectionReasons = [] }) {
+  const { JhatkaQualityRejectionReason } = models;
+  if (!JhatkaQualityRejectionReason) {
+    throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Rejection reasons are not available');
+  }
+
+  const codes = [];
+  const ids = [];
+  for (const entry of rejectionReasons) {
+    if (entry.code) codes.push(String(entry.code).trim().toLowerCase());
+    if (entry.reason) ids.push(entry.reason);
+  }
+
+  const or = [];
+  if (codes.length) or.push({ code: { $in: codes } });
+  if (ids.length) or.push({ _id: { $in: ids } });
+  if (!or.length) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'At least one rejection reason is required');
+  }
+
+  const found = await JhatkaQualityRejectionReason.find({ $or: or, status: true }).lean();
+  const byCode = new Map(found.map((r) => [r.code, r]));
+  const byId = new Map(found.map((r) => [String(r._id), r]));
+
+  return rejectionReasons.map((entry) => {
+    const reason = entry.code ? byCode.get(String(entry.code).trim().toLowerCase()) : byId.get(String(entry.reason));
+    if (!reason) {
+      const label = entry.code || entry.reason;
+      throw new ApiError(httpStatus.BAD_REQUEST, `Unknown or inactive rejection reason: ${label}`);
+    }
+    return {
+      reason: reason._id,
+      code: reason.code,
+      ...(entry.note ? { note: entry.note } : {}),
+    };
+  });
+}
+
+/**
+ * Active reasons for the receipt rejection picker. Only the fields an operator
+ * needs are returned; `autoReject` stays visible because it explains why a line
+ * may already be decided before the operator reached it.
+ */
+async function listRejectionReasons({ models }) {
+  const { JhatkaQualityRejectionReason } = models;
+  if (!JhatkaQualityRejectionReason) {
+    throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Rejection reasons are not available');
+  }
+
+  const reasons = await JhatkaQualityRejectionReason.find({ status: true })
+    .select('code label description category severity autoReject fault sortOrder')
+    .sort({ category: 1, sortOrder: 1, label: 1 })
+    .lean();
+
+  return {
+    reasons: reasons.map((reason) => ({
+      id: String(reason._id),
+      code: reason.code,
+      label: reason.label,
+      description: reason.description,
+      category: reason.category,
+      severity: reason.severity,
+      autoReject: !!reason.autoReject,
+      fault: reason.fault,
+    })),
+  };
+}
+
+async function acceptReceiptLine({ receipt, lineIndex, note, actor }) {
+  if (!receipt) throw new ApiError(httpStatus.NOT_FOUND, 'Receipt not found for this outlet');
+  try {
+    receipt.acceptLine(lineIndex, { note, actor: actor || {}, at: new Date() });
+  } catch (error) {
+    throw decisionError(error);
+  }
+  await receipt.save();
+  return { receipt: receiptDecisionResponse(receipt) };
+}
+
+async function rejectReceiptLine({ receipt, lineIndex, rejectionReasons, note, actor, models }) {
+  if (!receipt) throw new ApiError(httpStatus.NOT_FOUND, 'Receipt not found for this outlet');
+  const resolved = await resolveRejectionReasons({ models, rejectionReasons });
+  try {
+    receipt.rejectLine(lineIndex, resolved, { note, actor: actor || {}, at: new Date() });
+  } catch (error) {
+    throw decisionError(error);
+  }
+  await receipt.save();
+  return { receipt: receiptDecisionResponse(receipt) };
 }
 
 /**
@@ -370,6 +502,19 @@ async function postReceipt({ receipt, outlet, actor, body, models, nextNumber })
     throw new ApiError(httpStatus.CONFLICT, 'A cancelled receipt cannot be posted');
   }
 
+  // A pending line has no quality verdict. Posting it would either stock goods
+  // nobody passed or strand the line without a batch. Decide it first.
+  const pendingLineIndex = (receipt.lines || []).findIndex((l) => l.qualityStatus === 'pending');
+  if (pendingLineIndex !== -1) {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      'A quality decision is pending for this receipt - accept or reject the line first',
+      true,
+      '',
+      { code: 'QUALITY_DECISION_PENDING', lineIndex: pendingLineIndex }
+    );
+  }
+
   const outletId = outlet?._id || outlet;
   const business = outlet?.business || receipt.business;
   if (!business) {
@@ -389,6 +534,7 @@ async function postReceipt({ receipt, outlet, actor, body, models, nextNumber })
       let movements = 0;
 
       for (const line of receipt.lines || []) {
+        if (line.qualityStatus !== 'accepted' && line.qualityStatus !== 'partially_accepted') continue;
         const accepted = Number(line.acceptedQty?.value || 0);
         if (accepted <= 0) continue;
         const unit = line.acceptedQty?.unit || line.receivedQty?.unit;
@@ -434,6 +580,9 @@ async function postReceipt({ receipt, outlet, actor, body, models, nextNumber })
         }
         await batch.save({ session });
         batches.push(batch);
+        // Reverse traceability: a receipt line must point at the batch it created,
+        // otherwise Rule C cannot tell accepted stock from a still-rejectable line.
+        line.batch = batch._id;
 
         let item = await JhatkaInventoryItem.findOne({
           outlet: outletId,
@@ -543,4 +692,13 @@ async function postReceipt({ receipt, outlet, actor, body, models, nextNumber })
   });
 }
 
-module.exports = { buildReceiptDocument, createDraftReceipt, nextSeq, applyMovement, postReceipt };
+module.exports = {
+  buildReceiptDocument,
+  createDraftReceipt,
+  nextSeq,
+  applyMovement,
+  postReceipt,
+  listRejectionReasons,
+  acceptReceiptLine,
+  rejectReceiptLine,
+};

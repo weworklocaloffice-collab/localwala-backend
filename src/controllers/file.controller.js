@@ -61,18 +61,19 @@ const uploadImage = catchAsync(async (req, res) => {
     let awsSecretKeyCreds = '';
     let awsBucketNameCreds = '';
 
-    if (mediaSetting && mediaSetting.id) {
-      storageType = mediaSetting.name;
-      const {
-        gcsProjectId,
-        gcsBucketName,
-        azureConnectionString,
-        azureContainerName,
-        awsAccessKey,
-        awsRegionName,
-        awsSecretKey,
-        awsBucketName,
-      } = mediaSetting.credentials;
+     if (mediaSetting && mediaSetting.id) {
+       storageType = mediaSetting.name || 'local';
+       const creds = mediaSetting.credentials || {};
+       const {
+         gcsProjectId = '',
+         gcsBucketName = '',
+         azureConnectionString = '',
+         azureContainerName = '',
+         awsAccessKey = '',
+         awsRegionName = '',
+         awsSecretKey = '',
+         awsBucketName = '',
+       } = creds;
       gcsProjectIdCreds = gcsProjectId;
       gcsBucketNameCreds = gcsBucketName;
       azureConnectionStringCreds = azureConnectionString;
@@ -208,11 +209,11 @@ const uploadImage = catchAsync(async (req, res) => {
               `Error uploading file to AWS S3: ${awsErr.message}`
             );
           }
-        } else if (storageType === 'local') {
-          // LOCAL Upload
-          const locationName = req.file.path;
-          uploadedPath = locationName.replace('public/', '');
-          await mediaService.createMedia({
+         } else if (storageType === 'local' || !['gcs', 'azure', 'aws_s3'].includes(storageType)) {
+           // LOCAL Upload (default fallback)
+           const locationName = req.file.path || '';
+           uploadedPath = String(locationName).replace(/\\/g, '/').replace('public/', '');
+           await mediaService.createMedia({
             path: uploadedPath,
             uid: req && req.body && req.body.uid && req.body.uid !== null ? req.body.uid : null,
           });
@@ -224,11 +225,11 @@ const uploadImage = catchAsync(async (req, res) => {
           .send({ code: 400, message: innerErr.message, extra: '' });
       }
     });
-  } catch (outerErr) {
-    res
-      .status(outerErr.statusCode || httpStatus.INTERNAL_SERVER_ERROR)
-      .send({ code: 400, message: outerErr.message || 'Unexpected error', extra: '' });
-  }
+   } catch (outerErr) {
+     res
+       .status(outerErr && outerErr.statusCode ? outerErr.statusCode : httpStatus.INTERNAL_SERVER_ERROR)
+       .send({ code: 500, message: (outerErr && outerErr.message) ? outerErr.message : 'Unexpected error', extra: (outerErr && outerErr.stack) ? String(outerErr.stack).slice(0, 500) : '' });
+   }
 });
 
 module.exports = {

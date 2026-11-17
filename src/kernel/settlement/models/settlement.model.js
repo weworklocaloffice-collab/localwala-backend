@@ -102,6 +102,9 @@ const settlementSchema = mongoose.Schema(
     gatewayReference: {
       type: String,
     },
+    payoutStartedAt: {
+      type: Date,
+    },
     failureReason: {
       type: String,
     },

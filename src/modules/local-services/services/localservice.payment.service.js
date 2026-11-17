@@ -102,13 +102,17 @@ async function initiateBookingPayment(
       booking.status = 'PAYMENT_PENDING';
     }
     const debit = debitWallet || require('./localservice.wallet.payment').debitWallet;
+    const walletReference = `LS-WALLET-DEBIT:${booking._id}:${Math.round(amount * 100)}:${Math.round(
+      Number(booking.amountPaid || 0) * 100
+    )}`;
     const wallet = await debit({
       amountRupees: amount,
       userId: customerId,
       bookingCode: booking.bookingCode,
       reason: 'Local Services booking payment',
+      idempotencyKey: walletReference,
     });
-    const paid = (markPaidFromWallet || markBookingPaidFromWallet)(
+    const paid = await (markPaidFromWallet || markBookingPaidFromWallet)(
       {
         bookingId: booking._id,
         amount,
@@ -171,15 +175,37 @@ async function initiateBookingPayment(
   }
 
   const isBalance = Number(booking.amountPaid || 0) > 0;
-  const initiation = await PaymentInitiation.create({
-    user: customerId,
-    payment: config._id,
-    localServiceBookingId: String(booking._id),
-    localServiceBooking: booking._id,
-    amount,
-    paymentRef: paymentRef || `LS-BOOKING-${booking.bookingCode}${isBalance ? `-BAL-${Math.round(amount * 100)}` : ''}`,
-    paymentFrom: 'localServiceBooking',
-  });
+  const resolvedPaymentRef =
+    paymentRef ||
+    `LS-BOOKING-${booking.bookingCode}${isBalance ? `-BAL-${Math.round(amount * 100)}` : ''}`;
+  let initiation;
+  try {
+    initiation = await PaymentInitiation.create({
+      user: customerId,
+      payment: config._id,
+      localServiceBookingId: String(booking._id),
+      localServiceBooking: booking._id,
+      amount,
+      paymentRef: resolvedPaymentRef,
+      paymentFrom: 'localServiceBooking',
+    });
+  } catch (error) {
+    if (!error || error.code !== 11000) throw error;
+    initiation = await PaymentInitiation.findOne({
+      paymentFrom: 'localServiceBooking',
+      paymentRef: resolvedPaymentRef,
+    });
+    if (!initiation) throw error;
+    if (['cancelled', 'failed'].includes(initiation.status)) {
+      initiation.status = 'initiated';
+      initiation.amount = amount;
+      initiation.user = customerId;
+      initiation.payment = config._id;
+      initiation.localServiceBookingId = String(booking._id);
+      initiation.localServiceBooking = booking._id;
+      if (typeof initiation.save === 'function') await initiation.save();
+    }
+  }
 
   try {
     const outbox = require('./localservice.outbox.service');

@@ -52,7 +52,7 @@ const localServiceProviderSchema = mongoose.Schema(
     providerType: {
       type: String,
       required: false,
-      enum: ['independent', 'business', 'salon', 'hotel', 'rental', 'trainer', 'multi_location'],
+      trim: true,
       default: 'independent',
     },
     serviceKeys: { type: [String], required: false, default: [] },

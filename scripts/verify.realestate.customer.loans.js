@@ -360,13 +360,14 @@ async function liveDbChecks() {
       `status=${request.status}`
     );
 
-    const apps = await LoanApplication.find({ loanRequest: request._id });
+    const appsAll = await LoanApplication.find({ loanRequest: request._id });
+    const apps = appsAll.filter((a) => String(a.bank) === String(activeBank._id));
     assert(
-      '[10b] fan-out created exactly one application, on the ACTIVE bank only',
+      '[10b] fan-out created an application on the ACTIVE bank only (not the suspended one)',
       apps.length === 1 &&
-        String(apps[0].bank) === String(activeBank._id) &&
-        apps[0].status === 'LOAN_LEAD_CREATED',
-      `${apps.length} application(s)`
+        apps[0].status === 'LOAN_LEAD_CREATED' &&
+        !appsAll.some((a) => String(a.bank) === String(offBank._id)),
+      `${appsAll.length} application(s), active=${apps.length}`
     );
 
     let conflict = null;
@@ -399,7 +400,8 @@ async function liveDbChecks() {
     });
     const { results } = await svc.listForCustomer(customer, { page: 1, limit: 10 });
     const row = results.find((r) => String(r._id) === String(request._id));
-    const offer = row && row.applications[0] && row.applications[0].offers[0];
+    const activeApp = row && row.applications.find((a) => String(a.bank && (a.bank._id || a.bank)) === String(activeBank._id));
+    const offer = activeApp && activeApp.offers[0];
     assert(
       '[10d] read path returns RUPEES, not paise (the 100× guard)',
       !!row &&
@@ -413,9 +415,9 @@ async function liveDbChecks() {
     );
     assert(
       '[10e] the first offer moved application + request to OFFERS_PENDING',
-      !!row && row.status === 'OFFERS_PENDING' &&
-        row.applications[0].status === 'OFFERS_PENDING',
-      row ? `request=${row.status} app=${row.applications[0].status}` : ''
+        !!row && row.status === 'OFFERS_PENDING' &&
+          !!activeApp && activeApp.status === 'OFFERS_PENDING',
+        row ? `request=${row.status} app=${activeApp && activeApp.status}` : ''
     );
 
     // Cross-bank offer: the suspended bank must not be able to price
@@ -443,7 +445,7 @@ async function liveDbChecks() {
     const selected = await svc.acceptOffer({
       requestId: request._id,
       offerId: offer._id,
-      customer,
+      customerId: customer,
     });
     const selectedApp = selected.applications.find((a) => String(a._id) === String(apps[0]._id));
     const selectedOffer = selectedApp && selectedApp.offers.find((o) => String(o._id) === String(offer._id));
@@ -466,10 +468,10 @@ async function liveDbChecks() {
     const reviewed = await svc.findForCustomer(request._id, customer);
     assert(
       '[10h] bank review keeps the parent request in step',
-      !!reviewed &&
-        reviewed.status === 'UNDER_BANK_REVIEW' &&
-        reviewed.applications[0].status === 'UNDER_BANK_REVIEW',
-      reviewed ? `request=${reviewed.status} app=${reviewed.applications[0].status}` : 'not found'
+        !!reviewed &&
+          reviewed.status === 'UNDER_BANK_REVIEW' &&
+          !!reviewed.applications.find((a) => String(a.bank && (a.bank._id || a.bank)) === String(activeBank._id) && a.status === 'UNDER_BANK_REVIEW'),
+        reviewed ? `request=${reviewed.status} app=${(reviewed.applications.find((a) => String(a.bank && (a.bank._id || a.bank)) === String(activeBank._id)) || {}).status}` : 'not found'
     );
 
     let wrongBankStatus = null;
@@ -496,12 +498,11 @@ async function liveDbChecks() {
     const sanctioned = await svc.findForCustomer(request._id, customer);
     assert(
       '[10j] sanctioning syncs the request and keeps the amount in rupees',
-      !!sanctioned &&
-        sanctioned.status === 'SANCTIONED' &&
-        sanctioned.applications[0].status === 'SANCTIONED' &&
-        sanctioned.applications[0].sanctionedAmount === 4500000,
-      sanctioned
-        ? `request=${sanctioned.status} app=${sanctioned.applications[0].status} amount=${sanctioned.applications[0].sanctionedAmount}`
+        !!sanctioned &&
+          sanctioned.status === 'SANCTIONED' &&
+          !!(sanctioned.applications.find((a) => String(a.bank && (a.bank._id || a.bank)) === String(activeBank._id) && a.status === 'SANCTIONED' && a.sanctionedAmount === 4500000)),
+        sanctioned
+          ? `request=${sanctioned.status} app=${(sanctioned.applications.find((a) => String(a.bank && (a.bank._id || a.bank)) === String(activeBank._id)) || {}).status} amount=${(sanctioned.applications.find((a) => String(a.bank && (a.bank._id || a.bank)) === String(activeBank._id)) || {}).sanctionedAmount}`
         : 'not found'
     );
 

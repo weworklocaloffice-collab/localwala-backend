@@ -146,6 +146,69 @@ const run = async () => {
   ok('an order manager may grant only order_manager',
      JSON.stringify(staffService.assignableRolesFor('order_manager')) === JSON.stringify(['order_manager']));
 
+  console.log('\n--- route rights (stage 1) ---');
+
+  // Every right a route declares must be translated by ROUTE_RIGHTS. A new route that
+  // forgets the table fails closed at runtime, which is correct but silent - this scan
+  // makes the missing entry fail loudly here instead.
+  const fs = require('fs');
+  const path = require('path');
+  const routeDir = path.join(__dirname, '../src/modules/stores/routes');
+  const declaredRights = new Set();
+  for (const file of fs.readdirSync(routeDir).filter((f) => f.endsWith('.js'))) {
+    const source = fs.readFileSync(path.join(routeDir, file), 'utf8');
+    for (const match of source.matchAll(/store(?:Auth|AuthSuspendedOk|Scope)\('([a-z0-9_]+)'/g)) {
+      declaredRights.add(match[1]);
+    }
+  }
+  ok('route scan found the declared rights (' + declaredRights.size + ')', declaredRights.size >= 35, declaredRights.size + ' found');
+  const unmappedRights = [...declaredRights].filter(
+    (right) => !Object.prototype.hasOwnProperty.call(profileService.ROUTE_RIGHTS, right)
+  );
+  ok('every declared route right is mapped', unmappedRights.length === 0, unmappedRights.join(', '));
+
+  const routeMatrix = [
+    ['owner', 'stores_order_manage', true],
+    ['owner', 'stores_settlement_read', true],
+    ['owner', 'stores_subscription_manage', true],
+    ['manager', 'stores_order_manage', true],
+    ['manager', 'stores_driver_assign', true],
+    ['manager', 'stores_settlement_read', false],
+    ['manager', 'stores_subscription_manage', false],
+    ['dispatcher', 'stores_order_manage', false],
+    ['dispatcher', 'stores_order_read', true],
+    ['dispatcher', 'stores_driver_assign', true],
+    ['dispatcher', 'stores_settlement_read', false],
+    ['order_manager', 'stores_order_manage', true],
+    ['order_manager', 'stores_driver_assign', false],
+    ['order_manager', 'stores_settlement_read', false],
+    ['inventory_manager', 'stores_inventory_adjust', true],
+    ['inventory_manager', 'stores_catalog_write', true],
+    ['inventory_manager', 'stores_order_manage', false],
+    ['inventory_manager', 'stores_settlement_read', false],
+    ['regional_manager', 'stores_outlet_write', true],
+    ['regional_manager', 'stores_settlement_read', false],
+    ['regional_manager', 'stores_subscription_manage', false],
+    ['staff', 'stores_order_read', true],
+    ['staff', 'stores_order_manage', false],
+  ];
+  for (const [role, right, expected] of routeMatrix) {
+    ok(
+      `${role} ${expected ? 'may' : 'may not'} use ${right}`,
+      profileService.canRoute(role, right) === expected,
+      `expected ${expected}, got ${profileService.canRoute(role, right)}`
+    );
+  }
+  ok('driver keeps context reads only',
+     profileService.canRoute('driver', 'stores_chain_read') === true &&
+     profileService.canRoute('driver', 'stores_order_read') === false);
+  ok('an unknown declared right fails closed',
+     profileService.canRoute('owner', 'stores_made_up') === false);
+  ok('regional_manager\'s * still stops at cost price',
+     profileService.canRoute('regional_manager', 'stores_analytics_read') === true &&
+     profileService.can('regional_manager', 'costprice.view') === false);
+  ok('owner sees cost price', profileService.can('owner', 'costprice.view') === true);
+
   console.log('\n--- summary ---');
   console.log(failures === 0 ? 'ALL STORES ROLE CHECKS PASSED' : failures + ' CHECK(S) FAILED');
   return failures;

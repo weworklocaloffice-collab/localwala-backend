@@ -98,6 +98,7 @@ const {
   KitchenOwner,
 } = require('../models');
 const ApiError = require('../utils/ApiError');
+const lsUserCascade = require('../modules/local-services/services/ls.user.cascade.service');
 const { roleRights } = require('../config/roles');
 const checkArrayNotEmpty = require('../utils/arrayNotEmpty');
 
@@ -362,6 +363,7 @@ const deleteUserById = async (userId) => {
     throw new ApiError(httpStatus.NOT_FOUND, 'User not found');
   }
   await user.deleteOne();
+  await lsUserCascade.safePurgeForUsers([userId]);
   return user;
 };
 
@@ -2932,6 +2934,7 @@ const userDeleteAccount = async (user, reason) => {
   });
   const deleteUser = await User.findById(user);
   await deleteUser.deleteOne();
+  await lsUserCascade.safePurgeForUsers([user]);
   return Promise.all([
     userDetail,
     deleteDetail,

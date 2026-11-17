@@ -257,12 +257,27 @@ const createProduct = async ({ chain, category, subcategory, brand, name, slug, 
   return product;
 };
 
-const updateProduct = async (productId, updates, { chain } = {}) => {
+const updateProduct = async (productId, updates, { chain, actorRole } = {}) => {
   const ChainProduct = mongoose.model('ChainProduct');
   const filter = { _id: productId };
   if (chain) filter.chain = chain;
   const product = await ChainProduct.findOne(filter);
   if (!product) throw new ApiError(httpStatus.NOT_FOUND, 'Product not found');
+
+  // §6.23.2: price is a chain-level commercial decision, so an inventory manager
+  // maintains stock and catalogue detail but does not reprice the product.
+  if (
+    actorRole === 'inventory_manager' &&
+    ['basePrice', 'baseMrp'].some((key) => updates[key] !== undefined)
+  ) {
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "Role 'inventory_manager' may not change a product price",
+      true,
+      '',
+      { code: 'STORE_PRICE_ROLE_FORBIDDEN', role: actorRole }
+    );
+  }
 
   const allowed = ['name', 'description', 'images', 'hasVariants', 'variantAxes', 'basePrice', 'baseMrp', 'tax', 'taxPercentage', 'hsn', 'tags', 'searchTerms', 'isOrganic', 'warranty', 'status'];
   for (const key of allowed) {
@@ -288,10 +303,22 @@ const deleteProduct = async (productId, { by, reason, chain } = {}) => {
   return archived;
 };
 
-const generateVariants = async ({ product, selections, priceMatrix, combinationLimit = 200 }) => {
+const generateVariants = async ({ product, selections, priceMatrix, combinationLimit = 200, actorRole }) => {
   const ChainProductVariant = mongoose.model('ChainProductVariant');
   const axes = Object.keys(selections);
   const combinations = cartesianProduct(selections);
+
+  // Same §6.23.2 boundary as updateProduct: generating variants without a price
+  // matrix is stock work; pricing them is not the inventory manager's call.
+  if (actorRole === 'inventory_manager' && priceMatrix) {
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "Role 'inventory_manager' may not set variant prices",
+      true,
+      '',
+      { code: 'STORE_PRICE_ROLE_FORBIDDEN', role: actorRole }
+    );
+  }
 
   if (combinations.length > combinationLimit) {
     throw new ApiError(httpStatus.UNPROCESSABLE_ENTITY, `COMBINATION_LIMIT_EXCEEDED: ${combinations.length} combinations exceeds limit of ${combinationLimit}`);

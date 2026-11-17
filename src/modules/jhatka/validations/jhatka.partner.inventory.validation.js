@@ -147,6 +147,40 @@ const receiptBody = {
     .unknown(true),
 };
 
+const receiptDecisionLine = Joi.object()
+  .keys({
+    lineIndex: Joi.number().integer().min(0).required(),
+    note: Joi.string().trim().max(1000).allow(''),
+  })
+  .unknown(false);
+
+const receiptAcceptBody = {
+  body: receiptDecisionLine,
+};
+
+const receiptRejectBody = {
+  body: Joi.object()
+    .keys({
+      lineIndex: Joi.number().integer().min(0).required(),
+      rejectionReasons: Joi.array()
+        .min(1)
+        .max(10)
+        .items(
+          Joi.object()
+            .keys({
+              code: Joi.string().trim().lowercase().min(1).max(64),
+              reason: objectId,
+              note: Joi.string().trim().max(500).allow(''),
+            })
+            .xor('code', 'reason')
+            .unknown(false)
+        )
+        .required(),
+      note: Joi.string().trim().max(1000).allow(''),
+    })
+    .unknown(false),
+};
+
 const inventoryListQuery = {
   query: Joi.object().keys({
     variant: Joi.string(),
@@ -207,6 +241,8 @@ module.exports = {
   adjustBody,
   wastageBody,
   receiptBody,
+  receiptAcceptBody,
+  receiptRejectBody,
   inventoryListQuery,
   batchListQuery,
   recallListQuery,

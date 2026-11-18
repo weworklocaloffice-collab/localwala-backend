@@ -385,6 +385,16 @@ const jhatkaOutletSchema = mongoose.Schema(
         documentUrl: { type: String, required: false },
       },
     },
+    invoiceSeries: {
+      prefix: { type: String, required: false, trim: true, uppercase: true },
+      financialYear: { type: String, required: false, trim: true },
+      lastSequence: { type: Number, required: false, default: 0, min: 0 },
+    },
+    creditNoteSeries: {
+      prefix: { type: String, required: false, trim: true, uppercase: true },
+      financialYear: { type: String, required: false, trim: true },
+      lastSequence: { type: Number, required: false, default: 0, min: 0 },
+    },
     packaging: {
       types: { type: [String], default: [] },
       defaultType: { type: String, required: false },

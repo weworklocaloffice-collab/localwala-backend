@@ -76,6 +76,7 @@ const jhatkaAdminOperationsRoute = require('../../modules/jhatka/routes/jhatka.a
 const jhatkaAdminSettlementsRoute = require('../../modules/jhatka/routes/jhatka.admin.settlements.route');
 const jhatkaAdminOrdersRoute = require('../../modules/jhatka/routes/jhatka.admin.orders.route');
 const jhatkaAdminComplianceRoute = require('../../modules/jhatka/routes/jhatka.admin.compliance.route');
+const jhatkaAdminInvoicesRoute = require('../../modules/jhatka/routes/jhatka.admin.invoices.route');
 const reelRoute = require('./reel.route');
 const socialRoute = require('../../modules/social/routes/social.route');
 const reelsAdminRoute = require('../../modules/reels/routes/reels.admin.route');
@@ -266,6 +267,10 @@ const defaultRoutes = [
   {
     path: '/jhatka/admin',
     route: jhatkaAdminComplianceRoute,
+  },
+  {
+    path: '/jhatka/admin',
+    route: jhatkaAdminInvoicesRoute,
   },
   // Bare actor mount FIRST among the partner family — see the order note above.
   {

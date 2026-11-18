@@ -32,15 +32,12 @@
  * amount) without credentials or a network.
  */
 
+const crypto = require('crypto');
 const { status: httpStatus } = require('http-status');
 const superagent = require('superagent');
 const ApiError = require('../../../utils/ApiError');
 
-/**
- * Supported gateway identifiers. PhonePe is accepted by the enum but has no
- * implemented refund API on this deployment; it fails with an actionable error
- * rather than a missing-module stack trace.
- */
+/** Supported gateway identifiers. */
 const GATEWAYS = ['razorpay', 'cashfree', 'phonepe'];
 
 const CASHFREE_DEFAULT_API_VERSION = '2023-08-01';
@@ -89,6 +86,56 @@ function cashfreeAuth(credentials) {
 }
 
 /**
+ * PhonePe Standard Checkout credentials.
+ *
+ * The v1 (X-VERIFY) API is used because it is the shape an admin-managed
+ * `PaymentConfig` row can hold without an interactive OAuth flow: merchant id,
+ * salt key and salt index. A v2 (O-Bearer) integration would need client
+ * credentials plus a token endpoint, which is a separate provider choice.
+ */
+function phonePeAuth(credentials) {
+  if (!credentials || !credentials.merchantId || !credentials.saltKey || !credentials.saltIndex) {
+    throw new ApiError(
+      httpStatus.SERVICE_UNAVAILABLE,
+      'PhonePe is not configured: the PaymentConfig row has no merchantId/saltKey/saltIndex',
+      true,
+      '',
+      { code: 'GATEWAY_NOT_CONFIGURED', gateway: 'phonepe' }
+    );
+  }
+  return {
+    merchantId: String(credentials.merchantId),
+    saltKey: String(credentials.saltKey),
+    saltIndex: String(credentials.saltIndex),
+  };
+}
+
+function phonePeBase(environment) {
+  return environment === true
+    ? 'https://api.phonepe.com/apis/hermes'
+    : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
+}
+
+/** X-VERIFY = SHA256(body + endpoint + saltKey) + "###" + saltIndex. */
+function phonePeVerify(signed, endpoint, auth) {
+  const digest = crypto.createHash('sha256').update(`${signed}${endpoint}${auth.saltKey}`).digest('hex');
+  return `${digest}###${auth.saltIndex}`;
+}
+
+/** PhonePe reports failures inside a 200 body, so the caller must look at success/code. */
+function phonePeFailure(body) {
+  if (body && body.success !== false) return null;
+  const code = (body && (body.code || body.data?.responseCode)) || 'UNKNOWN';
+  const message =
+    (body && body.message) || 'PhonePe rejected the refund request without a message';
+  return new ApiError(httpStatus.BAD_GATEWAY, `PhonePe refund failed (${code}): ${message}`, true, '', {
+    code: 'GATEWAY_REFUND_REJECTED',
+    gateway: 'phonepe',
+    providerCode: code,
+  });
+}
+
+/**
  * One transport call. The default is superagent; tests inject a function that
  * records `{ method, url, auth, headers, body }` and returns `{ body }`.
  */
@@ -116,9 +163,9 @@ async function send({ transport, method, url, auth, headers, body }) {
  *   (Cashfree: the order id)
  * @param {number} opts.amountPaise — refund amount in paise (positive integer)
  * @param {string} opts.idempotencyKey — unique key for this refund attempt
- * @param {object} [opts.credentials] — { key, secret } or { appId, secretKey, apiVersion }
- *   from the payment's PaymentConfig row
- * @param {boolean} [opts.environment] — PaymentConfig live flag (Cashfree URL)
+ * @param {object} [opts.credentials] — { key, secret }, { appId, secretKey, apiVersion }
+ *   or { merchantId, saltKey, saltIndex } from the payment's PaymentConfig row
+ * @param {boolean} [opts.environment] — PaymentConfig live flag (Cashfree/PhonePe URL)
  * @param {string} [opts.reason] — refund reason for gateway metadata
  * @param {Function} [opts.transport] — injected HTTP transport, for tests
  * @returns {Promise<{gatewayRefundId: string, status: string, raw: object}>}
@@ -201,9 +248,47 @@ async function refundPayment({
     };
   }
 
+  if (gateway === 'phonepe') {
+    // PhonePe refunds are addressed by the ORIGINAL merchant transaction id, and
+    // the refund's own merchantTransactionId is where idempotency lives.
+    const auth = phonePeAuth(credentials);
+    const endpoint = '/pg/v1/refund';
+    const payload = {
+      merchantId: auth.merchantId,
+      originalTransactionId: gatewayPaymentId,
+      merchantTransactionId: idempotencyKey,
+      amount: amountPaise,
+    };
+    if (credentials.merchantUserId) payload.merchantUserId = credentials.merchantUserId;
+    const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+    const response = await send({
+      transport,
+      method: 'POST',
+      url: `${phonePeBase(environment)}${endpoint}`,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-VERIFY': phonePeVerify(encoded, endpoint, auth),
+      },
+      body: { request: encoded },
+    });
+    const body = (response && response.body) || {};
+    const failure = phonePeFailure(body);
+    if (failure) throw failure;
+    const data = body.data || {};
+    const refundId = data.transactionId || data.merchantTransactionId;
+    if (!refundId) {
+      throw new ApiError(httpStatus.BAD_GATEWAY, 'PhonePe refund returned no transaction id');
+    }
+    return {
+      gatewayRefundId: String(refundId),
+      status: data.state || body.code || 'processed',
+      raw: body,
+    };
+  }
+
   throw new ApiError(
     httpStatus.SERVICE_UNAVAILABLE,
-    'PhonePe refunds are not implemented on this deployment',
+    `Refunds are not implemented for ${gateway} on this deployment`,
     true,
     '',
     { code: 'GATEWAY_NOT_CONFIGURED', gateway }
@@ -216,15 +301,26 @@ async function refundPayment({
  * Used by operators/reconciliation, not by the settlement queue (which trusts the
  * refund response). Razorpay exposes a refund by id; Cashfree requires the parent
  * order id, which this signature does not carry, so it reports unsupported.
+ * PhonePe v1 looks refunds up by the MERCHANT transaction id created at refund
+ * time, so callers pass that as `merchantRefundId`.
  *
  * @param {object} opts
  * @param {string} opts.gateway
  * @param {string} opts.gatewayRefundId
+ * @param {string} [opts.merchantRefundId] — PhonePe: the idempotency key used at refund time
  * @param {object} [opts.credentials]
+ * @param {boolean} [opts.environment] — PaymentConfig live flag (PhonePe URL)
  * @param {Function} [opts.transport] — injected HTTP transport, for tests
  * @returns {Promise<{status: string, raw: object}>}
  */
-async function getRefundStatus({ gateway, gatewayRefundId, credentials, transport }) {
+async function getRefundStatus({
+  gateway,
+  gatewayRefundId,
+  merchantRefundId,
+  credentials,
+  environment,
+  transport,
+}) {
   if (!GATEWAYS.includes(gateway)) {
     throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, `Unsupported gateway: ${gateway}`);
   }
@@ -242,6 +338,27 @@ async function getRefundStatus({ gateway, gatewayRefundId, credentials, transpor
     });
     const body = (response && response.body) || {};
     return { status: body.status || 'unknown', raw: body };
+  }
+
+  if (gateway === 'phonepe') {
+    const auth = phonePeAuth(credentials);
+    const lookupId = merchantRefundId || gatewayRefundId;
+    const endpoint = `/pg/v1/status/${encodeURIComponent(auth.merchantId)}/${encodeURIComponent(lookupId)}`;
+    const response = await send({
+      transport,
+      method: 'GET',
+      url: `${phonePeBase(environment)}${endpoint}`,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-VERIFY': phonePeVerify('', endpoint, auth),
+        'X-MERCHANT-ID': auth.merchantId,
+      },
+    });
+    const body = (response && response.body) || {};
+    const failure = phonePeFailure(body);
+    if (failure) throw failure;
+    const data = body.data || {};
+    return { status: data.state || data.responseCode || body.code || 'unknown', raw: body };
   }
 
   throw new ApiError(

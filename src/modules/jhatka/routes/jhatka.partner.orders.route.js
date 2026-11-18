@@ -212,6 +212,22 @@ router.get('/:order', ...partnerAuth, validate(V.orderParam), async (req, res, n
   }
 });
 
+router.get('/:order/invoice', ...partnerAuth, validate(V.orderParam), async (req, res, next) => {
+  try {
+    const order = await JhatkaOrder.findById(req.params.order);
+    if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
+    if (String(order.outlet) !== req.outletId) {
+      throw new ApiError(httpStatus.FORBIDDEN, 'Order not in this outlet');
+    }
+    if (order.invoice?.invoiceNo) {
+      return res.json({ invoice: order.invoice, issued: true, preview: false, reason: null });
+    }
+    return res.json({ invoice: null, issued: false, preview: false, reason: 'NO_ISSUED_INVOICE' });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 /**
  * POST /jhatka/partner/orders/:order/receive
  * ---------------------------------------------------------------------------

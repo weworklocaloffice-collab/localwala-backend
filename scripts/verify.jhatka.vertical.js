@@ -599,6 +599,7 @@ try {
     'JhatkaCommissionRule', 'JhatkaOperatorPayout', 'JhatkaSupplierPayable', 'JhatkaSettlement',
     'JhatkaCompliance', 'JhatkaComplaint', 'JhatkaReview', 'JhatkaPromotion',
     'JhatkaSettings',
+    'JhatkaCreditNote',
   ];
   const missing = expected.filter((m) => !jhatkaModels.includes(m));
   ok(`All ${expected.length} Jhatka models exported`, missing.length === 0, missing.join(', '));

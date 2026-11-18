@@ -407,6 +407,7 @@ module.exports.JhatkaPromotion = require('../modules/jhatka/models/jhatka.promot
 module.exports.JhatkaSupplyRequest = require('../modules/jhatka/models/jhatka.supply.request.model');
 module.exports.JhatkaPartnerLedger = require('../modules/jhatka/models/jhatka.partner.ledger.model');
 module.exports.JhatkaAreaChangeRequest = require('../modules/jhatka/models/jhatka.area.change.request.model');
+module.exports.JhatkaCreditNote = require('../modules/jhatka/models/jhatka.credit.note.model');
 
 // -- local-services: revenue engine (Phase 1). Registered as flat block at END,
 // never edit above lines (jhatka pattern). refs are lazy so order is for humans.

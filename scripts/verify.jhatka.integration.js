@@ -467,6 +467,11 @@ const buildApp = (identity) => {
     '/jhatka/admin',
     require(require('path').join(ROUTES_DIR, 'jhatka.admin.operations.route'))
   );
+  // The invoice void surface (finance/accounting act).
+  app.use(
+    '/jhatka/admin',
+    require(require('path').join(ROUTES_DIR, 'jhatka.admin.invoices.route'))
+  );
   // The supply surface (OD-12 companion), at production paths.
   app.use(
     '/jhatka/partner/supply',
@@ -558,8 +563,8 @@ const main = async () => {
 
   const {
     JhatkaOrder, JhatkaRefund, JhatkaWeightConfirmation, JhatkaOutletVarianceFlag,
-JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrder,
-    JhatkaSubscriptionEvent, JhatkaBatch,
+    JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrder,
+    JhatkaSubscriptionEvent, JhatkaBatch, JhatkaOutlet,
   } = require(require('path').join(REPO_ROOT, 'src', 'models'));
 
   let fx;
@@ -665,6 +670,17 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
   };
   financeAdmin.userId = fx.managerUserId;
   const adminApp = buildApp(financeAdmin);
+  // The catalogue actor: owns the governed rejection vocabulary over HTTP.
+  const catalogAdmin = {
+    userId: null,
+    name: 'Catalogue Admin',
+    role: 'admin',
+    outletId: null,
+    outletDoc: null,
+    rights: ['jhatka_catalog_read', 'jhatka_catalog_write'],
+  };
+  catalogAdmin.userId = fx.managerUserId;
+  const catalogApp = buildApp(catalogAdmin);
 
   const placeOrder = async (items) =>
     request(customerApp, 'POST', '/jhatka/customer/orders', {
@@ -778,6 +794,145 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
       { variant: String(fx.weightVariant._id), quantity: { value: 3, unit: 'PIECE' } },
     ]);
     ok('a PIECE quantity on a WEIGHT variant is refused', mismatch.status === 400, String(mismatch.status));
+  }
+
+  // ---------------------------------------------------------------
+  section('customer invoice - preview, issue once, sequence, ownership');
+  // ---------------------------------------------------------------
+  {
+    const completeOrder = async (orderId) => {
+      const doc = await JhatkaOrder.findById(orderId);
+      doc.lifecycle = 'COMPLETED';
+      doc.paymentStatus = 'paid';
+      doc.paidAmount = doc.estimatedTotal;
+      doc.finalTotal = doc.estimatedTotal;
+      doc.deliveredAt = new Date();
+      doc.completedAt = new Date();
+      await doc.save();
+      return doc;
+    };
+
+    const invoiceService = require(require('path').join(REPO_ROOT, 'src', 'modules', 'jhatka', 'services', 'jhatka.invoice.service'));
+    ok('the invoice financial year rolls at IST midnight on 1 April',
+      invoiceService.financialYear(new Date('2026-03-31T18:29:59Z')) === '2025-26' &&
+      invoiceService.financialYear(new Date('2026-03-31T18:30:00Z')) === '2026-27',
+      `${invoiceService.financialYear(new Date('2026-03-31T18:29:59Z'))} / ${invoiceService.financialYear(new Date('2026-03-31T18:30:00Z'))}`);
+
+    const previousSellerGstin = process.env.JHATKA_INVOICE_SELLER_GSTIN;
+    const previousOutletGstin = fx.outlet.taxIdentity?.gstin;
+    const createdOrderIds = [];
+    process.env.JHATKA_INVOICE_SELLER_GSTIN = '27ABCDE1234F1Z5';
+    fx.outlet.taxIdentity.gstin = '27ABCDE1234F1Z5';
+    await fx.outlet.save();
+
+    try {
+      const placed = await placeOrder([
+        { variant: String(fx.weightVariant._id), quantity: { value: 1, unit: 'KG' } },
+      ]);
+      const order = await JhatkaOrder.findOne({ orderNo: placed.body?.order?.orderNo });
+      createdOrderIds.push(order._id);
+
+      const preview = await request(customerApp, 'GET', `/jhatka/customer/orders/${order._id}/invoice`);
+      ok('an unfinished order returns an invoice PREVIEW',
+        preview.status === 200 && preview.body?.issued === false &&
+        preview.body?.preview === true && preview.body?.reason === 'ORDER_NOT_COMPLETED',
+        `${preview.status} ${JSON.stringify(preview.body)}`);
+      ok('the preview has no invoice number', preview.body?.invoice?.invoiceNo === null,
+        JSON.stringify(preview.body?.invoice?.invoiceNo));
+
+      await completeOrder(order._id);
+      const issued = await request(customerApp, 'GET', `/jhatka/customer/orders/${order._id}/invoice`);
+      ok('a completed paid order issues an invoice', issued.status === 200 && issued.body?.issued === true,
+        `${issued.status} ${JSON.stringify(issued.body)}`);
+      const invoice = issued.body?.invoice || {};
+      ok('the invoice number uses the outlet series',
+        /^FX-OUTLET-\d+\/\d{4}-\d{2}\/000001$/.test(String(invoice.invoiceNo)),
+        String(invoice.invoiceNo));
+      ok('the invoice is a tax invoice when a GSTIN is configured', invoice.isTaxInvoice === true,
+        String(invoice.isTaxInvoice));
+      ok('the seller GSTIN is frozen onto the invoice',
+        invoice.seller?.gstin === '27ABCDE1234F1Z5', JSON.stringify(invoice.seller));
+      ok('the HSN and taxable value come from the order line',
+        invoice.lines?.[0]?.hsn === '0207' && invoice.lines?.[0]?.taxableValue === 400,
+        JSON.stringify(invoice.lines?.[0]));
+      ok('the tax split is CGST + SGST for an intra-state sale',
+        invoice.lines?.[0]?.cgst === 10 && invoice.lines?.[0]?.sgst === 10 &&
+        invoice.lines?.[0]?.igst === 0,
+        JSON.stringify(invoice.lines?.[0]));
+      ok('the invoice total ties to the order estimate',
+        invoice.totals?.taxTotal === 20 && invoice.totals?.grandTotal === 420 &&
+        invoice.totals?.amountPaid === 420 && invoice.totals?.netAmount === 420,
+        JSON.stringify(invoice.totals));
+
+      const detail = await request(customerApp, 'GET', `/jhatka/customer/orders/${order._id}`);
+      ok('the order detail exposes the invoice summary',
+        detail.body?.order?.invoice?.invoiceNo === invoice.invoiceNo &&
+        detail.body?.order?.invoice?.status === 'issued',
+        JSON.stringify(detail.body?.order?.invoice));
+
+      const replay = await request(customerApp, 'GET', `/jhatka/customer/orders/${order._id}/invoice`);
+      ok('re-reading returns the SAME invoice number', replay.body?.invoice?.invoiceNo === invoice.invoiceNo,
+        `${replay.body?.invoice?.invoiceNo} !== ${invoice.invoiceNo}`);
+      const afterReplay = await JhatkaOutlet.findById(fx.outlet._id).lean();
+      ok('re-reading does not consume another sequence', afterReplay.invoiceSeries.lastSequence === 1,
+        String(afterReplay.invoiceSeries.lastSequence));
+
+      const secondPlaced = await placeOrder([
+        { variant: String(fx.countVariant._id), quantity: { value: 1, unit: 'PIECE' } },
+      ]);
+      const secondOrder = await JhatkaOrder.findOne({ orderNo: secondPlaced.body?.order?.orderNo });
+      createdOrderIds.push(secondOrder._id);
+      await completeOrder(secondOrder._id);
+      const secondInvoice = await request(customerApp, 'GET', `/jhatka/customer/orders/${secondOrder._id}/invoice`);
+      ok('the next invoice takes the next sequence',
+        String(secondInvoice.body?.invoice?.invoiceNo).endsWith('/000002'),
+        String(secondInvoice.body?.invoice?.invoiceNo));
+
+      const otherCustomer = {
+        userId: oid(),
+        name: 'Other Customer',
+        role: 'customer',
+        outletId: null,
+        outletDoc: null,
+        rights: ['jhatka_customer_order_list'],
+      };
+      const otherApp = buildApp(otherCustomer);
+      const forbidden = await request(otherApp, 'GET', `/jhatka/customer/orders/${order._id}/invoice`);
+      ok('another customer cannot read the invoice', forbidden.status === 403, String(forbidden.status));
+
+      delete process.env.JHATKA_INVOICE_SELLER_GSTIN;
+      fx.outlet.taxIdentity.gstin = undefined;
+      await fx.outlet.save();
+      const thirdPlaced = await placeOrder([
+        { variant: String(fx.countVariant._id), quantity: { value: 1, unit: 'PIECE' } },
+      ]);
+      const thirdOrder = await JhatkaOrder.findOne({ orderNo: thirdPlaced.body?.order?.orderNo });
+      createdOrderIds.push(thirdOrder._id);
+      await completeOrder(thirdOrder._id);
+      const noGstin = await request(customerApp, 'GET', `/jhatka/customer/orders/${thirdOrder._id}/invoice`);
+      ok('a missing seller GSTIN stays a PREVIEW, not a fake tax invoice',
+        noGstin.status === 200 && noGstin.body?.issued === false &&
+        noGstin.body?.reason === 'SELLER_GSTIN_MISSING' &&
+        noGstin.body?.invoice?.isTaxInvoice === false,
+        `${noGstin.status} ${JSON.stringify(noGstin.body)}`);
+
+      // void an issued invoice (finance admin) + credit note
+      const voided = await request(adminApp, 'POST', `/jhatka/admin/invoices/${order._id}/void`, { reason: 'test void' });
+      ok('voiding an issued invoice succeeds',
+        voided.status === 200 && voided.body?.invoice?.isVoided === true &&
+        voided.body?.invoice?.status === 'void' && voided.body?.creditNote?.creditNoteNo,
+        `${voided.status} ${JSON.stringify(voided.body)}`);
+      const voidAgain = await request(adminApp, 'POST', `/jhatka/admin/invoices/${order._id}/void`, { reason: 'again' });
+      ok('voiding twice is rejected',
+        voidAgain.status === 409 || voidAgain.status === 400,
+        `${voidAgain.status} ${JSON.stringify(voidAgain.body)}`);
+    } finally {
+      if (previousSellerGstin === undefined) delete process.env.JHATKA_INVOICE_SELLER_GSTIN;
+      else process.env.JHATKA_INVOICE_SELLER_GSTIN = previousSellerGstin;
+      fx.outlet.taxIdentity.gstin = previousOutletGstin;
+      await fx.outlet.save();
+      if (createdOrderIds.length) await JhatkaOrder.deleteMany({ _id: { $in: createdOrderIds } });
+    }
   }
 
   // ---------------------------------------------------------------
@@ -2055,6 +2210,138 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
        `${rejectPosted.status} ${JSON.stringify(rejectPosted.body)}`);
   }
   // -----------------------------------------------------------------------
+  section('Phase 4b - admin manages the governed rejection vocabulary');
+  // -----------------------------------------------------------------------
+  {
+    const models4b = require(require('path').join(REPO_ROOT, 'src', 'models'));
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const code = `it_admin_reason_${suffix}`;
+    const retiredReason = await models4b.JhatkaQualityRejectionReason.create({
+      code: `it_admin_retired_${suffix}`,
+      label: 'Integration retired rejection',
+      category: 'other',
+      severity: 'soft',
+      fault: 'unknown',
+      status: false,
+    });
+
+    const adminList = await request(
+      catalogApp,
+      'GET',
+      '/jhatka/admin/operations/rejection-reasons'
+    );
+    const adminCodes = (adminList.body?.reasons || []).map((r) => r.code);
+    ok('the admin vocabulary includes inactive reasons',
+       adminList.status === 200 && adminCodes.includes(retiredReason.code),
+       `${adminList.status} ${JSON.stringify(adminCodes)}`);
+    ok('the admin vocabulary exposes the full governed category set',
+       (adminList.body?.meta?.categories || []).includes('specification')
+       && (adminList.body?.meta?.categories || []).includes('other'),
+       JSON.stringify(adminList.body?.meta));
+
+    const createdReason = await request(
+      catalogApp,
+      'POST',
+      '/jhatka/admin/operations/rejection-reasons',
+      {
+        code: code.toUpperCase(),
+        label: 'Integration admin rejection',
+        category: 'specification',
+        severity: 'hard',
+        fault: 'supplier',
+        autoReject: true,
+        sortOrder: 7,
+      }
+    );
+    const createdBody = createdReason.body?.reason || {};
+    ok('an admin can create a governed rejection reason',
+       createdReason.status === 201 && createdBody.code === code,
+       `${createdReason.status} ${JSON.stringify(createdReason.body)}`);
+    ok('...and omitted governance fields receive safe defaults',
+       createdBody.wastageCause === 'QUALITY_REJECTION'
+       && createdBody.affectsSupplierRating === true
+       && createdBody.status === true,
+       JSON.stringify(createdBody));
+    const createdId = createdBody.id;
+
+    const duplicateReason = await request(
+      catalogApp,
+      'POST',
+      '/jhatka/admin/operations/rejection-reasons',
+      { code, label: 'Duplicate integration reason', category: 'other', severity: 'soft' }
+    );
+    ok('a duplicate code is refused with REASON_CODE_EXISTS',
+       duplicateReason.status === 409
+       && (duplicateReason.body?.extra?.code || duplicateReason.body?.detail?.code)
+         === 'REASON_CODE_EXISTS',
+       `${duplicateReason.status} ${JSON.stringify(duplicateReason.body)}`);
+
+    const immutable = await request(
+      catalogApp,
+      'PATCH',
+      `/jhatka/admin/operations/rejection-reasons/${createdId}`,
+      { code: `renamed_${suffix}` }
+    );
+    ok('code is immutable after creation',
+       immutable.status === 400
+       && (immutable.body?.extra?.code || immutable.body?.detail?.code)
+         === 'REASON_CODE_IMMUTABLE',
+       `${immutable.status} ${JSON.stringify(immutable.body)}`);
+    const unchanged = await models4b.JhatkaQualityRejectionReason.findById(createdId).lean();
+    ok('...and the refused rename did not change the persisted code',
+       unchanged?.code === code, unchanged?.code);
+
+    const invalidCategory = await request(
+      catalogApp,
+      'PATCH',
+      `/jhatka/admin/operations/rejection-reasons/${createdId}`,
+      { category: 'not_a_category' }
+    );
+    ok('an unknown category is refused at the admin boundary',
+       invalidCategory.status === 400
+       && (invalidCategory.body?.extra?.code || invalidCategory.body?.detail?.code)
+         === 'INVALID_REASON_CATEGORY',
+       `${invalidCategory.status} ${JSON.stringify(invalidCategory.body)}`);
+
+    const pickerBefore = await request(
+      partnerApp,
+      'GET',
+      '/jhatka/partner/inventory/rejection-reasons'
+    );
+    ok('a reason created by an admin is immediately offered to the partner picker',
+       (pickerBefore.body?.reasons || []).some((r) => r.code === code),
+       JSON.stringify((pickerBefore.body?.reasons || []).map((r) => r.code)));
+
+    const deactivated = await request(
+      catalogApp,
+      'PATCH',
+      `/jhatka/admin/operations/rejection-reasons/${createdId}`,
+      { status: false, label: 'Integration admin rejection (retired)' }
+    );
+    ok('an admin can deactivate a reason instead of deleting it',
+       deactivated.status === 200 && deactivated.body?.reason?.status === false,
+       `${deactivated.status} ${JSON.stringify(deactivated.body)}`);
+
+    const pickerAfter = await request(
+      partnerApp,
+      'GET',
+      '/jhatka/partner/inventory/rejection-reasons'
+    );
+    ok('a deactivated reason is no longer offered to the partner picker',
+       !(pickerAfter.body?.reasons || []).some((r) => r.code === code),
+       JSON.stringify((pickerAfter.body?.reasons || []).map((r) => r.code)));
+
+    const inactiveOnly = await request(
+      catalogApp,
+      'GET',
+      '/jhatka/admin/operations/rejection-reasons?status=false'
+    );
+    ok('the admin can filter the vocabulary to inactive reasons',
+       inactiveOnly.status === 200
+       && (inactiveOnly.body?.reasons || []).some((r) => r.code === code),
+       `${inactiveOnly.status} ${JSON.stringify(inactiveOnly.body)}`);
+  }
+  // -----------------------------------------------------------------------
   section('F-5 / Phase 8 - a refund actually MOVES money and records gatewayRefundId');
   // -----------------------------------------------------------------------
   {
@@ -2144,6 +2431,103 @@ JhatkaInventoryItem, JhatkaInventoryMovement, JhatkaDelivery, JhatkaRecurringOrd
        cfCalls[0]?.body?.refund_amount === '40.00', JSON.stringify(cfCalls[0]?.body));
     ok('...and return the provider refund id',
        cfRefund.gatewayRefundId === 'cf_test_1', String(cfRefund.gatewayRefundId));
+
+    // PhonePe uses merchantId/saltKey/saltIndex and signs the base64 payload.
+    const ppCalls = [];
+    const ppTransport = async (request) => {
+      ppCalls.push(request);
+      return {
+        body: {
+          success: true,
+          code: 'PAYMENT_SUCCESS',
+          data: {
+            merchantTransactionId: 'k_pp',
+            transactionId: 'TR_PP_1',
+            amount: 4000,
+            state: 'COMPLETED',
+          },
+        },
+      };
+    };
+    const ppRefund = await gatewayMod.refundPayment({
+      gateway: 'phonepe',
+      gatewayPaymentId: 'TX_ORIGINAL',
+      amountPaise: 4000,
+      idempotencyKey: 'k_pp',
+      credentials: {
+        merchantId: 'PGTESTPAYUAT',
+        saltKey: 'pp_salt',
+        saltIndex: '1',
+      },
+      environment: false,
+      transport: ppTransport,
+    });
+    const ppPayload = JSON.parse(
+      Buffer.from(ppCalls[0]?.body?.request || '', 'base64').toString('utf8')
+    );
+    const ppExpectedVerify = `${require('crypto')
+      .createHash('sha256')
+      .update(`${ppCalls[0]?.body?.request}/pg/v1/refundpp_salt`)
+      .digest('hex')}###1`;
+    ok('PhonePe refunds use the sandbox URL and the documented request envelope',
+       ppCalls[0]?.url === 'https://api-preprod.phonepe.com/apis/pg-sandbox/pg/v1/refund'
+       && ppPayload.originalTransactionId === 'TX_ORIGINAL'
+       && ppPayload.merchantTransactionId === 'k_pp'
+       && ppPayload.amount === 4000,
+       JSON.stringify({ url: ppCalls[0]?.url, payload: ppPayload }));
+    ok('...and sign the base64 payload with X-VERIFY',
+       ppCalls[0]?.headers?.['X-VERIFY'] === ppExpectedVerify,
+       JSON.stringify(ppCalls[0]?.headers));
+    ok('...and return the provider transaction id',
+       ppRefund.gatewayRefundId === 'TR_PP_1', String(ppRefund.gatewayRefundId));
+
+    const ppStatusCalls = [];
+    const ppStatus = await gatewayMod.getRefundStatus({
+      gateway: 'phonepe',
+      gatewayRefundId: 'TR_PP_1',
+      merchantRefundId: 'k_pp',
+      credentials: {
+        merchantId: 'PGTESTPAYUAT',
+        saltKey: 'pp_salt',
+        saltIndex: '1',
+      },
+      environment: false,
+      transport: async (request) => {
+        ppStatusCalls.push(request);
+        return {
+          body: {
+            success: true,
+            code: 'PAYMENT_SUCCESS',
+            data: { state: 'COMPLETED' },
+          },
+        };
+      },
+    });
+    const ppStatusEndpoint = '/pg/v1/status/PGTESTPAYUAT/k_pp';
+    const ppStatusVerify = `${require('crypto')
+      .createHash('sha256')
+      .update(`${ppStatusEndpoint}pp_salt`)
+      .digest('hex')}###1`;
+    ok('PhonePe refund status reads the merchant refund id',
+       ppStatusCalls[0]?.url.endsWith(ppStatusEndpoint) && ppStatus.status === 'COMPLETED',
+       JSON.stringify({ url: ppStatusCalls[0]?.url, status: ppStatus.status }));
+    ok('...and signs the status path with X-VERIFY',
+       ppStatusCalls[0]?.headers?.['X-VERIFY'] === ppStatusVerify,
+       JSON.stringify(ppStatusCalls[0]?.headers));
+
+    let ppConfigErr = null;
+    try {
+      await gatewayMod.refundPayment({
+        gateway: 'phonepe',
+        gatewayPaymentId: 'tx_x',
+        amountPaise: 100,
+        idempotencyKey: 'k_pp_missing',
+        credentials: {},
+      });
+    } catch (e) { ppConfigErr = e; }
+    ok('an unconfigured PhonePe fails with an ACTIONABLE error',
+       !!ppConfigErr && ppConfigErr.extra?.code === 'GATEWAY_NOT_CONFIGURED',
+       String(ppConfigErr && ppConfigErr.message));
 
     // A missing config must fail LOUDLY and actionably, not with MODULE_NOT_FOUND.
     const savedKeyId = process.env.RAZORPAY_KEY_ID;

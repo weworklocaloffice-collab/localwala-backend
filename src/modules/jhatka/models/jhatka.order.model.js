@@ -19,6 +19,7 @@
 const mongoose = require('mongoose');
 const { toJSON, paginate } = require('../../../models/plugins');
 const moneyField = require('../../../utils/money.field');
+const jhatkaInvoiceSchema = require('./jhatka.invoice.schema');
 
 /**
  * JhatkaOrder — the order aggregate.
@@ -312,6 +313,11 @@ const jhatkaOrderSchema = mongoose.Schema(
       address: { type: String, required: false, trim: true },
       fssaiLicenceNo: { type: String, required: false, trim: true },
     },
+    invoice: {
+      type: jhatkaInvoiceSchema,
+      required: false,
+      default: undefined,
+    },
 
     // ---- addresses ----
     addressSnapshot: {
@@ -468,6 +474,7 @@ const jhatkaOrderSchema = mongoose.Schema(
 jhatkaOrderSchema.plugin(toJSON);
 jhatkaOrderSchema.plugin(paginate);
 jhatkaOrderSchema.index({ orderNo: 1 }, { unique: true });
+jhatkaOrderSchema.index({ 'invoice.invoiceNo': 1 }, { unique: true, sparse: true });
 // The outlet order dashboard. blueprint §18: New / Accepted / Preparing /
 // Weighing / Packing / Ready / Delivery / Completed, all from one column.
 jhatkaOrderSchema.index({ outlet: 1, lifecycle: 1, createdAt: -1 });

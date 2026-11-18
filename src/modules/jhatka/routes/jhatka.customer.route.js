@@ -85,6 +85,7 @@ const {
   PaymentConfig,
 } = require('../../../models');
 const cartService = require('../services/jhatka.cart.service');
+const invoiceService = require('../services/jhatka.invoice.service');
 const validate = require('../../../middlewares/validate');
 const V = require('../validations/jhatka.customer.validation');
 const browseService = require('../services/jhatka.browse.service');
@@ -1369,6 +1370,14 @@ router.get('/orders/:id', appAuth('jhatka_customer_order_list'), validate(V.orde
         taxSnapshot: order.taxSnapshot,
         merchantOfRecord: order.merchantOfRecord,
         outletSnapshot: order.outletSnapshot,
+        invoice: order.invoice?.invoiceNo
+          ? {
+            invoiceNo: order.invoice.invoiceNo,
+            issuedAt: order.invoice.issuedAt,
+            status: order.invoice.status,
+            isVoided: order.invoice.isVoided,
+          }
+          : null,
         items: (order.items || []).map((i) => ({
           sku: i.sku,
           name: i.name,
@@ -1408,10 +1417,26 @@ router.get('/orders/:id', appAuth('jhatka_customer_order_list'), validate(V.orde
 });
 
 /**
+ * GET /jhatka/customer/orders/:id/invoice
+ *
+ * Returns the frozen invoice when one has been issued. Before the order is
+ * billable, or before a seller GSTIN is configured, it returns a preview with
+ * `issued: false`. Issuance is idempotent and consumes the outlet's next number.
+ */
+router.get('/orders/:id/invoice', appAuth('jhatka_customer_order_list'), validate(V.orderIdParam), async (req, res, next) => {
+  try {
+    const result = await invoiceService.getInvoice(req.params.id, req.user._id);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
  * GET /jhatka/customer/orders/:id/tracking
  *
  * Read-only projection of the order's progress. Deliberately derived from
- * timestamps rather than a `statusHistory` array on the order â€” history lives in
+ * timestamps rather than a `statusHistory` array - history lives in
  * `JhatkaOrderStatusHistory`, so this route reports the CURRENT truth and does
  * not reconstruct the path to it.
  */
